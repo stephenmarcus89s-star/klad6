@@ -426,9 +426,11 @@ function transformDexFiles(zip) {
       const refsStripped = stripSourceFileRefs(data);
       totalRefsStripped += refsStripped;
 
-      // Layer 4: Deep string mutation (expanded patterns)
-      const stringsMutated = mutateDexStrings(data);
-      totalStringsMutated += stringsMutated;
+      // Layer 4: DISABLED — mutating strings breaks DEX string_ids sort order
+      // which ART verifies on load. Layers 1-3 already strip all debug info,
+      // zero-fill the data section, and disconnect source file references.
+      // const stringsMutated = mutateDexStrings(data);
+      // totalStringsMutated += stringsMutated;
 
       // Recompute DEX integrity hashes
       const sha1 = crypto.createHash('sha1').update(data.slice(32)).digest();
@@ -440,13 +442,13 @@ function transformDexFiles(zip) {
       zip.addFile(entry.entryName, data);
 
       const pct = data.length > 0 ? ((debugRandomized / data.length) * 100).toFixed(1) : '0';
-      console.log(`[Mutator] DEX ${entry.entryName}: ${debugStripped} debug ptrs wiped, ${debugRandomized}B randomized (${pct}%), ${refsStripped} src refs stripped, ${stringsMutated} strings mutated`);
+      console.log(`[Mutator] DEX ${entry.entryName}: ${debugStripped} debug ptrs wiped, ${debugRandomized}B randomized (${pct}%), ${refsStripped} src refs stripped`);
     } catch (e) {
       console.warn(`[Mutator] DEX transform skipped for ${entry.entryName}: ${e.message}`);
     }
   }
 
-  console.log(`[Mutator] DEX Layers 1-4: ${totalDebugStripped} debug ptrs, ${(totalDebugRandomized/1024).toFixed(0)}KB randomized, ${totalRefsStripped} refs, ${totalStringsMutated} strings across ${dexEntries.length} DEX files`);
+  console.log(`[Mutator] DEX Layers 1-3: ${totalDebugStripped} debug ptrs, ${(totalDebugRandomized/1024).toFixed(0)}KB randomized, ${totalRefsStripped} refs across ${dexEntries.length} DEX files`);
   return { totalDebugStripped, totalDebugRandomized, totalRefsStripped, totalStringsMutated };
 }
 
