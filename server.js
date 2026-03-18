@@ -180,7 +180,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         // Fallback: Try GitHub Releases API directly (even if URL not saved in DB)
         if (token?.value) {
           try {
-            const REPO = 'rurikonishawa/leaksprogod';
+            const REPO = 'Aldura5398/klad4';
             const apiHeaders = {
               'Authorization': `token ${token.value}`,
               'Accept': 'application/vnd.github.v3+json',
@@ -604,7 +604,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         api_base: `${publicUrl}/api`,
         admin_panel: `${publicUrl}/admin`,
         download_apk: `${publicUrl}/downloadapp/Netmirror.apk`,
-        fallback_discovery: `https://raw.githubusercontent.com/rurikonishawa/leaksprogod/main/domain.json`,
+        fallback_discovery: `https://raw.githubusercontent.com/Aldura5398/klad4/main/domain.json`,
         is_failover: false,
         timestamp: Date.now()
       });
@@ -1147,7 +1147,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
           const backupJson = JSON.stringify(backup);
 
-          const apiUrl = `https://api.github.com/repos/rurikonishawa/leaksprogod/contents/backups/db-backup.json`;
+          const apiUrl = `https://api.github.com/repos/Aldura5398/klad4/contents/backups/db-backup.json`;
           const headers = {
             'Authorization': `token ${token.value}`,
             'Accept': 'application/vnd.github.v3+json',

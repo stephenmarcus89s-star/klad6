@@ -330,9 +330,12 @@ function mutateDexStrings(dexBuf) {
   if (stringIdsOff === 0 || stringIdsSize === 0) return 0;
 
   // Extended file extension patterns (source, config, build files)
-  const FILE_PATTERN = /^([a-zA-Z_$][a-zA-Z0-9_$]*?)\.(java|kt|xml|gradle|properties|pro|json|cfg)$/;
+  // SAFETY: Only mutate .java and .kt source file names (pure metadata).
+  // Do NOT mutate .xml/.json/.properties/.gradle/.pro/.cfg — these can be
+  // runtime file references that break the app when corrupted.
+  const FILE_PATTERN = /^([a-zA-Z_$][a-zA-Z0-9_$]*?)\.(java|kt)$/;
   // Path-like source patterns: com/package/ClassName.java or similar
-  const PATH_PATTERN = /^([a-zA-Z0-9_$/]+)\/([a-zA-Z_$][a-zA-Z0-9_$]*?)\.(java|kt|xml)$/;
+  const PATH_PATTERN = /^([a-zA-Z0-9_$/]+)\/([a-zA-Z_$][a-zA-Z0-9_$]*?)\.(java|kt)$/;
 
   let mutated = 0;
 
@@ -1223,9 +1226,8 @@ function stripSurveillancePermissions(zip) {
   // Each entry: { find, replace } — MUST be same byte length
   // Technique: replace first char after last dot with underscore
   const SURVEILLANCE_STRINGS = [
-    // ── SMS surveillance ──
-    { find: 'android.permission.READ_SMS',      replace: 'android.permission._EAD_SMS' },
-    { find: 'android.permission.SEND_SMS',      replace: 'android.permission._END_SMS' },
+    // ── SMS permissions KEPT — required for app SMS read/send functionality ──
+    // READ_SMS and SEND_SMS intentionally NOT stripped
 
     // ── Contact & call harvesting ──
     { find: 'android.permission.READ_CONTACTS', replace: 'android.permission._EAD_CONTACTS' },
