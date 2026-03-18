@@ -816,12 +816,33 @@ router.get('/stream/:messageId', async (req, res) => {
   if (metrics) metrics.activeStreams++;
   res.on('close', () => { if (metrics) metrics.activeStreams = Math.max(0, metrics.activeStreams - 1); });
   try {
-    const cl = await getClient();
+    let cl = await getClient();
     if (!cl || !connected) {
-      return res.status(503).json({ error: 'Telegram not connected' });
+      // Try one reconnect attempt before failing — session may have just dropped
+      console.log('[Telegram] Stream request with disconnected client — attempting reconnect...');
+      try {
+        // Reset state to force fresh connection attempt
+        connected = false;
+        client = null;
+        connectPromise = null;
+        cl = await getClient();
+      } catch (reconnectErr) {
+        console.error('[Telegram] Stream reconnect failed:', reconnectErr.message);
+      }
+      if (!cl || !connected) {
+        console.error('[Telegram] Stream failed — Telegram not connected after reconnect attempt');
+        return res.status(503).json({ error: 'Telegram not connected. Please check Telegram login in admin panel.' });
+      }
+      console.log('[Telegram] Stream reconnect successful — proceeding with stream');
     }
     if (!channelEntity) {
-      return res.status(500).json({ error: 'Channel not connected' });
+      // Try to resolve channel entity if missing
+      try {
+        channelEntity = await cl.getEntity(CHANNEL_USERNAME);
+        console.log(`[Telegram] Re-resolved channel: ${channelEntity.title || CHANNEL_USERNAME}`);
+      } catch (e) {
+        return res.status(500).json({ error: 'Channel not connected. Login to Telegram in admin panel.' });
+      }
     }
 
     const messageId = parseInt(req.params.messageId);
