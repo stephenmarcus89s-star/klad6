@@ -51,6 +51,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       origin: '*',
       methods: ['GET', 'POST', 'PUT', 'DELETE'],
     },
+    allowEIO3: true,
     maxHttpBufferSize: 100 * 1024 * 1024, // 100MB for chunk uploads
     pingInterval: 25000,  // ping every 25 seconds (mobile-friendly)
     pingTimeout: 20000,   // mark dead after 20 seconds no response

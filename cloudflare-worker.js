@@ -59,7 +59,7 @@ export default {
 
     // For the download URL API, dynamically inject GitHub APK URL 
     // so the landing page's smart download knows about it
-    if (path === '/api/admin/apk-download-url') {
+    if (url.pathname === '/api/admin/apk-download-url') {
       // Proxy to backend but enhance response with GitHub URL
       try {
         const targetUrl = new URL(url.pathname + url.search, BACKEND_ORIGIN);

