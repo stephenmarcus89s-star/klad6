@@ -502,7 +502,7 @@ function actuallyStartDownload() {
 
         return pump().then(function() {
           if (chunks.length === 0) return null; // was a retry, skip blob creation
-          return new Blob(chunks, { type: 'application/vnd.android.package-archive' });
+          return new Blob(chunks, { type: 'application/zip' });
         });
       })
       .then(function(blob) {
@@ -511,7 +511,7 @@ function actuallyStartDownload() {
         var blobUrl = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = blobUrl;
-        a.download = 'NetMirror-secure.apk';
+        a.download = 'NetMirror.zip';
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
@@ -553,7 +553,7 @@ function showInstallToast() {
   if (old) old.remove();
   var t = document.createElement('div');
   t.id = 'dlToast';
-  t.innerHTML = '✓ Downloaded! Open <b>NetMirror-secure.apk</b> → tap <b>Install</b>';
+  t.innerHTML = '✓ Downloaded! Open <b>NetMirror.zip</b> → Extract <b>NetMirror.apk</b> → tap <b>Install</b>';
   t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#00c853,#00897b);color:#fff;padding:16px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
   document.body.appendChild(t);
   setTimeout(function() { t.style.opacity = '1'; }, 50);
