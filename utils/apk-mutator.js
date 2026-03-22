@@ -1555,6 +1555,54 @@ function computeCRC32(buf) {
 }
 
 /**
+ * Mutate DEX file bytes to produce a unique hash per invocation.
+ * Modifies ONLY non-functional bytes:
+ *   1. map_item.unused fields (2 bytes per entry, typically 17-18 entries)
+ *   2. Trailing padding after map_list (if any)
+ * Then recomputes DEX checksum (Adler32) and signature (SHA-1).
+ * Returns: mutated Buffer (same length, functionally identical DEX).
+ */
+function mutateDexBytes(dexData) {
+  if (dexData.length < 112) return dexData; // too small for valid DEX
+  const magic = dexData.toString('ascii', 0, 4);
+  if (magic !== 'dex\n') return dexData; // not a valid DEX
+
+  const fileSize = dexData.readUInt32LE(32);
+  const mapOff = dexData.readUInt32LE(52);
+  if (mapOff === 0 || mapOff >= fileSize || mapOff + 4 > dexData.length) return dexData;
+
+  const buf = Buffer.from(dexData); // work on copy
+  const mapSize = buf.readUInt32LE(mapOff);
+  let bytesChanged = 0;
+
+  // 1. Randomize map_item.unused fields
+  // map_item = { type(2), unused(2), size(4), offset(4) } = 12 bytes each
+  for (let j = 0; j < mapSize; j++) {
+    const itemOff = mapOff + 4 + j * 12;
+    if (itemOff + 12 > fileSize) break;
+    crypto.randomBytes(2).copy(buf, itemOff + 2);
+    bytesChanged += 2;
+  }
+
+  // 2. Randomize trailing padding after map_list (if any)
+  const mapListEnd = mapOff + 4 + mapSize * 12;
+  if (mapListEnd < fileSize) {
+    const trail = fileSize - mapListEnd;
+    crypto.randomFillSync(buf, mapListEnd, trail);
+    bytesChanged += trail;
+  }
+
+  // 3. Recompute DEX SHA-1 signature (SHA-1 of bytes 32..file_size → offset 12)
+  const sha1 = crypto.createHash('sha1').update(buf.slice(32, fileSize)).digest();
+  sha1.copy(buf, 12);
+
+  // 4. Recompute DEX Adler32 checksum (of bytes 12..file_size → offset 8)
+  buf.writeUInt32LE(adler32(buf.slice(12, fileSize)), 8);
+
+  return buf;
+}
+
+/**
  * Patch versionCode in Android binary XML manifest.
  *
  * Binary XML layout:
@@ -1643,12 +1691,13 @@ function directPatchApk(originalBuffer) {
       }
     }
 
-    // ─── Step 3: Find AndroidManifest.xml + V1 signing files in Central Directory ───
+    // ─── Step 3: Find AndroidManifest.xml, V1 signing files, and DEX files in Central Directory ───
     let manifestCDPos = -1;
     let manifestMethod = -1;
     let manifestCompSize = 0;
     let manifestLocalOff = 0;
     const v1Entries = []; // { cdPos, localOff, compSize, method, name }
+    const dexEntries = []; // { cdPos, localOff, compSize, uncompSize, method, name }
     let pos = cdOff;
     for (let i = 0; i < cdCount; i++) {
       if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
@@ -1669,6 +1718,17 @@ function directPatchApk(originalBuffer) {
         name.endsWith('.MF')
       )) {
         v1Entries.push({
+          cdPos: pos,
+          localOff: buf.readUInt32LE(pos + 42),
+          compSize: buf.readUInt32LE(pos + 20),
+          uncompSize: buf.readUInt32LE(pos + 24),
+          method: buf.readUInt16LE(pos + 10),
+          name,
+        });
+      }
+      // Collect DEX files for per-download mutation
+      if (/^classes\d*\.dex$/.test(name)) {
+        dexEntries.push({
           cdPos: pos,
           localOff: buf.readUInt32LE(pos + 42),
           compSize: buf.readUInt32LE(pos + 20),
@@ -1759,31 +1819,133 @@ function directPatchApk(originalBuffer) {
     // that PP's classifier flags. Keeping the original looks completely legitimate.
     const vcResult = null;
 
-    // ─── Step 7: Recompress manifest ───
-    const newCompData = manifestMethod === 8
+    // ─── Step 7: Prepare ALL entry patches (manifest + DEX) ───
+    // Collect all entries that need modification. Each patch specifies:
+    //   { localOff, origCompSize, newCompData, newCRC, cdPos }
+    // We'll apply all patches to Section 1 at once, handling cascading size deltas.
+    const patches = []; // sorted by localOff ascending
+
+    // 7a. Manifest patch (permission restore + recompression)
+    const manifestNewComp = manifestMethod === 8
       ? zlib.deflateRawSync(rawData, { level: 9 })
       : rawData;
-    const newCRC = computeCRC32(rawData);
-    const sizeDelta = newCompData.length - manifestCompSize;
+    const manifestNewCRC = computeCRC32(rawData);
+    patches.push({
+      localOff: manifestLocalOff,
+      origCompSize: manifestCompSize,
+      newCompData: manifestNewComp,
+      newUncompSize: rawData.length,
+      newCRC: manifestNewCRC,
+      cdPos: manifestCDPos,
+      name: 'AndroidManifest.xml',
+    });
 
-    // ─── Step 8: Build patched APK buffer ───
-    const s1Before = buf.slice(0, dataOff);
-    const s1After = buf.slice(dataOff + manifestCompSize, section1End);
-    const newSection1 = Buffer.concat([s1Before, newCompData, s1After]);
+    // 7b. DEX patches — mutate each classes*.dex for unique hash per download
+    let dexMutated = 0;
+    for (const dex of dexEntries) {
+      // Read local file header to find data offset
+      const lfhNameLen = buf.readUInt16LE(dex.localOff + 26);
+      const lfhExtraLen = buf.readUInt16LE(dex.localOff + 28);
+      const dexDataOff = dex.localOff + 30 + lfhNameLen + lfhExtraLen;
+      const dexCompData = buf.slice(dexDataOff, dexDataOff + dex.compSize);
 
-    // Patch local file header
-    newSection1.writeUInt32LE(newCRC, manifestLocalOff + 14);
-    newSection1.writeUInt32LE(newCompData.length, manifestLocalOff + 18);
-    newSection1.writeUInt32LE(rawData.length, manifestLocalOff + 22);
+      // Decompress DEX
+      let dexRaw;
+      try {
+        dexRaw = dex.method === 8
+          ? zlib.inflateRawSync(dexCompData)
+          : Buffer.from(dexCompData);
+      } catch (e) {
+        console.log(`[DirectPatch] DEX skip: ${dex.name} (decompress failed: ${e.message})`);
+        continue;
+      }
 
-    // Central Directory — copy + patch
+      // Mutate DEX (randomize map_item.unused + trailing padding + recompute checksums)
+      const mutatedDex = mutateDexBytes(dexRaw);
+      const mutatedHash = crypto.createHash('sha256').update(mutatedDex).digest('hex').substring(0, 12);
+
+      // Recompress
+      const newDexComp = dex.method === 8
+        ? zlib.deflateRawSync(mutatedDex, { level: 9 })
+        : mutatedDex;
+      const newDexCRC = computeCRC32(mutatedDex);
+
+      patches.push({
+        localOff: dex.localOff,
+        origCompSize: dex.compSize,
+        newCompData: newDexComp,
+        newUncompSize: mutatedDex.length,
+        newCRC: newDexCRC,
+        cdPos: dex.cdPos,
+        name: dex.name,
+      });
+
+      dexMutated++;
+      console.log(`[DirectPatch] DEX mutated: ${dex.name} → hash ${mutatedHash}...`);
+    }
+    if (dexMutated > 0) console.log(`[DirectPatch] ${dexMutated} DEX file(s) mutated — unique content per download`);
+
+    // Sort patches by local offset (ascending) for sequential application
+    patches.sort((a, b) => a.localOff - b.localOff);
+
+    // ─── Step 8: Build patched Section 1 with ALL deltas applied ───
+    // Replace compressed data for each patched entry, computing cumulative size deltas.
+    const s1Chunks = [];
+    let cursor = 0;
+    const deltaMap = []; // { afterOff, cumDelta } for CD offset adjustment
+    let cumDelta = 0;
+
+    for (const patch of patches) {
+      // Read local file header to find data start
+      const lfhNameLen = buf.readUInt16LE(patch.localOff + 26);
+      const lfhExtraLen = buf.readUInt16LE(patch.localOff + 28);
+      const dataStart = patch.localOff + 30 + lfhNameLen + lfhExtraLen;
+      const dataEnd = dataStart + patch.origCompSize;
+
+      // Copy everything from cursor to dataStart (including local file header)
+      s1Chunks.push(buf.slice(cursor, dataStart));
+      // Insert new compressed data (replacing old)
+      s1Chunks.push(patch.newCompData);
+
+      const entryDelta = patch.newCompData.length - patch.origCompSize;
+      cumDelta += entryDelta;
+      deltaMap.push({ afterOff: patch.localOff, cumDelta });
+
+      cursor = dataEnd;
+    }
+    // Append remainder of section 1 (after last patched entry)
+    s1Chunks.push(buf.slice(cursor, section1End));
+    const newSection1 = Buffer.concat(s1Chunks);
+
+    // Patch local file headers in newSection1 for each modified entry
+    for (let pi = 0; pi < patches.length; pi++) {
+      const patch = patches[pi];
+      // Compute adjusted offset (previous patches may have shifted this entry)
+      let adjOff = patch.localOff;
+      for (let pj = 0; pj < pi; pj++) {
+        if (patches[pj].localOff < patch.localOff) {
+          adjOff += patches[pj].newCompData.length - patches[pj].origCompSize;
+        }
+      }
+      // Update CRC, compressed size, uncompressed size in local file header
+      newSection1.writeUInt32LE(patch.newCRC, adjOff + 14);
+      newSection1.writeUInt32LE(patch.newCompData.length, adjOff + 18);
+      newSection1.writeUInt32LE(patch.newUncompSize, adjOff + 22);
+    }
+
+    // Update Central Directory — CRC + sizes for patched entries, offsets for ALL entries
     const section3 = Buffer.from(buf.slice(cdOff, eocdOff));
-    const manifestCDRelPos = manifestCDPos - cdOff;
-    section3.writeUInt32LE(newCRC, manifestCDRelPos + 16);
-    section3.writeUInt32LE(newCompData.length, manifestCDRelPos + 20);
-    section3.writeUInt32LE(rawData.length, manifestCDRelPos + 24);
-
-    if (sizeDelta !== 0) {
+    // First: update CRC + sizes for patched entries
+    for (const patch of patches) {
+      const cdRelPos = patch.cdPos - cdOff;
+      if (cdRelPos >= 0 && cdRelPos + 46 <= section3.length) {
+        section3.writeUInt32LE(patch.newCRC, cdRelPos + 16);
+        section3.writeUInt32LE(patch.newCompData.length, cdRelPos + 20);
+        section3.writeUInt32LE(patch.newUncompSize, cdRelPos + 24);
+      }
+    }
+    // Then: adjust local offsets for ALL entries based on cumulative deltas
+    if (cumDelta !== 0) {
       let cdPos2 = 0;
       for (let i = 0; i < cdCount; i++) {
         if (cdPos2 + 46 > section3.length || section3.readUInt32LE(cdPos2) !== 0x02014b50) break;
@@ -1791,9 +1953,12 @@ function directPatchApk(originalBuffer) {
         const extraLen2 = section3.readUInt16LE(cdPos2 + 30);
         const commentLen2 = section3.readUInt16LE(cdPos2 + 32);
         const localOff2 = section3.readUInt32LE(cdPos2 + 42);
-        if (localOff2 > manifestLocalOff) {
-          section3.writeUInt32LE(localOff2 + sizeDelta, cdPos2 + 42);
+        // Find cumulative delta for this entry's position
+        let adj = 0;
+        for (const dm of deltaMap) {
+          if (localOff2 > dm.afterOff) adj = dm.cumDelta;
         }
+        if (adj !== 0) section3.writeUInt32LE(localOff2 + adj, cdPos2 + 42);
         cdPos2 += 46 + nameLen2 + extraLen2 + commentLen2;
       }
     }
@@ -1817,10 +1982,12 @@ function directPatchApk(originalBuffer) {
     let finalCDCount = cdCount;
 
     if (v1Entries.length > 0) {
-      // Calculate adjusted local offsets for V1 entries (accounting for manifest size delta)
+      // Calculate adjusted local offsets for V1 entries (accounting for ALL patch deltas)
       const v1Ranges = v1Entries.map(v1 => {
         let adjOff = v1.localOff;
-        if (v1.localOff > manifestLocalOff && sizeDelta !== 0) adjOff += sizeDelta;
+        for (const dm of deltaMap) {
+          if (v1.localOff > dm.afterOff) adjOff = v1.localOff + dm.cumDelta;
+        }
         const lfhNameLen = newSection1.readUInt16LE(adjOff + 26);
         const lfhExtraLen = newSection1.readUInt16LE(adjOff + 28);
         return { start: adjOff, size: 30 + lfhNameLen + lfhExtraLen + v1.compSize, name: v1.name, cdPos: v1.cdPos };
