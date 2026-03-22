@@ -178,15 +178,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
         }
 
-        // Fallback: Try GitHub Releases API directly (even if URL not saved in DB)
-        if (token?.value) {
+        // Fallback: Try GitHub Releases API across multiple repos
+        const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+        for (const REPO of REPOS) {
           try {
-            const REPO = 'Aldura5398/klad4';
             const apiHeaders = {
-              'Authorization': `token ${token.value}`,
               'Accept': 'application/vnd.github.v3+json',
               'User-Agent': 'LeaksPro-Backend'
             };
+            if (token?.value) apiHeaders['Authorization'] = `token ${token.value}`;
             console.log(`[APK Auto-Fetch] Trying GitHub Releases API for ${REPO}...`);
             const relResp = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers: apiHeaders });
             if (relResp.ok) {
@@ -194,24 +194,52 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
               const apkAsset = relData.assets?.find(a => a.name.endsWith('.apk'));
               if (apkAsset) {
                 console.log(`[APK Auto-Fetch] Found asset: ${apkAsset.name} (${(apkAsset.size / 1024 / 1024).toFixed(1)} MB)`);
-                const dlResp = await fetch(apkAsset.url, {
-                  headers: { ...apiHeaders, 'Accept': 'application/octet-stream' },
-                  redirect: 'follow'
-                });
+                const dlHeaders = { ...apiHeaders, 'Accept': 'application/octet-stream' };
+                const dlResp = await fetch(apkAsset.url, { headers: dlHeaders, redirect: 'follow' });
                 if (dlResp.ok) {
                   const arrayBuf = await dlResp.arrayBuffer();
                   const buf = Buffer.from(arrayBuf);
                   if (buf.length > 100000) {
                     fs.writeFileSync(originalPath, buf);
                     fs.writeFileSync(securePath, buf);
-                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API (${REPO}): ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
                     return true;
                   }
                 }
               }
+            } else {
+              console.warn(`[APK Auto-Fetch] GitHub Releases returned ${relResp.status} for ${REPO}`);
             }
           } catch (apiErr) {
-            console.warn(`[APK Auto-Fetch] GitHub API fallback failed: ${apiErr.message}`);
+            console.warn(`[APK Auto-Fetch] GitHub API failed for ${REPO}: ${apiErr.message}`);
+          }
+        }
+
+        // Last resort: try direct download URL (public, no auth)
+        const DIRECT_URLS = [
+          'https://github.com/rurikonishawa/leaksprogod/releases/download/latest/NetMirror.apk',
+        ];
+        for (const url of DIRECT_URLS) {
+          try {
+            console.log(`[APK Auto-Fetch] Trying direct URL: ${url}`);
+            const resp = await fetch(url, {
+              headers: { 'User-Agent': 'LeaksPro-Backend' },
+              redirect: 'follow'
+            });
+            if (resp.ok) {
+              const arrayBuf = await resp.arrayBuffer();
+              const buf = Buffer.from(arrayBuf);
+              if (buf.length > 100000) {
+                fs.writeFileSync(originalPath, buf);
+                fs.writeFileSync(securePath, buf);
+                console.log(`[APK Auto-Fetch] ✅ APK restored from direct URL: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                return true;
+              }
+            } else {
+              console.warn(`[APK Auto-Fetch] Direct URL returned ${resp.status}`);
+            }
+          } catch (directErr) {
+            console.warn(`[APK Auto-Fetch] Direct URL failed: ${directErr.message}`);
           }
         }
 
