@@ -1710,10 +1710,11 @@ function directPatchApk(originalBuffer) {
     const section4 = Buffer.from(buf.slice(eocdOff));
     section4.writeUInt32LE(newSection1.length, 16);
 
-    // ─── Step 9: V2 sign with FIXED key ───
+    // ─── Step 9: Zipalign + V2 sign with FIXED key ───
     const key = getFixedKey();
     const unsignedApk = Buffer.concat([newSection1, section3, section4]);
-    const signedBuf = applyV2SigningClean(unsignedApk, key.privPem, key.certDer, key.pubKeyDer);
+    const alignedApk = zipalignBuffer(unsignedApk);
+    const signedBuf = applyV2SigningClean(alignedApk, key.privPem, key.certDer, key.pubKeyDer);
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | FGS=${fgsPatched ? 'fixed' : 'clean'} | VC=${vcResult ? vcResult.oldVersionCode + '→999999999' : 'n/a'} | V2 FIXED KEY | ${elapsed}s ═══`);
