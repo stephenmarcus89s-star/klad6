@@ -1553,12 +1553,16 @@ function restoreAndSign(originalBuffer) {
         }
       }
 
+      // ALWAYS re-add manifest — even if no permissions were restored.
+      // The APK on disk may have stale CRC32 from previous in-place mutation.
+      // If we don't re-add, toBuffer() carries the wrong CRC32 → Android's
+      // package parser rejects it with "problem parsing the package".
+      zip.deleteFile('AndroidManifest.xml');
+      zip.addFile('AndroidManifest.xml', data);
       if (restored > 0) {
-        zip.deleteFile('AndroidManifest.xml');
-        zip.addFile('AndroidManifest.xml', data);
         console.log(`[RestoreSign] Restored ${restored} mangled permission strings (SMS + FGS + BOOT)`);
       } else {
-        console.log('[RestoreSign] No mangled permissions found (APK may already be clean)');
+        console.log('[RestoreSign] No mangled permissions found — manifest re-added to fix CRC32');
       }
     }
 
