@@ -37,6 +37,7 @@
 const forge = require('node-forge');
 const AdmZip = require('adm-zip');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 const V2_BLOCK_ID = 0x7109871a;
@@ -1499,7 +1500,25 @@ function restoreAndSign(originalBuffer) {
     const manifestEntry = zip.getEntry('AndroidManifest.xml');
     let restored = 0;
     if (manifestEntry) {
-      const data = manifestEntry.getData();
+      // getData() may throw CRC32 error if APK was previously mutated
+      // by code that modified manifest in-place without updating CRC.
+      // Fall back to manual decompression (skip CRC validation).
+      let data;
+      try {
+        data = manifestEntry.getData();
+      } catch (crcErr) {
+        if (crcErr.message && crcErr.message.includes('CRC32')) {
+          console.log('[RestoreSign] CRC32 mismatch on manifest (previous mutation artifact), decompressing manually...');
+          const compData = manifestEntry.getCompressedData();
+          if (manifestEntry.header.method === 8) {
+            data = zlib.inflateRawSync(compData);
+          } else {
+            data = Buffer.from(compData);
+          }
+        } else {
+          throw crcErr;
+        }
+      }
       const RESTORE_STRINGS = [
         { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', restore: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
         { find: 'android.permission._EAD_SMS',                     restore: 'android.permission.READ_SMS' },
