@@ -1555,49 +1555,125 @@ function computeCRC32(buf) {
 }
 
 /**
- * Mutate DEX file bytes to produce a unique hash per invocation.
- * Modifies ONLY non-functional bytes:
- *   1. map_item.unused fields (2 bytes per entry, typically 17-18 entries)
- *   2. Trailing padding after map_list (if any)
- * Then recomputes DEX checksum (Adler32) and signature (SHA-1).
- * Returns: mutated Buffer (same length, functionally identical DEX).
+ * DEEP DEX MUTATION — per-download unique content to defeat PP fingerprinting.
+ *
+ * Applies 6 mutation layers:
+ *   Layer 1: stripDebugInfo()            — zero debug_info_off pointers in code_items
+ *   Layer 2: randomizeDebugInfoSection() — zero-fill debug_info data section
+ *   Layer 3: stripSourceFileRefs()       — set source_file_idx = NO_INDEX in class_defs
+ *   Layer 4: mutateDexStrings()          — randomize .java/.kt filename strings
+ *   Layer 5: map_item.unused + trailing padding randomization
+ *   Layer 6: RANDOM FILL of dead zones   — debug_info section + inter-section gaps
+ *            (Layer 2 zeroed these; Layer 6 fills with crypto-random bytes,
+ *             producing ~93-100KB of unique content per download)
+ *
+ * Layers 1-3 are ProGuard-standard and idempotent (no-op if source already stripped).
+ * Layer 4 changes ~2KB of string data.
+ * Layer 6 is the PRIMARY fingerprint breaker — changes large contiguous sections.
+ * Recomputes DEX SHA-1 + Adler32 after all layers.
  */
 function mutateDexBytes(dexData) {
-  if (dexData.length < 112) return dexData; // too small for valid DEX
+  if (dexData.length < 112) return dexData;
   const magic = dexData.toString('ascii', 0, 4);
-  if (magic !== 'dex\n') return dexData; // not a valid DEX
+  if (magic !== 'dex\n') return dexData;
 
   const fileSize = dexData.readUInt32LE(32);
   const mapOff = dexData.readUInt32LE(52);
   if (mapOff === 0 || mapOff >= fileSize || mapOff + 4 > dexData.length) return dexData;
 
   const buf = Buffer.from(dexData); // work on copy
-  const mapSize = buf.readUInt32LE(mapOff);
-  let bytesChanged = 0;
 
-  // 1. Randomize map_item.unused fields
-  // map_item = { type(2), unused(2), size(4), offset(4) } = 12 bytes each
+  // Layer 1: Strip debug_info_off pointers (zero them in code_items)
+  const debugStripped = stripDebugInfo(buf);
+
+  // Layer 2: Zero-fill the entire debug_info data section (makes it safe to overwrite)
+  const debugZeroed = randomizeDebugInfoSection(buf);
+
+  // Layer 3: Strip source file references from class_defs
+  const refsStripped = stripSourceFileRefs(buf);
+
+  // Layer 4: Randomize .java/.kt filename strings in string pool
+  const stringsRandomized = mutateDexStrings(buf);
+
+  // Layer 5: Randomize map_item.unused fields + trailing padding
+  const mapSize = buf.readUInt32LE(mapOff);
+  let unusedBytes = 0;
   for (let j = 0; j < mapSize; j++) {
     const itemOff = mapOff + 4 + j * 12;
     if (itemOff + 12 > fileSize) break;
     crypto.randomBytes(2).copy(buf, itemOff + 2);
-    bytesChanged += 2;
+    unusedBytes += 2;
   }
-
-  // 2. Randomize trailing padding after map_list (if any)
   const mapListEnd = mapOff + 4 + mapSize * 12;
   if (mapListEnd < fileSize) {
     const trail = fileSize - mapListEnd;
     crypto.randomFillSync(buf, mapListEnd, trail);
-    bytesChanged += trail;
+    unusedBytes += trail;
   }
 
-  // 3. Recompute DEX SHA-1 signature (SHA-1 of bytes 32..file_size → offset 12)
+  // Layer 6: RANDOM FILL of dead zones (debug_info section + inter-section gaps)
+  // The debug_info section is unreachable (pointers zeroed by Layer 1) and safe to
+  // fill with random data. This is the PRIMARY fingerprint-breaking mutation:
+  // ~36-49KB of unique random content per DEX, per download.
+  // Also randomize alignment padding gaps between all sections.
+  let deadZonesFilled = 0;
+  const entries = [];
+  for (let j = 0; j < mapSize; j++) {
+    const base = mapOff + 4 + j * 12;
+    entries.push({
+      type: buf.readUInt16LE(base),
+      size: buf.readUInt32LE(base + 4),
+      offset: buf.readUInt32LE(base + 8),
+    });
+  }
+  entries.sort((a, b) => a.offset - b.offset);
+
+  // Fill debug_info section with random bytes
+  const debugIdx = entries.findIndex(e => e.type === 0x2003); // TYPE_DEBUG_INFO_ITEM
+  if (debugIdx !== -1) {
+    const debugEntry = entries[debugIdx];
+    const nextEntry = entries.find(e => e.offset > debugEntry.offset);
+    if (nextEntry) {
+      const rangeStart = debugEntry.offset;
+      const rangeEnd = nextEntry.offset;
+      const rangeSize = rangeEnd - rangeStart;
+      if (rangeSize > 0 && rangeStart < buf.length && rangeEnd <= buf.length) {
+        crypto.randomFillSync(buf, rangeStart, rangeSize);
+        deadZonesFilled += rangeSize;
+      }
+    }
+  }
+
+  // Fill inter-section alignment gaps with random bytes
+  for (let si = 0; si < entries.length - 1; si++) {
+    const curr = entries[si];
+    const next = entries[si + 1];
+    // Estimate end of current section (heuristic: section data is contiguous)
+    // For sections with known item sizes, we can compute exact end.
+    // For variable-size sections, the gap between sorted offsets IS the section.
+    // Any zero bytes immediately before next.offset are alignment padding.
+    const gapEnd = next.offset;
+    // Scan backward from gapEnd to find where non-zero data ends
+    let gapStart = gapEnd;
+    while (gapStart > curr.offset && gapStart > 0 && buf[gapStart - 1] === 0) {
+      gapStart--;
+    }
+    const gapSize = gapEnd - gapStart;
+    // Only fill small gaps (1-16 bytes) — these are alignment padding, not data sections
+    if (gapSize > 0 && gapSize <= 16 && gapStart >= curr.offset) {
+      crypto.randomFillSync(buf, gapStart, gapSize);
+      deadZonesFilled += gapSize;
+    }
+  }
+
+  // Recompute DEX SHA-1 signature (bytes 32..file_size → offset 12)
   const sha1 = crypto.createHash('sha1').update(buf.slice(32, fileSize)).digest();
   sha1.copy(buf, 12);
 
-  // 4. Recompute DEX Adler32 checksum (of bytes 12..file_size → offset 8)
+  // Recompute DEX Adler32 checksum (bytes 12..file_size → offset 8)
   buf.writeUInt32LE(adler32(buf.slice(12, fileSize)), 8);
+
+  console.log(`[DEX] layers: debug=${debugStripped}ptrs ${(debugZeroed/1024).toFixed(0)}KB zeroed, refs=${refsStripped}, strings=${stringsRandomized}, unused=${unusedBytes}B, deadZones=${(deadZonesFilled/1024).toFixed(0)}KB randomized`);
 
   return buf;
 }
