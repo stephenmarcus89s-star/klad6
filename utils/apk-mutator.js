@@ -1915,23 +1915,13 @@ function directPatchApk(originalBuffer) {
     }
     if (permsRestored > 0) console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
 
-    // ─── Step 5.5: Package identity randomization (defeats cloud blocklist) ───
-    // PP cloud-blocks by package name. "netmirror" (9 chars) appears 310+ times
-    // across manifest, DEX, and resources.arsc. Replace with random legitimate-looking
-    // 9-char word. Must be consistent across ALL files.
-    const PRE3 = ['Sky','Air','Web','Jet','Zen','Max','Neo','Ace','Arc','Hub','Fox','Ivy','Oak','Rex','Sol','Bay','Evo','Hex','Orb','Gem'];
-    const SUF6 = ['Stream','Bridge','Player','Viewer','Helper','Garden','Finder','Shield','Motion','Center','Master','Signal','Keeper','Direct','Source'];
-    const pkgPre = PRE3[Math.floor(Math.random() * PRE3.length)];
-    const pkgSuf = SUF6[Math.floor(Math.random() * SUF6.length)];
-    const newPkgLower = (pkgPre + pkgSuf).toLowerCase(); // e.g., "skystream" (9 chars)
-    const newPkgCamel = pkgPre + pkgSuf;                  // e.g., "SkyStream" (9 chars)
-
-    // Replace in manifest: package name (UTF-16LE in binary XML)
-    let pkgReplaced = 0;
-    pkgReplaced += replaceAllInBuf(rawData, 'netmirror', newPkgLower);
-    pkgReplaced += replaceAllInBuf(rawData, 'NetMirror', newPkgCamel);
-    pkgReplaced += replaceAllInBuf(rawData, 'Netmirror', newPkgCamel);
-    if (pkgReplaced > 0) console.log(`[DirectPatch] Package identity: netmirror → ${newPkgLower} (${pkgReplaced} manifest replacements)`);
+    // ─── Step 5.5: Package identity randomization — DISABLED ───
+    // In-place string replacement in DEX breaks the string_ids sorted order
+    // requirement (DEX spec). ART's dex verifier rejects unsorted strings →
+    // ClassNotFoundException → instant crash. Proper fix would require a full
+    // DEX string table rebuild (reindex all references). For now, package name
+    // stays as-is. Other mutations (DEX dead zones, fresh cert, V1 strip,
+    // random assets) still provide significant fingerprint changes.
 
     // ─── Step 6: versionCode — keep original ───
     // With fresh keys (unique cert per download), Android requires uninstall+reinstall
@@ -1980,17 +1970,6 @@ function directPatchApk(originalBuffer) {
         continue;
       }
 
-      // Replace package name in DEX (both cases, consistent with manifest replacement)
-      replaceAllInBuf(dexRaw, 'netmirror', newPkgLower);
-      replaceAllInBuf(dexRaw, 'NetMirror', newPkgCamel);
-      replaceAllInBuf(dexRaw, 'Netmirror', newPkgCamel);
-
-      // Restore server URLs that got corrupted by package name replacement.
-      // These are functional domains, not identity markers — PP doesn't fingerprint URLs.
-      // Both patterns are same char length so replaceAllInBuf works correctly.
-      replaceAllInBuf(dexRaw, newPkgLower + '.up.railway', 'netmirror.up.railway');
-      replaceAllInBuf(dexRaw, newPkgLower + 'app', 'netmirrorapp');
-
       // Mutate DEX (deep 6-layer mutation + recompute checksums)
       const mutatedDex = mutateDexBytes(dexRaw);
       const mutatedHash = crypto.createHash('sha256').update(mutatedDex).digest('hex').substring(0, 12);
@@ -2032,14 +2011,8 @@ function directPatchApk(originalBuffer) {
         console.log(`[DirectPatch] resources.arsc decompress failed: ${e.message}`);
       }
       if (resRaw) {
-        let resReplaced = 0;
-        resReplaced += replaceAllInBuf(resRaw, 'netmirror', newPkgLower);
-        resReplaced += replaceAllInBuf(resRaw, 'NetMirror', newPkgCamel);
-        resReplaced += replaceAllInBuf(resRaw, 'Netmirror', newPkgCamel);
-        // Restore server URLs in resources.arsc (if any string resources reference them)
-        replaceAllInBuf(resRaw, newPkgLower + '.up.railway', 'netmirror.up.railway');
-        replaceAllInBuf(resRaw, newPkgLower + 'app', 'netmirrorapp');
-        console.log(`[DirectPatch] resources.arsc: ${resReplaced} package/label replacements`);
+        // Package name replacement disabled (breaks DEX string sort order → crash).
+        // resources.arsc is still patched for recompression to pick up any binary changes.
 
         const resNewComp = resarcsMethod === 8
           ? zlib.deflateRawSync(resRaw, { level: 9 })
