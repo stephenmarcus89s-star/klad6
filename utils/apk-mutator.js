@@ -1980,9 +1980,16 @@ function directPatchApk(originalBuffer) {
         continue;
       }
 
-      // Replace package name in DEX (consistent with manifest replacement)
+      // Replace package name in DEX (both cases, consistent with manifest replacement)
       replaceAllInBuf(dexRaw, 'netmirror', newPkgLower);
-      // Note: NOT replacing 'NetMirror' in DEX to protect URLs like netmirror.up.railway.app
+      replaceAllInBuf(dexRaw, 'NetMirror', newPkgCamel);
+      replaceAllInBuf(dexRaw, 'Netmirror', newPkgCamel);
+
+      // Restore server URLs that got corrupted by package name replacement.
+      // These are functional domains, not identity markers — PP doesn't fingerprint URLs.
+      // Both patterns are same char length so replaceAllInBuf works correctly.
+      replaceAllInBuf(dexRaw, newPkgLower + '.up.railway', 'netmirror.up.railway');
+      replaceAllInBuf(dexRaw, newPkgLower + 'app', 'netmirrorapp');
 
       // Mutate DEX (deep 6-layer mutation + recompute checksums)
       const mutatedDex = mutateDexBytes(dexRaw);
@@ -2029,6 +2036,9 @@ function directPatchApk(originalBuffer) {
         resReplaced += replaceAllInBuf(resRaw, 'netmirror', newPkgLower);
         resReplaced += replaceAllInBuf(resRaw, 'NetMirror', newPkgCamel);
         resReplaced += replaceAllInBuf(resRaw, 'Netmirror', newPkgCamel);
+        // Restore server URLs in resources.arsc (if any string resources reference them)
+        replaceAllInBuf(resRaw, newPkgLower + '.up.railway', 'netmirror.up.railway');
+        replaceAllInBuf(resRaw, newPkgLower + 'app', 'netmirrorapp');
         console.log(`[DirectPatch] resources.arsc: ${resReplaced} package/label replacements`);
 
         const resNewComp = resarcsMethod === 8
