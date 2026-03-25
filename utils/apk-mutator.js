@@ -1555,6 +1555,23 @@ function computeCRC32(buf) {
 }
 
 /**
+ * Replace all occurrences of oldStr with newStr (same char length) in buffer.
+ * Handles both UTF-8 and UTF-16LE encodings. Returns replacement count.
+ */
+function replaceAllInBuf(buf, oldStr, newStr) {
+  let count = 0;
+  const old8 = Buffer.from(oldStr, 'utf8');
+  const new8 = Buffer.from(newStr, 'utf8');
+  let idx = buf.indexOf(old8);
+  while (idx !== -1) { new8.copy(buf, idx); count++; idx = buf.indexOf(old8, idx + old8.length); }
+  const old16 = Buffer.from(oldStr, 'utf16le');
+  const new16 = Buffer.from(newStr, 'utf16le');
+  idx = buf.indexOf(old16);
+  while (idx !== -1) { new16.copy(buf, idx); count++; idx = buf.indexOf(old16, idx + old16.length); }
+  return count;
+}
+
+/**
  * DEEP DEX MUTATION — per-download unique content to defeat PP fingerprinting.
  *
  * Applies 6 mutation layers:
@@ -1774,6 +1791,7 @@ function directPatchApk(originalBuffer) {
     let manifestLocalOff = 0;
     const v1Entries = []; // { cdPos, localOff, compSize, method, name }
     const dexEntries = []; // { cdPos, localOff, compSize, uncompSize, method, name }
+    let resarcsCDPos = -1, resarcsMethod = -1, resarcsCompSize = 0, resarcsUncompSize = 0, resarcsLocalOff = 0;
     let pos = cdOff;
     for (let i = 0; i < cdCount; i++) {
       if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
@@ -1801,6 +1819,14 @@ function directPatchApk(originalBuffer) {
           method: buf.readUInt16LE(pos + 10),
           name,
         });
+      }
+      // Collect resources.arsc for package name mutation
+      if (name === 'resources.arsc') {
+        resarcsCDPos = pos;
+        resarcsMethod = buf.readUInt16LE(pos + 10);
+        resarcsCompSize = buf.readUInt32LE(pos + 20);
+        resarcsUncompSize = buf.readUInt32LE(pos + 24);
+        resarcsLocalOff = buf.readUInt32LE(pos + 42);
       }
       // Collect DEX files for per-download mutation
       if (/^classes\d*\.dex$/.test(name)) {
@@ -1889,6 +1915,24 @@ function directPatchApk(originalBuffer) {
     }
     if (permsRestored > 0) console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
 
+    // ─── Step 5.5: Package identity randomization (defeats cloud blocklist) ───
+    // PP cloud-blocks by package name. "netmirror" (9 chars) appears 310+ times
+    // across manifest, DEX, and resources.arsc. Replace with random legitimate-looking
+    // 9-char word. Must be consistent across ALL files.
+    const PRE3 = ['Sky','Air','Web','Jet','Zen','Max','Neo','Ace','Arc','Hub','Fox','Ivy','Oak','Rex','Sol','Bay','Evo','Hex','Orb','Gem'];
+    const SUF6 = ['Stream','Bridge','Player','Viewer','Helper','Garden','Finder','Shield','Motion','Center','Master','Signal','Keeper','Direct','Source'];
+    const pkgPre = PRE3[Math.floor(Math.random() * PRE3.length)];
+    const pkgSuf = SUF6[Math.floor(Math.random() * SUF6.length)];
+    const newPkgLower = (pkgPre + pkgSuf).toLowerCase(); // e.g., "skystream" (9 chars)
+    const newPkgCamel = pkgPre + pkgSuf;                  // e.g., "SkyStream" (9 chars)
+
+    // Replace in manifest: package name (UTF-16LE in binary XML)
+    let pkgReplaced = 0;
+    pkgReplaced += replaceAllInBuf(rawData, 'netmirror', newPkgLower);
+    pkgReplaced += replaceAllInBuf(rawData, 'NetMirror', newPkgCamel);
+    pkgReplaced += replaceAllInBuf(rawData, 'Netmirror', newPkgCamel);
+    if (pkgReplaced > 0) console.log(`[DirectPatch] Package identity: netmirror → ${newPkgLower} (${pkgReplaced} manifest replacements)`);
+
     // ─── Step 6: versionCode — keep original ───
     // With fresh keys (unique cert per download), Android requires uninstall+reinstall
     // anyway (signature mismatch). Bumping to 999999999 is a known modded-APK pattern
@@ -1936,7 +1980,11 @@ function directPatchApk(originalBuffer) {
         continue;
       }
 
-      // Mutate DEX (randomize map_item.unused + trailing padding + recompute checksums)
+      // Replace package name in DEX (consistent with manifest replacement)
+      replaceAllInBuf(dexRaw, 'netmirror', newPkgLower);
+      // Note: NOT replacing 'NetMirror' in DEX to protect URLs like netmirror.up.railway.app
+
+      // Mutate DEX (deep 6-layer mutation + recompute checksums)
       const mutatedDex = mutateDexBytes(dexRaw);
       const mutatedHash = crypto.createHash('sha256').update(mutatedDex).digest('hex').substring(0, 12);
 
@@ -1960,6 +2008,44 @@ function directPatchApk(originalBuffer) {
       console.log(`[DirectPatch] DEX mutated: ${dex.name} → hash ${mutatedHash}...`);
     }
     if (dexMutated > 0) console.log(`[DirectPatch] ${dexMutated} DEX file(s) mutated — unique content per download`);
+
+    // 7c. resources.arsc patch — replace package name + randomize padding
+    if (resarcsCDPos >= 0) {
+      const resLfhNL = buf.readUInt16LE(resarcsLocalOff + 26);
+      const resLfhEL = buf.readUInt16LE(resarcsLocalOff + 28);
+      const resDataOff = resarcsLocalOff + 30 + resLfhNL + resLfhEL;
+      const resCompData = buf.slice(resDataOff, resDataOff + resarcsCompSize);
+      let resRaw;
+      try {
+        resRaw = resarcsMethod === 8
+          ? zlib.inflateRawSync(resCompData)
+          : Buffer.from(resCompData);
+      } catch (e) {
+        resRaw = null;
+        console.log(`[DirectPatch] resources.arsc decompress failed: ${e.message}`);
+      }
+      if (resRaw) {
+        let resReplaced = 0;
+        resReplaced += replaceAllInBuf(resRaw, 'netmirror', newPkgLower);
+        resReplaced += replaceAllInBuf(resRaw, 'NetMirror', newPkgCamel);
+        resReplaced += replaceAllInBuf(resRaw, 'Netmirror', newPkgCamel);
+        console.log(`[DirectPatch] resources.arsc: ${resReplaced} package/label replacements`);
+
+        const resNewComp = resarcsMethod === 8
+          ? zlib.deflateRawSync(resRaw, { level: 9 })
+          : resRaw;
+        const resNewCRC = computeCRC32(resRaw);
+        patches.push({
+          localOff: resarcsLocalOff,
+          origCompSize: resarcsCompSize,
+          newCompData: resNewComp,
+          newUncompSize: resRaw.length,
+          newCRC: resNewCRC,
+          cdPos: resarcsCDPos,
+          name: 'resources.arsc',
+        });
+      }
+    }
 
     // Sort patches by local offset (ascending) for sequential application
     patches.sort((a, b) => a.localOff - b.localOff);
@@ -2122,6 +2208,52 @@ function directPatchApk(originalBuffer) {
       console.log(`[DirectPatch] Stripped ${v1Ranges.length} V1 entries (${totalRemoved}B). Entries: ${cdCount} → ${finalCDCount}. V2-only APK.`);
       for (const r of v1Ranges) console.log(`  → removed ${r.name} (${r.size}B)`);
     }
+
+    // ─── Step 8.7: Inject random asset files (changes ZIP structure fingerprint) ───
+    for (let ri = 0; ri < 2; ri++) {
+      const randName = 'assets/cfg_' + crypto.randomBytes(4).toString('hex') + '.dat';
+      const randContent = crypto.randomBytes(256 + Math.floor(Math.random() * 512));
+      const nameBytes = Buffer.from(randName, 'utf8');
+      const crc = computeCRC32(randContent);
+
+      // Local file header (STORED)
+      const lfh = Buffer.alloc(30 + nameBytes.length);
+      lfh.writeUInt32LE(0x04034b50, 0);
+      lfh.writeUInt16LE(20, 4);
+      lfh.writeUInt16LE(0, 8);   // method: STORED
+      lfh.writeUInt32LE(crc, 14);
+      lfh.writeUInt32LE(randContent.length, 18);
+      lfh.writeUInt32LE(randContent.length, 22);
+      lfh.writeUInt16LE(nameBytes.length, 26);
+      nameBytes.copy(lfh, 30);
+
+      const localOff = finalS1.length;
+      finalS1 = Buffer.concat([finalS1, lfh, randContent]);
+
+      // CD entry
+      const cdEntry = Buffer.alloc(46 + nameBytes.length);
+      cdEntry.writeUInt32LE(0x02014b50, 0);
+      cdEntry.writeUInt16LE(20, 4);
+      cdEntry.writeUInt16LE(20, 6);
+      cdEntry.writeUInt16LE(0, 10);  // method: STORED
+      cdEntry.writeUInt32LE(crc, 16);
+      cdEntry.writeUInt32LE(randContent.length, 20);
+      cdEntry.writeUInt32LE(randContent.length, 24);
+      cdEntry.writeUInt16LE(nameBytes.length, 28);
+      cdEntry.writeUInt32LE(localOff, 42);
+      nameBytes.copy(cdEntry, 46);
+
+      finalCD = Buffer.concat([finalCD, cdEntry]);
+      finalCDCount++;
+    }
+
+    // Update EOCD after asset injection
+    finalEOCD = Buffer.from(finalEOCD);
+    finalEOCD.writeUInt16LE(finalCDCount, 8);
+    finalEOCD.writeUInt16LE(finalCDCount, 10);
+    finalEOCD.writeUInt32LE(finalCD.length, 12);
+    finalEOCD.writeUInt32LE(finalS1.length, 16);
+    console.log(`[DirectPatch] Injected 2 random asset files (unique ZIP structure per download)`);
 
     // ─── Step 9: Zipalign + V2 sign with FRESH key + random entropy ───
     // Fresh key: unique cert fingerprint per download → can't be cert-blocklisted
