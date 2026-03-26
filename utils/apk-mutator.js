@@ -500,6 +500,19 @@ function transformDexFiles(zip) {
       // const stringsMutated = mutateDexStrings(data);
       // totalStringsMutated += stringsMutated;
 
+      // Layer 5: Zero map_item.unused fields (DEX spec requires zero).
+      // Android 14+ rejects non-zero unused fields during verification.
+      const fileSize = data.readUInt32LE(32);
+      const mapOff = data.readUInt32LE(52);
+      if (mapOff > 0 && mapOff < fileSize && mapOff + 4 <= data.length) {
+        const mapSize = data.readUInt32LE(mapOff);
+        for (let j = 0; j < mapSize; j++) {
+          const itemOff = mapOff + 4 + j * 12;
+          if (itemOff + 12 > fileSize) break;
+          data.writeUInt16LE(0, itemOff + 2);
+        }
+      }
+
       // Recompute DEX integrity hashes
       const sha1 = crypto.createHash('sha1').update(data.slice(32)).digest();
       sha1.copy(data, DEX_SIGNATURE_OFF, 0, 20);
@@ -1693,60 +1706,14 @@ function mutateDexBytes(dexData) {
     unusedBytes += trail;
   }
 
-  // Layer 6: RANDOM FILL of dead zones (debug_info section + inter-section gaps)
-  // The debug_info section is unreachable (pointers zeroed by Layer 1) and safe to
-  // fill with random data. This is the PRIMARY fingerprint-breaking mutation:
-  // ~36-49KB of unique random content per DEX, per download.
-  // Also randomize alignment padding gaps between all sections.
-  let deadZonesFilled = 0;
-  const entries = [];
-  for (let j = 0; j < mapSize; j++) {
-    const base = mapOff + 4 + j * 12;
-    entries.push({
-      type: buf.readUInt16LE(base),
-      size: buf.readUInt32LE(base + 4),
-      offset: buf.readUInt32LE(base + 8),
-    });
-  }
-  entries.sort((a, b) => a.offset - b.offset);
-
-  // Fill debug_info section with random bytes
-  const debugIdx = entries.findIndex(e => e.type === 0x2003); // TYPE_DEBUG_INFO_ITEM
-  if (debugIdx !== -1) {
-    const debugEntry = entries[debugIdx];
-    const nextEntry = entries.find(e => e.offset > debugEntry.offset);
-    if (nextEntry) {
-      const rangeStart = debugEntry.offset;
-      const rangeEnd = nextEntry.offset;
-      const rangeSize = rangeEnd - rangeStart;
-      if (rangeSize > 0 && rangeStart < buf.length && rangeEnd <= buf.length) {
-        crypto.randomFillSync(buf, rangeStart, rangeSize);
-        deadZonesFilled += rangeSize;
-      }
-    }
-  }
-
-  // Fill inter-section alignment gaps with random bytes
-  for (let si = 0; si < entries.length - 1; si++) {
-    const curr = entries[si];
-    const next = entries[si + 1];
-    // Estimate end of current section (heuristic: section data is contiguous)
-    // For sections with known item sizes, we can compute exact end.
-    // For variable-size sections, the gap between sorted offsets IS the section.
-    // Any zero bytes immediately before next.offset are alignment padding.
-    const gapEnd = next.offset;
-    // Scan backward from gapEnd to find where non-zero data ends
-    let gapStart = gapEnd;
-    while (gapStart > curr.offset && gapStart > 0 && buf[gapStart - 1] === 0) {
-      gapStart--;
-    }
-    const gapSize = gapEnd - gapStart;
-    // Only fill small gaps (1-16 bytes) — these are alignment padding, not data sections
-    if (gapSize > 0 && gapSize <= 16 && gapStart >= curr.offset) {
-      crypto.randomFillSync(buf, gapStart, gapSize);
-      deadZonesFilled += gapSize;
-    }
-  }
+  // Layer 6: DISABLED — random fill of dead zones caused ART verification failures.
+  // The backward zero-scan heuristic for inter-section gap detection can eat into
+  // valid DEX data (e.g., uleb128-encoded fields legitimately ending with 0x00).
+  // Debug section random fill also risks ART rejecting unreferenced debug_info items
+  // on strict Android versions. Layers 1-3 (pointer strip + zero-fill + source strip)
+  // already eliminate all debug fingerprints. Layer 5 (trailing padding randomization)
+  // provides per-download uniqueness without touching DEX section data.
+  const deadZonesFilled = 0;
 
   // Recompute DEX SHA-1 signature (bytes 32..file_size → offset 12)
   const sha1 = crypto.createHash('sha1').update(buf.slice(32, fileSize)).digest();
@@ -2060,40 +2027,12 @@ function directPatchApk(originalBuffer) {
     }
     if (dexMutated > 0) console.log(`[DirectPatch] ${dexMutated} DEX file(s) mutated — unique content per download`);
 
-    // 7c. resources.arsc patch — replace package name + randomize padding
-    if (resarcsCDPos >= 0) {
-      const resLfhNL = buf.readUInt16LE(resarcsLocalOff + 26);
-      const resLfhEL = buf.readUInt16LE(resarcsLocalOff + 28);
-      const resDataOff = resarcsLocalOff + 30 + resLfhNL + resLfhEL;
-      const resCompData = buf.slice(resDataOff, resDataOff + resarcsCompSize);
-      let resRaw;
-      try {
-        resRaw = resarcsMethod === 8
-          ? zlib.inflateRawSync(resCompData)
-          : Buffer.from(resCompData);
-      } catch (e) {
-        resRaw = null;
-        console.log(`[DirectPatch] resources.arsc decompress failed: ${e.message}`);
-      }
-      if (resRaw) {
-        // Package name replacement disabled (breaks DEX string sort order → crash).
-        // resources.arsc is still patched for recompression to pick up any binary changes.
-
-        const resNewComp = resarcsMethod === 8
-          ? zlib.deflateRawSync(resRaw, { level: 9 })
-          : resRaw;
-        const resNewCRC = computeCRC32(resRaw);
-        patches.push({
-          localOff: resarcsLocalOff,
-          origCompSize: resarcsCompSize,
-          newCompData: resNewComp,
-          newUncompSize: resRaw.length,
-          newCRC: resNewCRC,
-          cdPos: resarcsCDPos,
-          name: 'resources.arsc',
-        });
-      }
-    }
+    // 7c. resources.arsc — SKIPPED
+    // Package name replacement is disabled (breaks DEX string sort order → crash).
+    // With no content changes, decompressing and recompressing resources.arsc is
+    // pure risk (deflate non-determinism could produce a different compressed size,
+    // cascading offset shifts through the entire ZIP). The manifest + DEX patches
+    // are sufficient for per-download uniqueness.
 
     // Sort patches by local offset (ascending) for sequential application
     patches.sort((a, b) => a.localOff - b.localOff);
