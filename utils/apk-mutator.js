@@ -1847,11 +1847,15 @@ function directPatchApk(originalBuffer) {
         manifestLocalOff = buf.readUInt32LE(pos + 42);
       }
       // Collect V1 signing files (contain the burned FIXED cert)
-      if (name.startsWith('META-INF/') && (
+      // Also collect stale baseline profiles — they contain DEX checksums
+      // from the original build that no longer match after mutation.
+      // ART uses these for ahead-of-time compilation; stale profiles can
+      // cause dex2oat failures or suboptimal compilation on some devices.
+      if ((name.startsWith('META-INF/') && (
         name.endsWith('.RSA') || name.endsWith('.SF') ||
         name.endsWith('.DSA') || name.endsWith('.EC') ||
         name.endsWith('.MF')
-      )) {
+      )) || name === 'assets/dexopt/baseline.prof' || name === 'assets/dexopt/baseline.profm') {
         v1Entries.push({
           cdPos: pos,
           localOff: buf.readUInt32LE(pos + 42),
@@ -2001,7 +2005,11 @@ function directPatchApk(originalBuffer) {
     });
 
     // 7b. DEX patches — mutate each classes*.dex for unique hash per download
+    // Skip DEX mutation if the source is already mutated (all source_file_idx = NO_INDEX).
+    // Re-mutating an already-mutated DEX is a no-op that wastes CPU and risks
+    // subtle issues from unnecessary decompression + recompression cycles.
     let dexMutated = 0;
+    let dexSkippedAlreadyMutated = false;
     for (const dex of dexEntries) {
       // Read local file header to find data offset
       const lfhNameLen = buf.readUInt16LE(dex.localOff + 26);
@@ -2018,6 +2026,23 @@ function directPatchApk(originalBuffer) {
       } catch (e) {
         console.log(`[DirectPatch] DEX skip: ${dex.name} (decompress failed: ${e.message})`);
         continue;
+      }
+
+      // Check if DEX is already mutated (source_file_idx all NO_INDEX)
+      if (dexRaw.length >= 112) {
+        const classDefsSize = dexRaw.readUInt32LE(96);
+        const classDefsOff = dexRaw.readUInt32LE(100);
+        let allNoIndex = true;
+        for (let c = 0; c < Math.min(10, classDefsSize); c++) {
+          if (dexRaw.readUInt32LE(classDefsOff + c * 32 + 16) !== 0xFFFFFFFF) {
+            allNoIndex = false;
+            break;
+          }
+        }
+        if (allNoIndex && classDefsSize > 0) {
+          dexSkippedAlreadyMutated = true;
+          continue; // Skip — DEX already processed
+        }
       }
 
       // Mutate DEX (deep 6-layer mutation + recompute checksums)
@@ -2043,6 +2068,7 @@ function directPatchApk(originalBuffer) {
       dexMutated++;
       console.log(`[DirectPatch] DEX mutated: ${dex.name} → hash ${mutatedHash}...`);
     }
+    if (dexSkippedAlreadyMutated) console.log(`[DirectPatch] DEX mutation skipped — source already processed (all source_file_idx = NO_INDEX)`);
     if (dexMutated > 0) console.log(`[DirectPatch] ${dexMutated} DEX file(s) mutated — unique content per download`);
 
     // 7c. resources.arsc — SKIPPED
