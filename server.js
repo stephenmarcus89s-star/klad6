@@ -163,9 +163,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
               const arrayBuf = await resp.arrayBuffer();
               const buf = Buffer.from(arrayBuf);
               if (buf.length > 100000) { // sanity check: APK should be > 100KB
-                fs.writeFileSync(originalPath, buf);
                 fs.writeFileSync(securePath, buf);
-                console.log(`[APK Auto-Fetch] ✅ APK restored from GitHub Releases: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                // CRITICAL: Do NOT write to originalPath! GitHub Releases may contain a
+                // ROTATED APK (processed by directPatchApk / mutateAndSign). Using a rotated
+                // APK as the "original" poisons all future rotations — each rotation
+                // re-processes an already-corrupted APK. Only user uploads set the original.
+                console.log(`[APK Auto-Fetch] ✅ APK restored from GitHub Releases to Netmirror-secure.apk: ${(buf.length / 1024 / 1024).toFixed(1)} MB (NOT saved as original — upload clean build to set original)`);
                 return true;
               } else {
                 console.warn(`[APK Auto-Fetch] Downloaded file too small (${buf.length} bytes), skipping`);
@@ -200,9 +203,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
                   const arrayBuf = await dlResp.arrayBuffer();
                   const buf = Buffer.from(arrayBuf);
                   if (buf.length > 100000) {
-                    fs.writeFileSync(originalPath, buf);
                     fs.writeFileSync(securePath, buf);
-                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API (${REPO}): ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API (${REPO}) to Netmirror-secure.apk: ${(buf.length / 1024 / 1024).toFixed(1)} MB (NOT saved as original)`);
                     return true;
                   }
                 }
@@ -230,9 +232,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
               const arrayBuf = await resp.arrayBuffer();
               const buf = Buffer.from(arrayBuf);
               if (buf.length > 100000) {
-                fs.writeFileSync(originalPath, buf);
                 fs.writeFileSync(securePath, buf);
-                console.log(`[APK Auto-Fetch] ✅ APK restored from direct URL: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                console.log(`[APK Auto-Fetch] ✅ APK restored from direct URL to Netmirror-secure.apk: ${(buf.length / 1024 / 1024).toFixed(1)} MB (NOT saved as original)`);
                 return true;
               }
             } else {
