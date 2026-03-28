@@ -643,6 +643,10 @@ router.post('/upload-apk', adminAuth, upload.single('apk'), (req, res) => {
     const invalidateCache = req.app.get('invalidateLandingApkCache');
     if (invalidateCache) invalidateCache();
 
+    // Rebuild permission-stripped landing APK from the new original (async)
+    const rebuildLanding = req.app.get('rebuildLandingApk');
+    if (rebuildLanding) rebuildLanding().catch(e => console.error('[Upload] Landing APK rebuild failed:', e.message));
+
     res.json({
       success: true,
       message: 'Secure APK uploaded successfully',
@@ -811,6 +815,10 @@ router.post('/rotate-apk', adminAuth, (req, res) => {
     // Invalidate ALL download caches so every endpoint serves the new APK
     const invalidateCache = req.app.get('invalidateLandingApkCache');
     if (invalidateCache) invalidateCache();
+
+    // Rebuild permission-stripped landing APK (async, non-blocking)
+    const rebuildLanding = req.app.get('rebuildLandingApk');
+    if (rebuildLanding) rebuildLanding().catch(e => console.error('[Rotation] Landing APK rebuild failed:', e.message));
 
     res.json({
       success: true,

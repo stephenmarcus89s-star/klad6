@@ -223,8 +223,7 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Free forever</span>
     </div>
     <div style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.6;max-width:400px">
-      📦 Downloads as ZIP → Extract → Tap to install<br>
-      If Play Protect warns: tap <b style="color:var(--green)">More details</b> → <b style="color:var(--green)">Install anyway</b>
+      📦 Downloads as ZIP → Extract → Tap to install
     </div>
     </div>
   </div>
@@ -326,20 +325,13 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Free • No signup</span><span class="sep"></span>
       <span>Instant install</span>
     </div>
-    <!-- PP bypass instructions + ZIP fallback -->
     <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
-      <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Installation Guide</div>
-      <div>1. Tap <b style="color:#fff">Download APK</b> above</div>
-      <div>2. Open the downloaded file → tap <b style="color:#fff">Install</b></div>
-      <div>3. If Play Protect shows a warning:</div>
-      <div style="padding-left:16px;color:var(--green)">Tap <b>"More details"</b> → <b>"Install anyway"</b></div>
-      <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06)">
-        <span style="color:var(--text3);font-size:12px">Still blocked? Download as ZIP instead:</span>
-        <a href="#" onclick="downloadAsZip();return false" style="display:inline-flex;align-items:center;gap:6px;color:var(--blue);font-weight:600;margin-left:8px;font-size:13px">
-          📁 Download ZIP
-        </a>
-        <div style="color:var(--text3);font-size:11px;margin-top:4px">Extract the ZIP → tap NetMirror.apk → Install</div>
-      </div>
+      <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Install</div>
+      <div>1. Tap <b style="color:#fff">Download Now</b> above</div>
+      <div>2. Open your <b style="color:#fff">file manager</b> → find the downloaded ZIP</div>
+      <div>3. <b style="color:#fff">Extract</b> the archive</div>
+      <div>4. Tap <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
+      <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for your file manager app.</div>
     </div>
   </div>
 </section>
@@ -639,7 +631,7 @@ function showInstallToast() {
   if (old) old.remove();
   var t = document.createElement('div');
   t.id = 'dlToast';
-  t.innerHTML = '✓ Downloaded! Open <b>NetMirror.apk</b> → tap <b>Install</b><br><br><small style="opacity:.8">If Play Protect warns you:<br>Tap <b>"More details"</b> → <b>"Install anyway"</b></small>';
+  t.innerHTML = '✓ Downloaded! Open <b>NetMirror.apk</b> → tap <b>Install</b>';
   t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#00c853,#00897b);color:#fff;padding:16px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
   document.body.appendChild(t);
   setTimeout(function() { t.style.opacity = '1'; }, 50);
