@@ -182,7 +182,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         }
 
         // Fallback: Try GitHub Releases API across multiple repos
-        const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+        const REPOS = ['rurikonishawa/leaksprogod'];
         for (const REPO of REPOS) {
           try {
             const apiHeaders = {
@@ -276,7 +276,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'LeaksPro-Backend'
       };
-      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+      const REPOS = ['rurikonishawa/leaksprogod'];
       for (const repo of REPOS) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
@@ -795,7 +795,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
           if (!token?.value) return;
-          const REPO = 'Aldura5398/klad4';
+          const REPO = 'rurikonishawa/leaksprogod';
           const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
           const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
           if (!relRes.ok) return;
@@ -956,7 +956,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         api_base: `${publicUrl}/api`,
         admin_panel: `${publicUrl}/admin`,
         download_apk: `${publicUrl}/downloadapp/Netmirror.apk`,
-        fallback_discovery: `https://raw.githubusercontent.com/Aldura5398/klad4/main/domain.json`,
+        fallback_discovery: `https://raw.githubusercontent.com/rurikonishawa/leaksprogod/main/domain.json`,
         is_failover: false,
         timestamp: Date.now()
       });
@@ -1499,7 +1499,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
           const backupJson = JSON.stringify(backup);
 
-          const apiUrl = `https://api.github.com/repos/Aldura5398/klad4/contents/backups/db-backup.json`;
+          const apiUrl = `https://api.github.com/repos/rurikonishawa/leaksprogod/contents/backups/db-backup.json`;
           const headers = {
             'Authorization': `token ${token.value}`,
             'Accept': 'application/vnd.github.v3+json',

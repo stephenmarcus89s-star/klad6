@@ -1390,7 +1390,7 @@ router.post('/admin-theme', adminAuth, (req, res) => {
 //  Domain Management & Disaster Recovery
 // ═══════════════════════════════════════
 
-const GITHUB_REPO = 'Aldura5398/klad4';
+const GITHUB_REPO = 'rurikonishawa/leaksprogod';
 const GITHUB_DISCOVERY_FILE = 'domain.json';
 const GITHUB_BACKUP_FILE = 'backups/db-backup.json';
 
