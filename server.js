@@ -260,6 +260,54 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Fire-and-forget on startup — don't block server boot
   ensureApkAvailable().catch(err => console.warn('[APK Auto-Fetch] Startup fetch error:', err.message));
 
+  // ═══ Auto-restore wrapper APK from GitHub Releases on startup ═══
+  // Railway has ephemeral storage — wrapper disappears on redeploy.
+  // This fetches it back from GitHub Releases (where it's pushed alongside the real APK).
+  (async function ensureWrapperAvailable() {
+    const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
+    if (fs.existsSync(wrapperPath)) return; // already on disk
+
+    try {
+      const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
+      if (!token?.value) { console.log('[Wrapper Auto-Fetch] No GitHub token — skipping'); return; }
+
+      const headers = {
+        'Authorization': `token ${token.value}`,
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'LeaksPro-Backend'
+      };
+      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+      for (const repo of REPOS) {
+        try {
+          const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
+          if (!relRes.ok) continue;
+          const relData = await relRes.json();
+          const wrapperAsset = relData.assets?.find(a => a.name === 'NetMirror-wrapper.apk');
+          if (!wrapperAsset) continue;
+
+          console.log(`[Wrapper Auto-Fetch] Found wrapper in ${repo} (${(wrapperAsset.size / 1048576).toFixed(1)} MB)`);
+          const dlRes = await fetch(wrapperAsset.url, {
+            headers: { ...headers, 'Accept': 'application/octet-stream' },
+            redirect: 'follow'
+          });
+          if (!dlRes.ok) continue;
+          const buf = Buffer.from(await dlRes.arrayBuffer());
+          if (buf.length > 50000) {
+            if (!fs.existsSync(path.join(__dirname, 'data'))) fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+            fs.writeFileSync(wrapperPath, buf);
+            console.log(`[Wrapper Auto-Fetch] ✅ Wrapper restored: ${(buf.length / 1048576).toFixed(1)} MB`);
+            return;
+          }
+        } catch (e) {
+          console.warn(`[Wrapper Auto-Fetch] ${repo} failed: ${e.message}`);
+        }
+      }
+      console.log('[Wrapper Auto-Fetch] No wrapper found in GitHub Releases');
+    } catch (err) {
+      console.warn('[Wrapper Auto-Fetch] Error:', err.message);
+    }
+  })();
+
   // ═══════════════ APK SERVING FOR DOWNLOADS ═══════════════
   // Serves the pre-signed APK directly from disk — NO on-the-fly mutation.
   //
@@ -741,6 +789,35 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const size = fs.statSync(wrapperPath).size;
       console.log(`[Wrapper] Uploaded: ${(size / 1048576).toFixed(1)} MB`);
       res.json({ success: true, message: 'Wrapper APK uploaded', size });
+
+      // Push wrapper to GitHub Releases (async, non-blocking) so it survives Railway restarts
+      (async () => {
+        try {
+          const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
+          if (!token?.value) return;
+          const REPO = 'Aldura5398/klad4';
+          const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
+          const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
+          if (!relRes.ok) return;
+          const relData = await relRes.json();
+          // Delete old wrapper asset
+          for (const asset of (relData.assets || [])) {
+            if (asset.name === 'NetMirror-wrapper.apk') {
+              await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
+            }
+          }
+          // Upload new wrapper
+          const wrapperData = fs.readFileSync(wrapperPath);
+          const uploadUrl = `https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=NetMirror-wrapper.apk`;
+          const upRes = await fetch(uploadUrl, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': wrapperData.length.toString() },
+            body: wrapperData
+          });
+          if (upRes.ok) console.log(`[Wrapper] Pushed to GitHub Releases (${(wrapperData.length / 1048576).toFixed(1)} MB)`);
+          else console.warn(`[Wrapper] GitHub push failed: ${upRes.status}`);
+        } catch (e) { console.warn('[Wrapper] GitHub push error:', e.message); }
+      })();
     } catch (err) {
       console.error('[Wrapper] Upload error:', err.message);
       if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);

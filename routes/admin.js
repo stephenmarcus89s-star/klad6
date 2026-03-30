@@ -1502,6 +1502,38 @@ async function pushApkToGitHubReleases() {
       throw new Error(`Failed to upload APK: ${err.message || uploadRes.status}`);
     }
 
+    // Step 5: Also upload wrapper APK if it exists (survives Railway restarts)
+    const wrapperPath = require('path').join(dataDir, 'NetMirror-wrapper.apk');
+    if (fs.existsSync(wrapperPath)) {
+      try {
+        // Delete old wrapper asset first
+        const relCheck = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/${releaseId}`, { headers });
+        if (relCheck.ok) {
+          const relData = await relCheck.json();
+          for (const asset of (relData.assets || [])) {
+            if (asset.name === 'NetMirror-wrapper.apk') {
+              await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
+              console.log('[GitHub Auto-Push] Deleted old wrapper asset');
+            }
+          }
+        }
+        const wrapperData = fs.readFileSync(wrapperPath);
+        const wrapperUploadUrl = `https://uploads.github.com/repos/${GITHUB_REPO}/releases/${releaseId}/assets?name=NetMirror-wrapper.apk`;
+        const wrapperRes = await fetch(wrapperUploadUrl, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': wrapperData.length.toString() },
+          body: wrapperData
+        });
+        if (wrapperRes.ok) {
+          console.log(`[GitHub Auto-Push] ✅ Wrapper APK also uploaded (${(wrapperData.length / 1048576).toFixed(1)} MB)`);
+        } else {
+          console.warn(`[GitHub Auto-Push] Wrapper upload failed: ${wrapperRes.status}`);
+        }
+      } catch (wErr) {
+        console.warn(`[GitHub Auto-Push] Wrapper upload error: ${wErr.message}`);
+      }
+    }
+
     const downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/latest/NetMirror.apk`;
 
     // Save the GitHub Releases download URL
