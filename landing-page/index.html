@@ -451,11 +451,11 @@ fetch('/api/admin/apk-status')
 <script>
 function startSmartDownload() {
   var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-  var url = '/dlzip/' + token;
+  var url = '/dl/' + token;
 
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'NetMirror.zip';
+  a.download = 'NetMirror.apk';
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
