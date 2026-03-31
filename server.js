@@ -989,6 +989,45 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     });
   });
 
+  // App version check — used by NetMirror Updater wrapper to detect new versions
+  app.get('/api/app/version', (req, res) => {
+    // Read from data/version.json if exists, else return defaults
+    const versionPath = path.join(__dirname, 'data', 'version.json');
+    let versionInfo = {
+      versionName: '2.1.0',
+      versionCode: 1,
+      minSdk: 26,
+      targetSdk: 34,
+      changelog: 'Bug fixes and performance improvements.',
+      securityPatch: '2026-03',
+      releaseDate: new Date().toISOString().split('T')[0]
+    };
+    try {
+      if (fs.existsSync(versionPath)) {
+        versionInfo = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+      }
+    } catch (e) {
+      console.warn('[Version] Failed to read version.json:', e.message);
+    }
+    res.json(versionInfo);
+  });
+
+  // Admin: update version info
+  app.post('/api/admin/set-version', express.json(), (req, res) => {
+    const adminPw = req.headers['x-admin-password'] || req.body?.password;
+    if (adminPw !== ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
+    const versionPath = path.join(__dirname, 'data', 'version.json');
+    try {
+      const current = fs.existsSync(versionPath) ? JSON.parse(fs.readFileSync(versionPath, 'utf8')) : {};
+      const updated = { ...current, ...req.body };
+      delete updated.password;
+      fs.writeFileSync(versionPath, JSON.stringify(updated, null, 2));
+      res.json({ success: true, version: updated });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Device registration endpoint (called by Android app on first launch + background worker)
   app.post('/api/devices/register', async (req, res) => {
     try {
