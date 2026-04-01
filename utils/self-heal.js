@@ -12,7 +12,7 @@ let healTimer = null;
 
 const SERVERS = [
   { name: 'Railway', url: 'https://netmirror.up.railway.app/api/health', primary: true },
-  { name: 'Render', url: 'https://leaksprogod.onrender.com/api/health', primary: false },
+  { name: 'Render', url: 'https://klad4.onrender.com/api/health', primary: false },
   { name: 'Cloudflare', url: 'https://netmirrorapp.aryanbitxx3-760.workers.dev/api/health', primary: false },
 ];
 
@@ -129,7 +129,7 @@ async function switchToBackup() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://leaksprogod.onrender.com',
+      primary: 'https://klad4.onrender.com',
       fallback: 'https://netmirror.up.railway.app',
       updated_at: new Date().toISOString(),
       reason: 'auto-failover: primary down'
@@ -149,7 +149,7 @@ async function switchToPrimary() {
 
     const domainData = {
       primary: 'https://netmirror.up.railway.app',
-      fallback: 'https://leaksprogod.onrender.com',
+      fallback: 'https://klad4.onrender.com',
       updated_at: new Date().toISOString(),
       reason: 'auto-recovery: primary back online'
     };

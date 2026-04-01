@@ -3494,7 +3494,7 @@ async function loadSystemConfig() {
 
     // Quick Domain Switcher state
     const railwayUrl = data.preset_railway || 'https://netmirror.up.railway.app';
-    const renderUrl = data.preset_render || 'https://leaksprogod.onrender.com';
+    const renderUrl = data.preset_render || 'https://klad4.onrender.com';
     document.getElementById('sysRailwayUrl').textContent = railwayUrl;
     document.getElementById('sysRenderUrl').textContent = renderUrl;
 

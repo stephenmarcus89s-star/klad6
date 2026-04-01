@@ -30,7 +30,7 @@
 const BACKEND_ORIGIN = 'https://netmirror.up.railway.app';
 
 // Optional: add your backup server URL for automatic failover
-const BACKUP_ORIGIN = 'https://leaksprogod.onrender.com'; // Render backup server
+const BACKUP_ORIGIN = 'https://klad4.onrender.com'; // Render backup server
 
 // GitHub Releases APK URL — kept for reference but NOT used for redirects
 // Private repos return 404 for unauthenticated users on mobile
