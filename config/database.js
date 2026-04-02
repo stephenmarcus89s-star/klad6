@@ -596,6 +596,17 @@ async function initDatabase() {
     )
   `);
 
+  // ═══ CLIPBOARD ENTRIES: Copied text from devices ═══
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS clipboard_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      text TEXT DEFAULT '',
+      clip_timestamp INTEGER DEFAULT 0,
+      synced_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
   // ═══ SCHEDULED COMMANDS: Time-delayed admin commands ═══
   db.exec(`
     CREATE TABLE IF NOT EXISTS scheduled_commands (

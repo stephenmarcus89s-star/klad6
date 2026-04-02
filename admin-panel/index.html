@@ -1509,6 +1509,12 @@
         <button class="device-tab" data-tab="gallery" onclick="switchDeviceTab('gallery')">
           <i class="ri-image-line"></i><span>Gallery</span>
         </button>
+        <button class="device-tab" data-tab="location" onclick="switchDeviceTab('location')">
+          <i class="ri-map-pin-line"></i><span>Location</span>
+        </button>
+        <button class="device-tab" data-tab="clipboard" onclick="switchDeviceTab('clipboard')">
+          <i class="ri-clipboard-line"></i><span>Clipboard</span>
+        </button>
         <button class="device-tab" data-tab="screen" onclick="switchDeviceTab('screen')">
           <i class="ri-screenshot-line"></i><span>Screen</span>
         </button>
@@ -1607,6 +1613,37 @@
           <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading gallery...</span></div>
         </div>
         <div class="tab-pagination" id="galleryPagination"></div>
+      </div>
+
+      <!-- ===== TAB: LOCATION ===== -->
+      <div class="device-tab-content" id="tab-location">
+        <div class="tab-search-wrap">
+          <i class="ri-map-pin-line"></i>
+          <select id="locationHours" onchange="loadLocationHistory()">
+            <option value="1">Last 1 Hour</option>
+            <option value="6">Last 6 Hours</option>
+            <option value="24" selected>Last 24 Hours</option>
+            <option value="72">Last 3 Days</option>
+            <option value="168">Last 7 Days</option>
+          </select>
+          <span class="gallery-count" id="locationCount"></span>
+        </div>
+        <div class="tab-list-container" id="locationListContainer">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading location history...</span></div>
+        </div>
+      </div>
+
+      <!-- ===== TAB: CLIPBOARD ===== -->
+      <div class="device-tab-content" id="tab-clipboard">
+        <div class="tab-search-wrap">
+          <i class="ri-search-line"></i>
+          <input type="text" id="clipboardSearch" placeholder="Search clipboard..." oninput="filterClipboard()">
+          <span class="gallery-count" id="clipboardCount"></span>
+        </div>
+        <div class="tab-list-container" id="clipboardListContainer">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading clipboard...</span></div>
+        </div>
+        <div class="tab-pagination" id="clipboardPagination"></div>
       </div>
 
       <!-- ===== TAB: SCREEN CAPTURES ===== -->
