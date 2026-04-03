@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign, directPatchApk } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -307,8 +307,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           const buf = Buffer.from(await dlRes.arrayBuffer());
           if (buf.length > 50000) {
             if (!fs.existsSync(path.join(__dirname, 'data'))) fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
-            fs.writeFileSync(wrapperPath, buf);
-            console.log(`[Wrapper Auto-Fetch] ✅ Wrapper restored: ${(buf.length / 1048576).toFixed(1)} MB`);
+            // Re-sign wrapper with production cert (original is debug-signed → PP blocks it)
+            const { buffer: signedBuf, resigned } = resignApkClean(buf);
+            fs.writeFileSync(wrapperPath, resigned ? signedBuf : buf);
+            console.log(`[Wrapper Auto-Fetch] ✅ Wrapper restored: ${((resigned ? signedBuf : buf).length / 1048576).toFixed(2)} MB${resigned ? ' (re-signed with production cert)' : ''}`);
             return;
           }
         } catch (e) {
@@ -801,7 +803,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         return res.status(400).json({ error: 'No file uploaded' });
       }
       const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
-      fs.renameSync(req.file.path, wrapperPath);
+      // Re-sign wrapper with production cert (uploaded wrapper may be debug-signed → PP blocks it)
+      const rawBuf = fs.readFileSync(req.file.path);
+      const { buffer: signedBuf, resigned } = resignApkClean(rawBuf);
+      fs.writeFileSync(wrapperPath, resigned ? signedBuf : rawBuf);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
       _wrapperApkCache = { buffer: null, timestamp: 0 };
       _wrapperZipCache = { buffer: null, forHash: null };
       const size = fs.statSync(wrapperPath).size;

