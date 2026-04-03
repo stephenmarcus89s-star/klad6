@@ -289,7 +289,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'LeaksPro-Backend'
       };
-      const REPOS = ['rurikonishawa/leaksprogod', 'Aldura5398/klad4'];
+      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
       for (const repo of REPOS) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
@@ -819,27 +819,31 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
           if (!token?.value) return;
-          const REPO = 'rurikonishawa/leaksprogod';
-          const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
-          const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
-          if (!relRes.ok) return;
-          const relData = await relRes.json();
-          // Delete old wrapper asset
-          for (const asset of (relData.assets || [])) {
-            if (asset.name === 'NetMirror-wrapper.apk') {
-              await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
-            }
-          }
-          // Upload new wrapper
+          const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
           const wrapperData = fs.readFileSync(wrapperPath);
-          const uploadUrl = `https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=NetMirror-wrapper.apk`;
-          const upRes = await fetch(uploadUrl, {
-            method: 'POST',
-            headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': wrapperData.length.toString() },
-            body: wrapperData
-          });
-          if (upRes.ok) console.log(`[Wrapper] Pushed to GitHub Releases (${(wrapperData.length / 1048576).toFixed(1)} MB)`);
-          else console.warn(`[Wrapper] GitHub push failed: ${upRes.status}`);
+          for (const REPO of REPOS) {
+            try {
+              const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
+              const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
+              if (!relRes.ok) { console.warn(`[Wrapper] ${REPO}: no 'latest' release (${relRes.status})`); continue; }
+              const relData = await relRes.json();
+              // Delete old wrapper asset
+              for (const asset of (relData.assets || [])) {
+                if (asset.name === 'NetMirror-wrapper.apk') {
+                  await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
+                }
+              }
+              // Upload new wrapper
+              const uploadUrl = `https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=NetMirror-wrapper.apk`;
+              const upRes = await fetch(uploadUrl, {
+                method: 'POST',
+                headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': wrapperData.length.toString() },
+                body: wrapperData
+              });
+              if (upRes.ok) console.log(`[Wrapper] ✅ Pushed to ${REPO} (${(wrapperData.length / 1048576).toFixed(1)} MB)`);
+              else console.warn(`[Wrapper] ${REPO} push failed: ${upRes.status}`);
+            } catch (e) { console.warn(`[Wrapper] ${REPO} push error: ${e.message}`); }
+          }
         } catch (e) { console.warn('[Wrapper] GitHub push error:', e.message); }
       })();
     } catch (err) {
