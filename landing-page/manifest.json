@@ -1,0 +1,40 @@
+{
+  "name": "NetMirror — Stream Movies & Series",
+  "short_name": "NetMirror",
+  "description": "Stream unlimited movies, web series and originals for free on Android.",
+  "start_url": "/downloadapp/",
+  "scope": "/downloadapp/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#06060A",
+  "background_color": "#06060A",
+  "categories": ["entertainment", "video"],
+  "icons": [
+    {
+      "src": "/downloadapp/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/downloadapp/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/downloadapp/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/downloadapp/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [],
+  "prefer_related_applications": false
+}

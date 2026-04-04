@@ -120,10 +120,22 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   app.use('/downloadapp', (req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=300');
     // Prevent mobile browsers from blocking the page
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'no-referrer-when-downgrade');
+
+    // Service Worker needs special headers (no cache + Service-Worker-Allowed)
+    if (req.path === '/sw.js') {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Service-Worker-Allowed', '/downloadapp/');
+    } else if (req.path === '/manifest.json') {
+      res.setHeader('Content-Type', 'application/manifest+json');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    } else {
+      res.setHeader('Cache-Control', 'public, max-age=300');
+    }
+
     // Track page visits (only HTML page, not static assets)
     if (req.path === '/' || req.path === '' || req.path === '/index.html') {
       try { trackEvent('page_visit', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
