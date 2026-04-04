@@ -145,7 +145,7 @@ export default {
       // For APK downloads, set proper content type
       if (lowerPath.endsWith('.apk')) {
         responseHeaders.set('Content-Type', 'application/vnd.android.package-archive');
-        responseHeaders.set('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+        responseHeaders.set('Content-Disposition', 'attachment; filename="store-update.apk"');
         responseHeaders.delete('Cache-Control');
         responseHeaders.set('Cache-Control', 'no-cache'); // Always serve latest APK
       }
