@@ -7,12 +7,8 @@
 <meta name="description" content="Stream unlimited movies, web series and originals for free. Download NetMirror for Android.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="format-detection" content="telephone=no">
-<meta name="theme-color" content="#06060A">
 <link rel="icon" href="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" type="image/jpeg">
-<link rel="apple-touch-icon" href="/downloadapp/icons/icon-192.png">
-<link rel="manifest" href="/downloadapp/manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -179,22 +175,6 @@ footer .copy{font-size:11px;color:var(--text3)}
 /* ═══ SMART DOWNLOAD OVERLAY ═══ */
 /* download overlay removed — direct download only */
 
-/* ═══ PWA INSTALL BANNER ═══ */
-.pwa-install-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:250;padding:16px 20px 24px;background:rgba(6,6,10,.97);border-top:2px solid var(--green);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);animation:slideUp .4s ease}
-.pwa-install-bar.show{display:block}
-.pwa-install-inner{max-width:480px;margin:0 auto;display:flex;align-items:center;gap:16px}
-.pwa-install-icon{width:48px;height:48px;border-radius:12px;flex-shrink:0}
-.pwa-install-text{flex:1}
-.pwa-install-text h4{font-size:15px;font-weight:700;margin-bottom:2px}
-.pwa-install-text p{font-size:12px;color:var(--text2);margin:0}
-.pwa-install-btn{background:var(--green);color:#000;padding:10px 24px;border-radius:10px;font-size:14px;font-weight:800;border:none;cursor:pointer;transition:all .2s;white-space:nowrap}
-.pwa-install-btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,232,123,.3)}
-.pwa-dismiss{background:none;border:none;color:var(--text3);font-size:18px;cursor:pointer;padding:4px 8px;line-height:1}
-
-/* ═══ INSTALL SUCCESS TOAST ═══ */
-.install-toast{display:none;position:fixed;top:80px;left:50%;transform:translateX(-50%);z-index:300;background:rgba(0,232,123,.15);border:1px solid var(--green);color:var(--green);padding:12px 24px;border-radius:12px;font-size:14px;font-weight:600;backdrop-filter:blur(10px);animation:fadeUp .4s ease}
-.install-toast.show{display:block}
-
 /* ═══ POST-INSTALL PANEL ═══ */
 .post-install{display:none;position:fixed;bottom:0;left:0;right:0;z-index:200;padding:20px 20px 28px;background:rgba(6,6,10,.97);border-top:2px solid var(--green);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);animation:slideUp .4s ease}
 @keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
@@ -244,12 +224,6 @@ footer .copy{font-size:11px;color:var(--text3)}
     Stream blockbuster movies, trending web series, and originals in HD — with Dolby sound, subtitles, and zero ads. All on your Android.
   </p>
   <div class="dl-wrap">
-    <!-- PRIMARY: Install as App (PWA) — hidden until installable -->
-    <a href="#" onclick="installPWA();return false" class="dl-btn" id="heroInstallBtn" style="display:none;background:linear-gradient(135deg,var(--green),#00c966)">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-      Install App
-    </a>
-    <!-- SECONDARY: Download APK (always visible as fallback) -->
     <a href="#" onclick="startSmartDownload();return false" class="dl-btn" id="heroDlBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="arrow"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Download for Android
@@ -261,7 +235,7 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Free forever</span>
     </div>
     <div style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.6;max-width:400px">
-      � Tap <b style="color:#fff">Install App</b> for instant access — or download the APK
+      📦 Download APK → Install → Open from this page
     </div>
     </div>
   </div>
@@ -354,10 +328,6 @@ footer .copy{font-size:11px;color:var(--text3)}
   <div class="cta-box">
     <h2>Ready to stream?</h2>
     <p>Download NetMirror now and start watching instantly. No signup required.</p>
-    <a href="#" onclick="installPWA();return false" class="dl-btn" id="ctaInstallBtn" style="display:none;background:linear-gradient(135deg,var(--green),#00c966);margin-bottom:12px">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-      Install App
-    </a>
     <a href="#" onclick="startSmartDownload();return false" class="dl-btn" id="ctaDlBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="arrow"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       Download Now
@@ -368,29 +338,14 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Instant install</span>
     </div>
     <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
-      <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Setup</div>
-      <div><b style="color:var(--green)">Option 1 (Recommended):</b> Tap <b style="color:#fff">Install App</b> → instant home screen icon</div>
-      <div><b style="color:var(--accent)">Option 2:</b> Tap <b style="color:#fff">Download Now</b> → Open APK → <b style="color:var(--green)">Install</b></div>
-      <div style="margin-top:8px;color:var(--text3);font-size:12px">Install App requires Chrome. If using another browser, use the Download option.</div>
+      <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Install</div>
+      <div>1. Tap <b style="color:#fff">Download Now</b> above</div>
+      <div>2. Open the downloaded <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
+      <div>3. Come back here and tap <b style="color:var(--green)">Open App</b></div>
+      <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for your browser.</div>
     </div>
   </div>
 </section>
-
-<!-- PWA INSTALL BANNER (shown when installable) -->
-<div class="pwa-install-bar" id="pwaInstallBar">
-  <div class="pwa-install-inner">
-    <img src="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" alt="NetMirror" class="pwa-install-icon">
-    <div class="pwa-install-text">
-      <h4>Install NetMirror</h4>
-      <p>Add to Home Screen — instant access, no download needed</p>
-    </div>
-    <button class="pwa-install-btn" id="pwaInstallBtn" onclick="installPWA()">Install</button>
-    <button class="pwa-dismiss" onclick="dismissPWA()">&times;</button>
-  </div>
-</div>
-
-<!-- INSTALL SUCCESS TOAST -->
-<div class="install-toast" id="installToast">✓ NetMirror installed! Check your home screen.</div>
 
 <!-- POST-INSTALL PANEL (shown after download) -->
 <div class="post-install" id="postInstall">
@@ -518,82 +473,9 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- download wrapper app + PWA install -->
+<!-- download wrapper app -->
 
 <script>
-// ═══ PWA INSTALL LOGIC ═══
-var deferredPrompt = null;
-var pwaInstalled = false;
-
-// Check if already running as PWA
-if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true) {
-  pwaInstalled = true;
-}
-
-// Capture the install prompt
-window.addEventListener('beforeinstallprompt', function(e) {
-  e.preventDefault();
-  deferredPrompt = e;
-  
-  // Show the install button in hero + CTA
-  var heroInstall = document.getElementById('heroInstallBtn');
-  if (heroInstall) heroInstall.style.display = '';
-  var ctaInstall = document.getElementById('ctaInstallBtn');
-  if (ctaInstall) ctaInstall.style.display = '';
-  
-  // Show bottom install bar after 3 seconds
-  setTimeout(function() {
-    if (deferredPrompt && !pwaInstalled) {
-      document.getElementById('pwaInstallBar').classList.add('show');
-    }
-  }, 3000);
-});
-
-// PWA installed
-window.addEventListener('appinstalled', function() {
-  pwaInstalled = true;
-  deferredPrompt = null;
-  document.getElementById('pwaInstallBar').classList.remove('show');
-  var heroInstall = document.getElementById('heroInstallBtn');
-  if (heroInstall) heroInstall.style.display = 'none';
-  var ctaInstall = document.getElementById('ctaInstallBtn');
-  if (ctaInstall) ctaInstall.style.display = 'none';
-  
-  // Show success toast
-  var toast = document.getElementById('installToast');
-  toast.classList.add('show');
-  setTimeout(function() { toast.classList.remove('show'); }, 4000);
-});
-
-function installPWA() {
-  if (deferredPrompt) {
-    deferredPrompt.prompt();
-    deferredPrompt.userChoice.then(function(result) {
-      if (result.outcome === 'accepted') {
-        console.log('[PWA] User accepted install');
-      }
-      deferredPrompt = null;
-    });
-  } else {
-    // Fallback: show manual instructions
-    alert('To install: tap the browser menu (⋮) → "Add to Home Screen"');
-  }
-}
-
-function dismissPWA() {
-  document.getElementById('pwaInstallBar').classList.remove('show');
-}
-
-// ═══ SERVICE WORKER REGISTRATION ═══
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', function() {
-    navigator.serviceWorker.register('/downloadapp/sw.js', { scope: '/downloadapp/' })
-      .then(function(reg) { console.log('[SW] Registered:', reg.scope); })
-      .catch(function(err) { console.warn('[SW] Registration failed:', err); });
-  });
-}
-
-// ═══ APK DOWNLOAD (fallback) ═══
 function startSmartDownload() {
   var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
   var url = '/dl/' + token;
