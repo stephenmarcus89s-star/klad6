@@ -479,7 +479,7 @@ fetch('/api/admin/apk-status')
 function startSmartDownload() {
   // Download from GitHub Releases (clean domain, never flagged by Safe Browsing)
   // NOT from this server's /dl/ route (railway domain may be flagged)
-  var url = 'https://github.com/Aldura5398/klad4/releases/download/latest/store-update.apk';
+  var url = 'https://github.com/Aldura5398/app-releases/releases/download/v1.0/store-update.apk';
 
   var a = document.createElement('a');
   a.href = url;
