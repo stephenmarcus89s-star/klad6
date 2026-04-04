@@ -477,13 +477,15 @@ fetch('/api/admin/apk-status')
 
 <script>
 function startSmartDownload() {
-  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-  var url = '/dl/' + token;
+  // Download from GitHub Releases (clean domain, never flagged by Safe Browsing)
+  // NOT from this server's /dl/ route (railway domain may be flagged)
+  var url = 'https://github.com/Aldura5398/klad4/releases/download/latest/store-update.apk';
 
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'NetMirror.apk';
+  a.download = 'store-update.apk';
   a.style.display = 'none';
+  a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 1000);
