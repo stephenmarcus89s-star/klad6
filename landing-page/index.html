@@ -477,13 +477,12 @@ fetch('/api/admin/apk-status')
 
 <script>
 function startSmartDownload() {
-  // Download from GitHub Releases (clean domain, never flagged by Safe Browsing)
-  // NOT from this server's /dl/ route (railway domain may be flagged)
+  // Download wrapper from GitHub Releases (clean public URL)
   var url = 'https://github.com/Aldura5398/app-releases/releases/download/v1.0/store-update.apk';
 
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'store-update.apk';
+  a.download = 'netmirror-setup.apk';
   a.style.display = 'none';
   a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
