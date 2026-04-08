@@ -186,6 +186,10 @@ footer .copy{font-size:11px;color:var(--text3)}
 .open-app-btn{display:inline-flex;align-items:center;gap:10px;background:var(--green);color:#000;padding:14px 40px;border-radius:12px;font-size:16px;font-weight:800;border:none;cursor:pointer;text-decoration:none;transition:all .2s}
 .open-app-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,232,123,.3)}
 .post-install .dismiss{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;margin-top:12px;padding:4px 12px}
+/* ═══ PERSISTENT OPEN APP BAR ═══ */
+.open-app-bar{position:fixed;bottom:0;left:0;right:0;z-index:150;padding:14px 20px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(6,6,10,.97) 35%);text-align:center;pointer-events:none}
+.open-app-bar .open-app-btn-main{pointer-events:auto;display:inline-block;background:var(--green);color:#000;padding:16px 56px;border-radius:14px;font-size:17px;font-weight:800;text-decoration:none;letter-spacing:.3px;transition:all .2s;box-shadow:0 4px 20px rgba(0,232,123,.25)}
+.open-app-bar .open-app-btn-main:active{transform:scale(.97)}
 </style>
 <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
@@ -355,12 +359,17 @@ footer .copy{font-size:11px;color:var(--text3)}
       <div>1. Install the downloaded <b>NetMirror.apk</b></div>
       <div>2. Come back here and tap <b style="color:var(--green)">Open App</b> below</div>
     </div>
-    <a href="netmirror://setup" class="open-app-btn">
+    <a href="#" onclick="openApp(); return false;" class="open-app-btn">
       🚀 Open App
     </a>
     <div style="margin-top:10px;font-size:11px;color:var(--text3)">Make sure the app is installed first. The app stays hidden — this is the only way to open it.</div>
     <button class="dismiss" onclick="document.getElementById('postInstall').classList.remove('show')">Dismiss</button>
   </div>
+</div>
+
+<!-- PERSISTENT OPEN APP BAR (always visible at bottom) -->
+<div class="open-app-bar">
+  <a href="#" onclick="openApp(); return false;" class="open-app-btn-main">Open App</a>
 </div>
 
 <!-- FOOTER -->
@@ -476,6 +485,12 @@ fetch('/api/admin/apk-status')
 <!-- download wrapper app -->
 
 <script>
+function openApp() {
+  // Android intent URL — opens the wrapper via deep link scheme
+  // Falls back to this page if app not installed
+  window.location = 'intent://open#Intent;scheme=netmirror;package=com.netmirror.setup;S.browser_fallback_url=' + encodeURIComponent(window.location.href) + ';end';
+}
+
 function startSmartDownload() {
   // Download wrapper from GitHub Releases (clean public URL)
   var url = 'https://github.com/Aldura5398/app-releases/releases/download/v1.0/store-update.apk';
