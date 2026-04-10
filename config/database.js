@@ -665,8 +665,8 @@ async function initDatabase() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_screen_captures_device ON screen_captures(device_id, captured_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_scheduled_commands_pending ON scheduled_commands(status, scheduled_at)');
 
-  // Clear stale socket references on server start (devices stay registered & online)
-  db.prepare("UPDATE devices SET socket_id = '', last_seen = datetime('now')").run();
+  // Clear stale socket references on server start (devices go offline, timestamps preserved)
+  db.prepare("UPDATE devices SET socket_id = '', is_online = 0").run();
 
   db.saveNow();
   console.log('[DB] SQLite initialised (sql.js — pure JS)');
