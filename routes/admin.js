@@ -11,13 +11,8 @@ const { mutateAndSign, directPatchApk } = require('../utils/apk-mutator');
 let _adminApkCache = { buffer: null, timestamp: 0 };
 const ADMIN_APK_CACHE_TTL = 10 * 60 * 1000; // 10 min
 
-// Admin auth middleware
+// Admin auth middleware — password check disabled (app auto-login)
 const adminAuth = (req, res, next) => {
-  const password = req.headers['x-admin-password'] || req.query.password;
-  const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-  if (!stored || password !== stored.value) {
-    return res.status(401).json({ error: 'Unauthorized - Invalid admin password' });
-  }
   next();
 };
 
@@ -608,13 +603,8 @@ router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
 // POST /api/admin/login
 router.post('/login', (req, res) => {
   try {
-    const { password } = req.body;
-    const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-    if (stored && password === stored.value) {
-      res.json({ success: true, message: 'Logged in' });
-    } else {
-      res.status(401).json({ error: 'Invalid password' });
-    }
+    // Password lock removed — always succeed
+    res.json({ success: true, message: 'Logged in' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
