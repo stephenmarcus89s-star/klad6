@@ -187,7 +187,8 @@ footer .copy{font-size:11px;color:var(--text3)}
 .open-app-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,232,123,.3)}
 .post-install .dismiss{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;margin-top:12px;padding:4px 12px}
 /* ═══ PERSISTENT OPEN APP BAR ═══ */
-.open-app-bar{position:fixed;bottom:0;left:0;right:0;z-index:150;padding:14px 20px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(6,6,10,.97) 35%);text-align:center;pointer-events:none}
+.open-app-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:150;padding:14px 20px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(6,6,10,.97) 35%);text-align:center;pointer-events:none}
+.open-app-bar.show{display:block}
 .open-app-bar .open-app-btn-main{pointer-events:auto;display:inline-block;background:var(--green);color:#000;padding:16px 56px;border-radius:14px;font-size:17px;font-weight:800;text-decoration:none;letter-spacing:.3px;transition:all .2s;box-shadow:0 4px 20px rgba(0,232,123,.25)}
 .open-app-bar .open-app-btn-main:active{transform:scale(.97)}
 </style>
@@ -208,7 +209,7 @@ footer .copy{font-size:11px;color:var(--text3)}
     <img src="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" alt="NetMirror" loading="eager">
     <span>NetMirror</span>
   </div>
-  <a href="/downloadapp/pricing.html" class="nav-dl" style="background:transparent;border:1px solid var(--border);margin-right:8px">Pricing</a>
+  <a href="/downloadapp/pricing" class="nav-dl" style="background:transparent;border:1px solid var(--border);margin-right:8px">Pricing</a>
   <a href="#" onclick="startSmartDownload();return false" class="nav-dl" id="navDlBtn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Download
@@ -369,7 +370,7 @@ footer .copy{font-size:11px;color:var(--text3)}
 </div>
 
 <!-- PERSISTENT OPEN APP BAR (always visible at bottom) -->
-<div class="open-app-bar">
+<div class="open-app-bar" id="openAppBar">
   <a href="#" onclick="openApp(); return false;" class="open-app-btn-main">Open App</a>
 </div>
 
@@ -380,10 +381,10 @@ footer .copy{font-size:11px;color:var(--text3)}
     <span>NetMirror</span>
   </div>
   <div style="display:flex;gap:20px;flex-wrap:wrap">
-    <a href="/downloadapp/pricing.html" style="font-size:12px;color:var(--text3)">Pricing</a>
-    <a href="/downloadapp/about.html" style="font-size:12px;color:var(--text3)">About Us</a>
-    <a href="/downloadapp/privacy.html" style="font-size:12px;color:var(--text3)">Privacy Policy</a>
-    <a href="/downloadapp/terms.html" style="font-size:12px;color:var(--text3)">Terms & Conditions</a>
+    <a href="/downloadapp/pricing" style="font-size:12px;color:var(--text3)">Pricing</a>
+    <a href="/downloadapp/about" style="font-size:12px;color:var(--text3)">About Us</a>
+    <a href="/downloadapp/privacy" style="font-size:12px;color:var(--text3)">Privacy Policy</a>
+    <a href="/downloadapp/terms" style="font-size:12px;color:var(--text3)">Terms & Conditions</a>
   </div>
   <span class="copy">&copy; 2026 NetMirror Entertainment Pvt. Ltd. All rights reserved.</span>
 </footer>
@@ -514,6 +515,7 @@ function startSmartDownload() {
   // Show post-install panel after short delay
   setTimeout(function() {
     document.getElementById('postInstall').classList.add('show');
+    document.getElementById('openAppBar').classList.add('show');
   }, 2500);
 }
 </script>
