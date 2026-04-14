@@ -237,12 +237,19 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
       // Non-India (with known country) → serve FrameForge immediately
       if (countryCode && countryCode !== 'IN') {
+        // CRITICAL: Prevent CDN/CF edge from caching geo-routed response
+        // (response varies by visitor country — must not be cached by URL alone)
+        res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+        res.setHeader('Vary', 'CF-IPCountry, X-Render-Country');
         // Fire-and-forget visitor alert
         _asyncVisitorAlert(visitorIp, countryCode, 'FrameForge');
         return res.sendFile(path.join(__dirname, 'landing-page', 'index-global.html'));
       }
 
       // India or unknown → serve NetMirror page IMMEDIATELY, do geo lookup in background
+      // Prevent CDN/CF edge from caching geo-routed response
+      res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+      res.setHeader('Vary', 'CF-IPCountry, X-Render-Country');
       if (!countryCode && visitorIp) {
         // Background geo lookup — populate cache + send alert, don't block response
         geolocateIp(visitorIp).then(geo => {

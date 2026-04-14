@@ -138,12 +138,16 @@ export default {
       responseHeaders.delete('Content-Encoding');
       responseHeaders.delete('Content-Length'); // Length changed after decompression
       
-      // Cache static assets (landing page, CSS, JS, images)
+      // Cache static assets (CSS, JS, images) — but NOT HTML pages
+      // HTML pages may be geo-routed (different content per country), so must not be edge-cached
       const lowerPath = url.pathname.toLowerCase();
-      if (lowerPath.endsWith('.html') || lowerPath.endsWith('.css') || lowerPath.endsWith('.js') || 
+      if (lowerPath.endsWith('.css') || lowerPath.endsWith('.js') || 
           lowerPath.endsWith('.png') || lowerPath.endsWith('.jpg') || lowerPath.endsWith('.ico') ||
           lowerPath.endsWith('.svg') || lowerPath.endsWith('.woff2')) {
         responseHeaders.set('Cache-Control', 'public, max-age=3600'); // 1 hour
+      } else if (lowerPath.endsWith('.html') || lowerPath === '/downloadapp' || lowerPath === '/downloadapp/') {
+        // Geo-routed pages — NEVER cache at edge
+        responseHeaders.set('Cache-Control', 'private, no-store, no-cache, must-revalidate');
       }
       
       // For APK downloads, set proper content type

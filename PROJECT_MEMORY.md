@@ -50,7 +50,7 @@
 
 | Service | URL |
 |---------|-----|
-| Cloudflare Worker (PUBLIC) | `https://netmirrorapp.aryanbitxx3-760.workers.dev` |
+| Cloudflare Worker (PUBLIC) | `https://netmirror.lholtkaren.workers.dev` |
 | Primary (Railway) | `https://netmirror.up.railway.app` |
 | Backup (Render) | `https://klad4.onrender.com` |
 | Admin Panel | `https://netmirror.up.railway.app/admin` |

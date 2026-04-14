@@ -13,7 +13,7 @@ let healTimer = null;
 const SERVERS = [
   { name: 'Render', url: 'https://klad4.onrender.com/api/health', primary: true },
   { name: 'Railway', url: 'https://netmirror.up.railway.app/api/health', primary: false },
-  { name: 'Cloudflare', url: 'https://netmirrorapp.aryanbitxx3-760.workers.dev/api/health', primary: false },
+  { name: 'Cloudflare', url: 'https://netmirror.lholtkaren.workers.dev/api/health', primary: false },
 ];
 
 const GITHUB_REPO = 'Aldura5398/klad4';
