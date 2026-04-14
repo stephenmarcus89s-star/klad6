@@ -119,7 +119,6 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   // ═══ LANDING PAGE VISITOR TRACKING ═══
   let totalVisitorCount = 0;
-  const recentVisitorIps = new Set(); // dedupe within short window
   function countryCodeToFlag(code) {
     if (!code || code.length !== 2) return '🌍';
     return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
@@ -160,19 +159,21 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const visitorIp = req.ip || '';
       try { trackEvent('page_visit', { ip_address: visitorIp, user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
 
-      // Telegram visitor notification (fire-and-forget, don't block response)
-      if (visitorIp && !recentVisitorIps.has(visitorIp)) {
-        recentVisitorIps.add(visitorIp);
-        setTimeout(() => recentVisitorIps.delete(visitorIp), 5 * 60 * 1000); // dedupe same IP for 5 min
+      // Telegram visitor notification (fire-and-forget, every visit)
+      if (visitorIp) {
         totalVisitorCount++;
         const visitNum = totalVisitorCount;
         geolocateIp(visitorIp).then(geo => {
           const flag = geo ? countryCodeToFlag(geo.countryCode) : '🌍';
           const city = geo?.city || 'Unknown';
+          const region = geo?.region || '';
           const country = geo?.country || 'Unknown';
+          const isp = geo?.isp || 'Unknown';
+          const location = region && region !== city ? `${city}, ${region}, ${country}` : `${city}, ${country}`;
           sendVisitorAlert(
             `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
-            `${flag} ${city}, ${country}\n` +
+            `${flag} ${location}\n` +
+            `📡 ${isp}\n` +
             `🌐 <code>${visitorIp}</code>`
           );
         }).catch(() => {
