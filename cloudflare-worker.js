@@ -26,11 +26,11 @@
  */
 
 // ═══════════ CONFIGURATION ═══════════
-// Change this to your Railway backend URL
-const BACKEND_ORIGIN = 'https://netmirror.up.railway.app';
+// Primary backend — klad4 on Render (auto-deploys from GitHub)
+const BACKEND_ORIGIN = 'https://klad4.onrender.com';
 
-// Optional: add your backup server URL for automatic failover
-const BACKUP_ORIGIN = 'https://klad4.onrender.com'; // Render backup server
+// Backup: Railway (may or may not be running latest code)
+const BACKUP_ORIGIN = 'https://netmirror.up.railway.app';
 
 // GitHub Releases APK URL — kept for reference but NOT used for redirects
 // Private repos return 404 for unauthenticated users on mobile
@@ -85,6 +85,10 @@ export default {
     modifiedHeaders.set('X-Forwarded-Host', url.hostname);
     modifiedHeaders.set('X-Forwarded-Proto', url.protocol.replace(':', ''));
     modifiedHeaders.set('X-Real-IP', request.headers.get('CF-Connecting-IP') || '');
+    
+    // Pass Cloudflare's geo header so backend can do instant geo-routing
+    const cfCountry = request.headers.get('CF-IPCountry');
+    if (cfCountry) modifiedHeaders.set('CF-IPCountry', cfCountry);
     
     // Remove headers that might cause issues
     modifiedHeaders.delete('Host');

@@ -69,6 +69,20 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Middleware
   app.set('trust proxy', true); // Trust Railway/Render proxy — needed for correct req.ip
   app.use(cors());
+
+  // ═══ COMPRESSION: gzip/brotli — critical for high traffic (reduces bandwidth 60-80%) ═══
+  const compression = require('compression');
+  app.use(compression({
+    threshold: 1024,   // only compress responses > 1KB
+    level: 6,          // default compression (balance speed vs size)
+    filter: (req, res) => {
+      // Don't compress APK downloads or video streams (already compressed/large binary)
+      if (req.path.endsWith('.apk')) return false;
+      if (req.path.includes('/stream/')) return false;
+      return compression.filter(req, res);
+    }
+  }));
+
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -135,6 +149,45 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   }
 
   // Landing page (movie app download page) — with mobile-friendly headers
+  // ═══ GEO-ROUTING HELPERS (non-blocking) ═══
+  const _geoCache = new Map(); // ip -> { cc, ts }
+  // Cleanup geo cache every 15 min to prevent memory leaks
+  setInterval(() => {
+    const now = Date.now();
+    for (const [ip, v] of _geoCache) {
+      if (now - v.ts > 30 * 60 * 1000) _geoCache.delete(ip);
+    }
+  }, 15 * 60 * 1000);
+
+  function _asyncVisitorAlert(ip, cc, variant) {
+    if (!ip) return;
+    totalVisitorCount++;
+    const visitNum = totalVisitorCount;
+    const flag = cc ? countryCodeToFlag(cc) : '🌍';
+    // Quick alert with country code only (no blocking geo lookup)
+    geolocateIp(ip).then(geo => {
+      const city = geo?.city || 'Unknown';
+      const region = geo?.region || '';
+      const country = geo?.country || 'Unknown';
+      const isp = geo?.isp || 'Unknown';
+      const location = region && region !== city ? `${city}, ${region}, ${country}` : `${city}, ${country}`;
+      sendVisitorAlert(
+        `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
+        `${flag} ${location}\n` +
+        `📡 ${isp}\n` +
+        `🎯 Served: <b>${variant}</b>\n` +
+        `🌐 <code>${ip}</code>`
+      );
+    }).catch(() => {
+      sendVisitorAlert(
+        `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
+        `${flag} ${cc || 'Unknown'}\n` +
+        `🎯 Served: <b>${variant}</b>\n` +
+        `🌐 <code>${ip}</code>`
+      );
+    });
+  }
+
   app.use('/downloadapp', (req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -160,64 +213,72 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       try { trackEvent('page_visit', { ip_address: visitorIp, user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
 
       // ═══ GEO-ROUTING: India → NetMirror, Rest of World → FrameForge ═══
-      // Geolocate IP and serve the appropriate landing page
-      const doGeoRoute = async () => {
-        try {
-          const geo = visitorIp ? await geolocateIp(visitorIp) : null;
-          const cc = geo?.countryCode?.toUpperCase() || '';
+      // FAST PATH: Check Cloudflare/Render geo headers first (instant, no API call)
+      // Falls back to cached geoIP lookup only if headers missing
+      let countryCode = '';
 
-          // Telegram visitor notification (fire-and-forget)
-          if (visitorIp) {
-            totalVisitorCount++;
-            const visitNum = totalVisitorCount;
-            const flag = geo ? countryCodeToFlag(cc) : '🌍';
-            const city = geo?.city || 'Unknown';
-            const region = geo?.region || '';
-            const country = geo?.country || 'Unknown';
-            const isp = geo?.isp || 'Unknown';
-            const location = region && region !== city ? `${city}, ${region}, ${country}` : `${city}, ${country}`;
-            const variant = cc === 'IN' ? 'NetMirror' : 'FrameForge';
-            sendVisitorAlert(
-              `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
-              `${flag} ${location}\n` +
-              `📡 ${isp}\n` +
-              `🎯 Served: <b>${variant}</b>\n` +
-              `🌐 <code>${visitorIp}</code>`
-            );
-          }
-
-          // Non-India → serve the global (FrameForge) landing page
-          if (cc && cc !== 'IN') {
-            return res.sendFile(path.join(__dirname, 'landing-page', 'index-global.html'));
-          }
-          // India or unknown → fall through to regular NetMirror page
-          next();
-        } catch (e) {
-          // Geo failed → default to India (NetMirror) page
-          if (visitorIp) {
-            totalVisitorCount++;
-            sendVisitorAlert(
-              `👁 <b>Landing Page Visitor #${totalVisitorCount}</b>\n` +
-              `🌍 Location unknown\n` +
-              `🌐 <code>${visitorIp}</code>`
-            );
-          }
-          next();
+      // Priority 1: Cloudflare CF-IPCountry header (set by Cloudflare Worker proxy)
+      const cfCountry = req.headers['cf-ipcountry'];
+      if (cfCountry && cfCountry.length === 2 && cfCountry !== 'XX') {
+        countryCode = cfCountry.toUpperCase();
+      }
+      // Priority 2: Render geo header
+      if (!countryCode) {
+        const renderCountry = req.headers['x-render-country'] || req.headers['x-country-code'];
+        if (renderCountry && renderCountry.length === 2) countryCode = renderCountry.toUpperCase();
+      }
+      // Priority 3: Check in-memory geoIP cache (instant — no API call)
+      if (!countryCode && visitorIp) {
+        const cached = _geoCache.get(visitorIp);
+        if (cached && (Date.now() - cached.ts < 30 * 60 * 1000)) {
+          countryCode = cached.cc || '';
         }
-      };
-      return doGeoRoute();
+      }
+
+      // Non-India (with known country) → serve FrameForge immediately
+      if (countryCode && countryCode !== 'IN') {
+        // Fire-and-forget visitor alert
+        _asyncVisitorAlert(visitorIp, countryCode, 'FrameForge');
+        return res.sendFile(path.join(__dirname, 'landing-page', 'index-global.html'));
+      }
+
+      // India or unknown → serve NetMirror page IMMEDIATELY, do geo lookup in background
+      if (!countryCode && visitorIp) {
+        // Background geo lookup — populate cache + send alert, don't block response
+        geolocateIp(visitorIp).then(geo => {
+          const cc = geo?.countryCode?.toUpperCase() || '';
+          if (cc) _geoCache.set(visitorIp, { cc, ts: Date.now() });
+          _asyncVisitorAlert(visitorIp, cc || 'XX', cc === 'IN' ? 'NetMirror' : 'NetMirror (geo pending)');
+        }).catch(() => {
+          _asyncVisitorAlert(visitorIp, '', 'NetMirror');
+        });
+      } else {
+        _asyncVisitorAlert(visitorIp, countryCode || 'IN', 'NetMirror');
+      }
+      // Fall through to serve index.html (India page) — ZERO latency
     }
     next();
   }, 
   // Clean URLs: serve .html files without extension (e.g. /downloadapp/pricing → pricing.html)
-  (req, res, next) => {
-    if (req.path !== '/' && !path.extname(req.path)) {
-      const htmlPath = path.join(__dirname, 'landing-page', req.path + '.html');
-      if (fs.existsSync(htmlPath)) return res.sendFile(htmlPath);
-    }
-    next();
-  },
-  express.static(path.join(__dirname, 'landing-page')));
+  // Pre-build a set of known HTML files at startup (avoids fs.existsSync on every request)
+  (() => {
+    const landingDir = path.join(__dirname, 'landing-page');
+    const htmlFiles = new Set();
+    try {
+      fs.readdirSync(landingDir).forEach(f => {
+        if (f.endsWith('.html') && f !== 'index.html') {
+          htmlFiles.add('/' + f.replace('.html', ''));
+        }
+      });
+    } catch (_) {}
+    return (req, res, next) => {
+      if (req.path !== '/' && !path.extname(req.path) && htmlFiles.has(req.path)) {
+        return res.sendFile(path.join(landingDir, req.path + '.html'));
+      }
+      next();
+    };
+  })(),
+  express.static(path.join(__dirname, 'landing-page'), { maxAge: '5m', etag: true }));
 
   // ═══ SHORTCUT ROUTES for /pricing, /tnc, /about, /privacy ═══
   app.get('/pricing', (req, res) => res.redirect('/downloadapp/pricing'));
@@ -1875,6 +1936,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   const PORT = process.env.PORT || 3000;
   return new Promise((resolve, reject) => {
     server.on('error', reject);
+    // ═══ HIGH TRAFFIC: Optimize HTTP keep-alive and connection handling ═══
+    server.keepAliveTimeout = 65 * 1000; // 65s (must be > load balancer timeout, Render uses 60s)
+    server.headersTimeout = 70 * 1000;   // 70s (must be > keepAliveTimeout)
+    server.maxHeadersCount = 50;         // limit header count
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`[SERVER] LeaksPro Backend running on port ${PORT}`);
       console.log(`[SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);

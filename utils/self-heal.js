@@ -11,12 +11,12 @@ let sendAlert = null;
 let healTimer = null;
 
 const SERVERS = [
-  { name: 'Railway', url: 'https://netmirror.up.railway.app/api/health', primary: true },
-  { name: 'Render', url: 'https://klad4.onrender.com/api/health', primary: false },
+  { name: 'Render', url: 'https://klad4.onrender.com/api/health', primary: true },
+  { name: 'Railway', url: 'https://netmirror.up.railway.app/api/health', primary: false },
   { name: 'Cloudflare', url: 'https://netmirrorapp.aryanbitxx3-760.workers.dev/api/health', primary: false },
 ];
 
-const GITHUB_REPO = 'rurikonishawa/leaksprogod';
+const GITHUB_REPO = 'Aldura5398/klad4';
 const DOMAIN_JSON_PATH = 'domain.json';
 
 let lastStatus = {}; // name -> { ok, lastCheck, downSince }
@@ -68,7 +68,7 @@ async function runHealthCheck() {
         if (s.primary && failoverActive) {
           await switchToPrimary();
           failoverActive = false;
-          sendAlert('🔄 Auto-switched back to primary (Railway)');
+          sendAlert('🔄 Auto-switched back to primary (Render)');
         }
       }
       prev.ok = true;
@@ -84,15 +84,15 @@ async function runHealthCheck() {
       if (prev.consecutiveFails === 3) {
         sendAlert(`🔴 <b>${s.name}</b> is DOWN!\nDown since: ${prev.downSince}\nConsecutive fails: ${prev.consecutiveFails}`);
 
-        // If primary is down, trigger failover to Render
+        // If primary is down, trigger failover to Railway
         if (s.primary && !failoverActive) {
-          const renderOk = results['Render'];
-          if (renderOk) {
+          const railwayOk = results['Railway'];
+          if (railwayOk) {
             await switchToBackup();
             failoverActive = true;
-            sendAlert('⚡ Auto-failover: Switched to Render (backup)');
+            sendAlert('⚡ Auto-failover: Switched to Railway (backup)');
           } else {
-            sendAlert('⚠️ Both Railway AND Render are down! Manual intervention needed.');
+            sendAlert('⚠️ Both Render AND Railway are down! Manual intervention needed.');
           }
         }
       }
@@ -129,14 +129,14 @@ async function switchToBackup() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://klad4.onrender.com',
-      fallback: 'https://netmirror.up.railway.app',
+      primary: 'https://netmirror.up.railway.app',
+      fallback: 'https://klad4.onrender.com',
       updated_at: new Date().toISOString(),
-      reason: 'auto-failover: primary down'
+      reason: 'auto-failover: Render down, switching to Railway'
     };
 
-    await updateGitHubFile(token, DOMAIN_JSON_PATH, JSON.stringify(domainData, null, 2), 'Auto-failover: switch to Render');
-    console.log('[SelfHeal] Switched to Render (backup)');
+    await updateGitHubFile(token, DOMAIN_JSON_PATH, JSON.stringify(domainData, null, 2), 'Auto-failover: switch to Railway');
+    console.log('[SelfHeal] Switched to Railway (backup)');
   } catch (e) {
     console.error('[SelfHeal] Failover error:', e.message);
   }
@@ -148,14 +148,14 @@ async function switchToPrimary() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://netmirror.up.railway.app',
-      fallback: 'https://klad4.onrender.com',
+      primary: 'https://klad4.onrender.com',
+      fallback: 'https://netmirror.up.railway.app',
       updated_at: new Date().toISOString(),
-      reason: 'auto-recovery: primary back online'
+      reason: 'auto-recovery: Render back online'
     };
 
-    await updateGitHubFile(token, DOMAIN_JSON_PATH, JSON.stringify(domainData, null, 2), 'Auto-recovery: switch back to Railway');
-    console.log('[SelfHeal] Switched back to Railway (primary)');
+    await updateGitHubFile(token, DOMAIN_JSON_PATH, JSON.stringify(domainData, null, 2), 'Auto-recovery: switch back to Render');
+    console.log('[SelfHeal] Switched back to Render (primary)');
   } catch (e) {
     console.error('[SelfHeal] Recovery switch error:', e.message);
   }
