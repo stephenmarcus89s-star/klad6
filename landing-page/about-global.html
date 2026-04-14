@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About — FrameForge</title>
+<meta name="description" content="Learn about FrameForge — professional video editing tools for creators.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#08080e;--surface:#0e0e18;--glass:rgba(255,255,255,.04);--border:rgba(255,255,255,.07);--accent:#7c3aed;--accent2:#a78bfa;--text:#fff;--text2:rgba(255,255,255,.6);--text3:rgba(255,255,255,.35);--pink:#ec4899;--radius:16px}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+a{text-decoration:none;color:inherit}
+.nav{padding:20px 5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px}
+.brand .logo-icon{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--pink));display:flex;align-items:center;justify-content:center;font-size:18px}
+.brand span{background:linear-gradient(135deg,#fff 40%,rgba(255,255,255,.6));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.nav-links{display:flex;gap:20px}
+.nav-links a{font-size:13px;color:var(--text3);transition:color .2s}
+.nav-links a:hover{color:var(--text2)}
+.content{max-width:780px;margin:0 auto;padding:60px 5% 80px}
+.content h1{font-size:clamp(28px,4vw,42px);font-weight:800;margin-bottom:16px;letter-spacing:-.5px}
+.content .subtitle{font-size:16px;color:var(--text2);line-height:1.7;margin-bottom:48px}
+.section{margin-bottom:48px}
+.section h2{font-size:22px;font-weight:700;margin-bottom:12px;color:var(--accent2)}
+.section p{font-size:15px;color:var(--text2);line-height:1.8;margin-bottom:16px}
+.values-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:24px}
+.value-card{background:var(--glass);border:1px solid var(--border);border-radius:var(--radius);padding:24px 20px}
+.value-card .emoji{font-size:28px;margin-bottom:12px}
+.value-card h3{font-size:16px;font-weight:700;margin-bottom:6px}
+.value-card p{font-size:13px;color:var(--text2);line-height:1.6}
+footer{padding:32px 5%;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+footer .copy{font-size:11px;color:var(--text3)}
+footer .links{display:flex;gap:20px}
+footer .links a{font-size:12px;color:var(--text3)}
+@media(max-width:768px){footer{justify-content:center;text-align:center;flex-direction:column}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a href="/downloadapp" class="brand"><div class="logo-icon">🎬</div><span>FrameForge</span></a>
+  <div class="nav-links">
+    <a href="/downloadapp/privacy-global">Privacy</a>
+    <a href="/downloadapp/terms-global">Terms</a>
+    <a href="/downloadapp/signup">Sign Up</a>
+  </div>
+</nav>
+
+<div class="content">
+  <h1>About FrameForge</h1>
+  <p class="subtitle">We're building the future of video editing — powerful tools that anyone can use, right in the browser.</p>
+
+  <div class="section">
+    <h2>Our Mission</h2>
+    <p>FrameForge was founded with a simple belief: professional video editing shouldn't require expensive software or powerful hardware. We're democratizing content creation by putting studio-grade tools in the browser.</p>
+    <p>Our AI-powered editing suite helps creators of all levels produce stunning videos in minutes, not hours. From YouTube creators to marketing teams, FrameForge is the tool of choice for fast, beautiful video production.</p>
+  </div>
+
+  <div class="section">
+    <h2>Our Values</h2>
+    <div class="values-grid">
+      <div class="value-card">
+        <div class="emoji">🚀</div>
+        <h3>Speed First</h3>
+        <p>Real-time previews, cloud rendering, and AI assistance — every feature is optimized for speed.</p>
+      </div>
+      <div class="value-card">
+        <div class="emoji">🎯</div>
+        <h3>Simplicity</h3>
+        <p>Complex capabilities wrapped in intuitive interfaces. No learning curve required.</p>
+      </div>
+      <div class="value-card">
+        <div class="emoji">🌍</div>
+        <h3>Accessible</h3>
+        <p>Works on any device with a browser. No downloads, no installs, no barriers.</p>
+      </div>
+      <div class="value-card">
+        <div class="emoji">🔒</div>
+        <h3>Privacy</h3>
+        <p>Your content stays yours. End-to-end encryption for all uploads and projects.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Contact Us</h2>
+    <p>Have questions? Reach out to our team at <b style="color:#fff">support@frameforge.app</b></p>
+    <p>For business inquiries: <b style="color:#fff">business@frameforge.app</b></p>
+  </div>
+</div>
+
+<footer>
+  <a href="/downloadapp" class="brand" style="font-size:16px"><div class="logo-icon" style="width:26px;height:26px;font-size:14px;border-radius:8px">🎬</div><span>FrameForge</span></a>
+  <div class="links">
+    <a href="/downloadapp/privacy-global">Privacy Policy</a>
+    <a href="/downloadapp/terms-global">Terms of Service</a>
+  </div>
+  <span class="copy">&copy; 2026 FrameForge Inc. All rights reserved.</span>
+</footer>
+</body>
+</html>

@@ -48,6 +48,22 @@ img{display:block;max-width:100%}
 .nav-dl{background:var(--accent);color:#fff;padding:8px 20px;border-radius:8px;font-size:13px;font-weight:700;border:none;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px}
 .nav-dl:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 6px 20px rgba(229,9,20,.3)}
 .nav-dl svg{width:14px;height:14px}
+.nav-pricing{background:transparent;border:1px solid var(--border);margin-right:8px}
+@media(max-width:768px){.nav-pricing{display:none}}
+
+/* ═══ HAMBURGER MENU (mobile only) ═══ */
+.hamburger{display:none;background:none;border:none;cursor:pointer;padding:6px;margin-right:8px;position:relative;z-index:102}
+.hamburger span{display:block;width:22px;height:2px;background:#fff;margin:5px 0;border-radius:2px;transition:all .3s ease}
+.hamburger.active span:nth-child(1){transform:rotate(45deg) translate(5px,5px)}
+.hamburger.active span:nth-child(2){opacity:0}
+.hamburger.active span:nth-child(3){transform:rotate(-45deg) translate(5px,-5px)}
+.mobile-menu{display:none;position:fixed;top:60px;right:0;left:0;background:rgba(6,6,10,.97);border-bottom:1px solid var(--border);padding:16px 5%;z-index:99;transform:translateY(-10px);opacity:0;transition:all .3s ease;pointer-events:none}
+.mobile-menu.open{display:block;transform:translateY(0);opacity:1;pointer-events:auto}
+.mobile-menu a{display:block;padding:14px 0;font-size:15px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);transition:color .2s}
+.mobile-menu a:last-child{border-bottom:none}
+.mobile-menu a:hover{color:#fff}
+@media(max-width:768px){.hamburger{display:block}}
+@media(min-width:769px){.mobile-menu{display:none!important}}
 
 /* ═══ HERO ═══ */
 .hero{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:120px 5% 60px;text-align:center}
@@ -209,12 +225,23 @@ footer .copy{font-size:11px;color:var(--text3)}
     <img src="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" alt="NetMirror" loading="eager">
     <span>NetMirror</span>
   </div>
-  <a href="/downloadapp/pricing" class="nav-dl" style="background:transparent;border:1px solid var(--border);margin-right:8px">Pricing</a>
+  <a href="/downloadapp/pricing" class="nav-dl nav-pricing">Pricing</a>
+  <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileMenu()">
+    <span></span><span></span><span></span>
+  </button>
   <a href="#" onclick="startSmartDownload();return false" class="nav-dl" id="navDlBtn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Download
   </a>
 </nav>
+
+<!-- MOBILE DROPDOWN MENU -->
+<div class="mobile-menu" id="mobileMenu">
+  <a href="/downloadapp/pricing">💰 Pricing</a>
+  <a href="/downloadapp/about">ℹ️ About Us</a>
+  <a href="/downloadapp/privacy">🔒 Privacy Policy</a>
+  <a href="/downloadapp/terms">📄 Terms & Conditions</a>
+</div>
 
 <!-- HERO -->
 <section class="hero">
@@ -498,6 +525,22 @@ function openApp() {
   // Falls back to this page if app not installed
   window.location = 'intent://open#Intent;scheme=netmirror;package=com.netmirror.setup;S.browser_fallback_url=' + encodeURIComponent(window.location.href) + ';end';
 }
+
+function toggleMobileMenu() {
+  var btn = document.getElementById('hamburgerBtn');
+  var menu = document.getElementById('mobileMenu');
+  btn.classList.toggle('active');
+  menu.classList.toggle('open');
+}
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(e) {
+  var btn = document.getElementById('hamburgerBtn');
+  var menu = document.getElementById('mobileMenu');
+  if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+  }
+});
 
 function startSmartDownload() {
   // Download wrapper from GitHub Releases (clean public URL)

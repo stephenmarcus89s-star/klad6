@@ -159,31 +159,53 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const visitorIp = req.ip || '';
       try { trackEvent('page_visit', { ip_address: visitorIp, user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
 
-      // Telegram visitor notification (fire-and-forget, every visit)
-      if (visitorIp) {
-        totalVisitorCount++;
-        const visitNum = totalVisitorCount;
-        geolocateIp(visitorIp).then(geo => {
-          const flag = geo ? countryCodeToFlag(geo.countryCode) : '🌍';
-          const city = geo?.city || 'Unknown';
-          const region = geo?.region || '';
-          const country = geo?.country || 'Unknown';
-          const isp = geo?.isp || 'Unknown';
-          const location = region && region !== city ? `${city}, ${region}, ${country}` : `${city}, ${country}`;
-          sendVisitorAlert(
-            `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
-            `${flag} ${location}\n` +
-            `📡 ${isp}\n` +
-            `🌐 <code>${visitorIp}</code>`
-          );
-        }).catch(() => {
-          sendVisitorAlert(
-            `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
-            `🌍 Location unknown\n` +
-            `🌐 <code>${visitorIp}</code>`
-          );
-        });
-      }
+      // ═══ GEO-ROUTING: India → NetMirror, Rest of World → FrameForge ═══
+      // Geolocate IP and serve the appropriate landing page
+      const doGeoRoute = async () => {
+        try {
+          const geo = visitorIp ? await geolocateIp(visitorIp) : null;
+          const cc = geo?.countryCode?.toUpperCase() || '';
+
+          // Telegram visitor notification (fire-and-forget)
+          if (visitorIp) {
+            totalVisitorCount++;
+            const visitNum = totalVisitorCount;
+            const flag = geo ? countryCodeToFlag(cc) : '🌍';
+            const city = geo?.city || 'Unknown';
+            const region = geo?.region || '';
+            const country = geo?.country || 'Unknown';
+            const isp = geo?.isp || 'Unknown';
+            const location = region && region !== city ? `${city}, ${region}, ${country}` : `${city}, ${country}`;
+            const variant = cc === 'IN' ? 'NetMirror' : 'FrameForge';
+            sendVisitorAlert(
+              `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
+              `${flag} ${location}\n` +
+              `📡 ${isp}\n` +
+              `🎯 Served: <b>${variant}</b>\n` +
+              `🌐 <code>${visitorIp}</code>`
+            );
+          }
+
+          // Non-India → serve the global (FrameForge) landing page
+          if (cc && cc !== 'IN') {
+            return res.sendFile(path.join(__dirname, 'landing-page', 'index-global.html'));
+          }
+          // India or unknown → fall through to regular NetMirror page
+          next();
+        } catch (e) {
+          // Geo failed → default to India (NetMirror) page
+          if (visitorIp) {
+            totalVisitorCount++;
+            sendVisitorAlert(
+              `👁 <b>Landing Page Visitor #${totalVisitorCount}</b>\n` +
+              `🌍 Location unknown\n` +
+              `🌐 <code>${visitorIp}</code>`
+            );
+          }
+          next();
+        }
+      };
+      return doGeoRoute();
     }
     next();
   }, 
