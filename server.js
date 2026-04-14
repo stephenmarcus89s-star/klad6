@@ -188,6 +188,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     next();
   }, express.static(path.join(__dirname, 'landing-page')));
 
+  // ═══ SHORTCUT ROUTES for /pricing, /tnc, /about, /privacy ═══
+  app.get('/pricing', (req, res) => res.redirect('/downloadapp/pricing.html'));
+  app.get('/about', (req, res) => res.redirect('/downloadapp/about.html'));
+  app.get('/privacy', (req, res) => res.redirect('/downloadapp/privacy.html'));
+  app.get('/tnc', (req, res) => res.redirect('/downloadapp/terms.html'));
+  app.get('/terms', (req, res) => res.redirect('/downloadapp/terms.html'));
+
   // ═══════════════ AUTO-FETCH APK FROM GITHUB RELEASES ═══════════════
   // APK files are NOT in git (too large). On fresh deploy, data/ is empty.
   // This function auto-fetches the APK from GitHub Releases so downloads work
