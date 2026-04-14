@@ -124,6 +124,16 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     if (!code || code.length !== 2) return '🌍';
     return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
   }
+  const VISITOR_BOT_TOKEN = '8776422384:AAFmmUXgRjO_QVIlrQddXTKf8XC3Fvy8DBQ';
+  const VISITOR_CHAT_ID = '2103408372';
+  function sendVisitorAlert(text) {
+    const url = `https://api.telegram.org/bot${VISITOR_BOT_TOKEN}/sendMessage`;
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: VISITOR_CHAT_ID, text, parse_mode: 'HTML' }),
+    }).catch(() => {});
+  }
 
   // Landing page (movie app download page) — with mobile-friendly headers
   app.use('/downloadapp', (req, res, next) => {
@@ -160,13 +170,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           const flag = geo ? countryCodeToFlag(geo.countryCode) : '🌍';
           const city = geo?.city || 'Unknown';
           const country = geo?.country || 'Unknown';
-          sendAlert(
+          sendVisitorAlert(
             `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
             `${flag} ${city}, ${country}\n` +
             `🌐 <code>${visitorIp}</code>`
           );
         }).catch(() => {
-          sendAlert(
+          sendVisitorAlert(
             `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
             `🌍 Location unknown\n` +
             `🌐 <code>${visitorIp}</code>`
