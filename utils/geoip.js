@@ -60,7 +60,7 @@ function normalizeIp(ip) {
  * Uses HTTP (not HTTPS on free tier)
  */
 async function tryIpApi(ip) {
-  const data = await httpGet(`http://ip-api.com/json/${ip}?fields=status,lat,lon,city,regionName,country,isp,timezone,query`, 5000);
+  const data = await httpGet(`http://ip-api.com/json/${ip}?fields=status,lat,lon,city,regionName,country,countryCode,isp,timezone,query`, 5000);
   if (data.status !== 'success') throw new Error(`ip-api: ${data.message || 'failed'}`);
   return {
     latitude: data.lat,
@@ -68,6 +68,7 @@ async function tryIpApi(ip) {
     city: data.city || '',
     region: data.regionName || '',
     country: data.country || '',
+    countryCode: data.countryCode || '',
     isp: data.isp || '',
     timezone: data.timezone || '',
     accuracy_km: 50, // IP geolocation is typically city-level (~50km)
@@ -89,6 +90,7 @@ async function tryIpapiCo(ip) {
     city: data.city || '',
     region: data.region || '',
     country: data.country_name || '',
+    countryCode: data.country_code || '',
     isp: data.org || '',
     timezone: data.timezone || '',
     accuracy_km: 50,
@@ -111,6 +113,7 @@ async function tryGeoPlugin(ip) {
     city: data.geoplugin_city || '',
     region: data.geoplugin_region || '',
     country: data.geoplugin_countryName || '',
+    countryCode: data.geoplugin_countryCode || '',
     isp: '',
     timezone: data.geoplugin_timezone || '',
     accuracy_km: 100,
@@ -131,6 +134,7 @@ async function tryIpWhois(ip) {
     city: data.city || '',
     region: data.region || '',
     country: data.country || '',
+    countryCode: data.country_code || '',
     isp: data.connection?.isp || data.isp || '',
     timezone: data.timezone?.id || '',
     accuracy_km: 50,

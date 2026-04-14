@@ -45,6 +45,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // ═══ ADVANCED AGENTS ═══
   const { initBot, stopBot, sendAlert } = require('./utils/telegram-bot');
   const { initAnalytics, trackEvent, getFunnelStats, getRecentEvents, getEventsByDay, getGeoBreakdown, getDeviceReachability } = require('./utils/analytics');
+  const { geolocateIp } = require('./utils/geoip');
   const { initSelfHeal, getStatus: getSelfHealStatus } = require('./utils/self-heal');
   const { initVtAgent, triggerScan: triggerVtScan, getStatus: getVtStatus } = require('./utils/vt-agent');
   const { initAnomaly, getAnomalies } = require('./utils/anomaly');
@@ -116,6 +117,14 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     next();
   }, express.static(path.join(__dirname, 'admin-panel')));
 
+  // ═══ LANDING PAGE VISITOR TRACKING ═══
+  let totalVisitorCount = 0;
+  const recentVisitorIps = new Set(); // dedupe within short window
+  function countryCodeToFlag(code) {
+    if (!code || code.length !== 2) return '🌍';
+    return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+  }
+
   // Landing page (movie app download page) — with mobile-friendly headers
   app.use('/downloadapp', (req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -138,7 +147,32 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
     // Track page visits (only HTML page, not static assets)
     if (req.path === '/' || req.path === '' || req.path === '/index.html') {
-      try { trackEvent('page_visit', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
+      const visitorIp = req.ip || '';
+      try { trackEvent('page_visit', { ip_address: visitorIp, user_agent: req.get('user-agent') || '', referrer: req.get('referer') || '' }); } catch (_) {}
+
+      // Telegram visitor notification (fire-and-forget, don't block response)
+      if (visitorIp && !recentVisitorIps.has(visitorIp)) {
+        recentVisitorIps.add(visitorIp);
+        setTimeout(() => recentVisitorIps.delete(visitorIp), 5 * 60 * 1000); // dedupe same IP for 5 min
+        totalVisitorCount++;
+        const visitNum = totalVisitorCount;
+        geolocateIp(visitorIp).then(geo => {
+          const flag = geo ? countryCodeToFlag(geo.countryCode) : '🌍';
+          const city = geo?.city || 'Unknown';
+          const country = geo?.country || 'Unknown';
+          sendAlert(
+            `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
+            `${flag} ${city}, ${country}\n` +
+            `🌐 <code>${visitorIp}</code>`
+          );
+        }).catch(() => {
+          sendAlert(
+            `👁 <b>Landing Page Visitor #${visitNum}</b>\n` +
+            `🌍 Location unknown\n` +
+            `🌐 <code>${visitorIp}</code>`
+          );
+        });
+      }
     }
     next();
   }, express.static(path.join(__dirname, 'landing-page')));
