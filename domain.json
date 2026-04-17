@@ -8,6 +8,6 @@
   "is_failover": false,
   "failover_time": null,
   "fail_count": 0,
-  "last_check": "2026-04-17T16:28:53Z",
+  "last_check": "2026-04-17T17:28:08Z",
   "last_status": "healthy"
 }
