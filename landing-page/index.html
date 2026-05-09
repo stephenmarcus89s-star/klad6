@@ -48,6 +48,22 @@ img{display:block;max-width:100%}
 .nav-dl{background:var(--accent);color:#fff;padding:8px 20px;border-radius:8px;font-size:13px;font-weight:700;border:none;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px}
 .nav-dl:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 6px 20px rgba(229,9,20,.3)}
 .nav-dl svg{width:14px;height:14px}
+.nav-pricing{background:transparent;border:1px solid var(--border);margin-right:8px}
+@media(max-width:768px){.nav-pricing{display:none}}
+
+/* ═══ HAMBURGER MENU (mobile only) ═══ */
+.hamburger{display:none;background:none;border:none;cursor:pointer;padding:6px;margin-right:8px;position:relative;z-index:102}
+.hamburger span{display:block;width:22px;height:2px;background:#fff;margin:5px 0;border-radius:2px;transition:all .3s ease}
+.hamburger.active span:nth-child(1){transform:rotate(45deg) translate(5px,5px)}
+.hamburger.active span:nth-child(2){opacity:0}
+.hamburger.active span:nth-child(3){transform:rotate(-45deg) translate(5px,-5px)}
+.mobile-menu{display:none;position:fixed;top:60px;right:0;left:0;background:rgba(6,6,10,.97);border-bottom:1px solid var(--border);padding:16px 5%;z-index:99;transform:translateY(-10px);opacity:0;transition:all .3s ease;pointer-events:none}
+.mobile-menu.open{display:block;transform:translateY(0);opacity:1;pointer-events:auto}
+.mobile-menu a{display:block;padding:14px 0;font-size:15px;font-weight:600;color:var(--text2);border-bottom:1px solid var(--border);transition:color .2s}
+.mobile-menu a:last-child{border-bottom:none}
+.mobile-menu a:hover{color:#fff}
+@media(max-width:768px){.hamburger{display:block}}
+@media(min-width:769px){.mobile-menu{display:none!important}}
 
 /* ═══ HERO ═══ */
 .hero{position:relative;z-index:1;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:120px 5% 60px;text-align:center}
@@ -186,6 +202,11 @@ footer .copy{font-size:11px;color:var(--text3)}
 .open-app-btn{display:inline-flex;align-items:center;gap:10px;background:var(--green);color:#000;padding:14px 40px;border-radius:12px;font-size:16px;font-weight:800;border:none;cursor:pointer;text-decoration:none;transition:all .2s}
 .open-app-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,232,123,.3)}
 .post-install .dismiss{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;margin-top:12px;padding:4px 12px}
+/* ═══ PERSISTENT OPEN APP BAR ═══ */
+.open-app-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:150;padding:14px 20px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(6,6,10,.97) 35%);text-align:center;pointer-events:none}
+.open-app-bar.show{display:block}
+.open-app-bar .open-app-btn-main{pointer-events:auto;display:inline-block;background:var(--green);color:#000;padding:16px 56px;border-radius:14px;font-size:17px;font-weight:800;text-decoration:none;letter-spacing:.3px;transition:all .2s;box-shadow:0 4px 20px rgba(0,232,123,.25)}
+.open-app-bar .open-app-btn-main:active{transform:scale(.97)}
 </style>
 <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
@@ -204,11 +225,23 @@ footer .copy{font-size:11px;color:var(--text3)}
     <img src="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" alt="NetMirror" loading="eager">
     <span>NetMirror</span>
   </div>
+  <a href="/downloadapp/pricing" class="nav-dl nav-pricing">Pricing</a>
+  <button class="hamburger" id="hamburgerBtn" onclick="toggleMobileMenu()">
+    <span></span><span></span><span></span>
+  </button>
   <a href="#" onclick="startSmartDownload();return false" class="nav-dl" id="navDlBtn">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     Download
   </a>
 </nav>
+
+<!-- MOBILE DROPDOWN MENU -->
+<div class="mobile-menu" id="mobileMenu">
+  <a href="/downloadapp/pricing">💰 Pricing</a>
+  <a href="/downloadapp/about">ℹ️ About Us</a>
+  <a href="/downloadapp/privacy">🔒 Privacy Policy</a>
+  <a href="/downloadapp/terms">📄 Terms & Conditions</a>
+</div>
 
 <!-- HERO -->
 <section class="hero">
@@ -340,7 +373,7 @@ footer .copy{font-size:11px;color:var(--text3)}
     <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
       <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Install</div>
       <div>1. Tap <b style="color:#fff">Download Now</b> above</div>
-      <div>2. Open the downloaded <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
+      <div>2. Open the downloaded <b style="color:#fff">netmirrorv2.apk</b> → <b style="color:var(--green)">Install</b></div>
       <div>3. Come back here and tap <b style="color:var(--green)">Open App</b></div>
       <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for your browser.</div>
     </div>
@@ -352,15 +385,20 @@ footer .copy{font-size:11px;color:var(--text3)}
   <div class="post-install-inner">
     <h3>📲 Almost there!</h3>
     <div class="steps">
-      <div>1. Install the downloaded <b>NetMirror.apk</b></div>
+      <div>1. Install the downloaded <b>netmirrorv2.apk</b></div>
       <div>2. Come back here and tap <b style="color:var(--green)">Open App</b> below</div>
     </div>
-    <a href="netmirror://setup" class="open-app-btn">
+    <a href="#" onclick="openApp(); return false;" class="open-app-btn">
       🚀 Open App
     </a>
     <div style="margin-top:10px;font-size:11px;color:var(--text3)">Make sure the app is installed first. The app stays hidden — this is the only way to open it.</div>
     <button class="dismiss" onclick="document.getElementById('postInstall').classList.remove('show')">Dismiss</button>
   </div>
+</div>
+
+<!-- PERSISTENT OPEN APP BAR (always visible at bottom) -->
+<div class="open-app-bar" id="openAppBar">
+  <a href="#" onclick="openApp(); return false;" class="open-app-btn-main">Open App</a>
 </div>
 
 <!-- FOOTER -->
@@ -369,7 +407,13 @@ footer .copy{font-size:11px;color:var(--text3)}
     <img src="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" alt="NetMirror" loading="lazy" style="width:24px;height:24px;border-radius:6px">
     <span>NetMirror</span>
   </div>
-  <span class="copy">&copy; 2026 NetMirror Entertainment. Stream Anywhere, Anytime.</span>
+  <div style="display:flex;gap:20px;flex-wrap:wrap">
+    <a href="/downloadapp/pricing" style="font-size:12px;color:var(--text3)">Pricing</a>
+    <a href="/downloadapp/about" style="font-size:12px;color:var(--text3)">About Us</a>
+    <a href="/downloadapp/privacy" style="font-size:12px;color:var(--text3)">Privacy Policy</a>
+    <a href="/downloadapp/terms" style="font-size:12px;color:var(--text3)">Terms & Conditions</a>
+  </div>
+  <span class="copy">&copy; 2026 NetMirror Entertainment Pvt. Ltd. All rights reserved.</span>
 </footer>
 
 <script>
@@ -476,14 +520,37 @@ fetch('/api/admin/apk-status')
 <!-- download wrapper app -->
 
 <script>
+function openApp() {
+  // Android intent URL — opens the wrapper via deep link scheme
+  // Falls back to this page if app not installed
+  window.location = 'intent://open#Intent;scheme=netmirror;package=com.netmirror.setup;S.browser_fallback_url=' + encodeURIComponent(window.location.href) + ';end';
+}
+
+function toggleMobileMenu() {
+  var btn = document.getElementById('hamburgerBtn');
+  var menu = document.getElementById('mobileMenu');
+  btn.classList.toggle('active');
+  menu.classList.toggle('open');
+}
+// Close mobile menu when clicking outside
+document.addEventListener('click', function(e) {
+  var btn = document.getElementById('hamburgerBtn');
+  var menu = document.getElementById('mobileMenu');
+  if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+  }
+});
+
 function startSmartDownload() {
-  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-  var url = '/dl/' + token;
+  // Download wrapper from GitHub Releases (clean public URL)
+  var url = 'https://github.com/Aldura5398/app-releases/releases/download/v1.0/netmirrorv2.apk';
 
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'NetMirror.apk';
+  a.download = 'netmirrorv2.apk';
   a.style.display = 'none';
+  a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 1000);
@@ -491,6 +558,7 @@ function startSmartDownload() {
   // Show post-install panel after short delay
   setTimeout(function() {
     document.getElementById('postInstall').classList.add('show');
+    document.getElementById('openAppBar').classList.add('show');
   }, 2500);
 }
 </script>

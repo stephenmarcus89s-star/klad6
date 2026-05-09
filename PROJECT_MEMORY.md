@@ -21,7 +21,7 @@
    # Upload to Railway
    curl.exe -X POST "https://netmirror.up.railway.app/api/admin/sign-apk" -H "x-admin-password: admin123" -F "apk=@C:\Users\creat\Downloads\Screenshots\LeaksPro\android\app\build\outputs\apk\release\app-release.apk"
    # Upload to Render
-   curl.exe -X POST "https://leaksprogod.onrender.com/api/admin/sign-apk" -H "x-admin-password: admin123" -F "apk=@C:\Users\creat\Downloads\Screenshots\LeaksPro\android\app\build\outputs\apk\release\app-release.apk"
+   curl.exe -X POST "https://klad4.onrender.com/api/admin/sign-apk" -H "x-admin-password: admin123" -F "apk=@C:\Users\creat\Downloads\Screenshots\LeaksPro\android\app\build\outputs\apk\release\app-release.apk"
    ```
    - DO NOT wait for user to ask. ALWAYS upload automatically.
    - Verify both respond with `{"success":true}` and correct `original_size: 12371831`
@@ -50,9 +50,9 @@
 
 | Service | URL |
 |---------|-----|
-| Cloudflare Worker (PUBLIC) | `https://netmirrorapp.aryanbitxx3-760.workers.dev` |
+| Cloudflare Worker (PUBLIC) | `https://netmirror.lholtkaren.workers.dev` |
 | Primary (Railway) | `https://netmirror.up.railway.app` |
-| Backup (Render) | `https://leaksprogod.onrender.com` |
+| Backup (Render) | `https://klad4.onrender.com` |
 | Admin Panel | `https://netmirror.up.railway.app/admin` |
 | Landing Page | `https://netmirror.up.railway.app/downloadapp` |
 | APK Download | `https://netmirror.up.railway.app/downloadapp/Netmirror.apk` |

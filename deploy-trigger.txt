@@ -1,2 +1,0 @@
-Deploy trigger v3: 2026-03-22 06:22:00
-Fix crash + SMS permissions — use v7.1 mutator with self-heal
