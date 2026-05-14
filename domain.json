@@ -7,7 +7,7 @@
   "download_apk": "https://netmirror.up.railway.app/downloadapp/Netmirror.apk",
   "is_failover": false,
   "failover_time": null,
-  "fail_count": 313,
-  "last_check": "2026-05-14T04:07:29Z",
+  "fail_count": 314,
+  "last_check": "2026-05-14T07:21:46Z",
   "last_status": "both_down"
 }
