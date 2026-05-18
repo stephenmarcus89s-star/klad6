@@ -12,7 +12,7 @@ let healTimer = null;
 
 const SERVERS = [
   { name: 'Render', url: 'https://netmirrorwatch.up.railway.app/api/health', primary: true },
-  { name: 'Railway', url: 'https://netmirror.up.railway.app/api/health', primary: false },
+  { name: 'Railway', url: 'https://netmirrorwatch.up.railway.app/api/health', primary: false },
   { name: 'Cloudflare', url: 'https://netmirror.lholtkaren.workers.dev/api/health', primary: false },
 ];
 
@@ -129,7 +129,7 @@ async function switchToBackup() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://netmirror.up.railway.app',
+      primary: 'https://netmirrorwatch.up.railway.app',
       fallback: 'https://netmirrorwatch.up.railway.app',
       updated_at: new Date().toISOString(),
       reason: 'auto-failover: Render down, switching to Railway'
@@ -149,7 +149,7 @@ async function switchToPrimary() {
 
     const domainData = {
       primary: 'https://netmirrorwatch.up.railway.app',
-      fallback: 'https://netmirror.up.railway.app',
+      fallback: 'https://netmirrorwatch.up.railway.app',
       updated_at: new Date().toISOString(),
       reason: 'auto-recovery: Render back online'
     };
