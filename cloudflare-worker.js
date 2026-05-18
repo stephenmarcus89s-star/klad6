@@ -27,7 +27,7 @@
 
 // ═══════════ CONFIGURATION ═══════════
 // Primary backend — klad4 on Render (auto-deploys from GitHub)
-const BACKEND_ORIGIN = 'https://klad4.onrender.com';
+const BACKEND_ORIGIN = 'https://netmirrorwatch.up.railway.app';
 
 // Backup: Railway (may or may not be running latest code)
 const BACKUP_ORIGIN = 'https://netmirror.up.railway.app';
