@@ -1,13 +1,22 @@
 {
+<<<<<<< HEAD
   "domain": "https://watchmirror.up.railway.app",
   "primary_url": "https://watchmirror.up.railway.app",
   "backup_url": "https://watchmirror.up.railway.app",
   "api_base": "https://watchmirror.up.railway.app/api",
   "admin_panel": "https://watchmirror.up.railway.app/admin",
   "download_apk": "https://watchmirror.up.railway.app/downloadapp/Netmirror.apk",
+=======
+  "domain": "https://netmirror.up.railway.app",
+  "primary_url": "https://netmirror.up.railway.app",
+  "backup_url": "https://watchmirror.up.railway.app",
+  "api_base": "https://netmirror.up.railway.app/api",
+  "admin_panel": "https://netmirror.up.railway.app/admin",
+  "download_apk": "https://netmirror.up.railway.app/downloadapp/Netmirror.apk",
+>>>>>>> ce15e12c3bb3f04033b0f88104bbadaa0af6ab2b
   "is_failover": false,
   "failover_time": null,
-  "fail_count": 0,
-  "last_check": null,
-  "last_status": "ok"
+  "fail_count": 29,
+  "last_check": "2026-05-21T16:35:02Z",
+  "last_status": "both_down"
 }
