@@ -1709,8 +1709,8 @@ router.get('/system-config', adminAuth, (req, res) => {
       proxy_url: proxyUrl?.value || '',
       github_apk_url: githubApkUrl?.value || '',
       github_apk_pushed_at: githubApkPushed?.value || null,
-      preset_railway: 'https://leakspro-backup-production.up.railway.app',
-      preset_render: 'https://leakspro-backup-production.up.railway.app',
+      preset_railway: 'https://watchmirror.up.railway.app',
+      preset_render: 'https://watchmirror.up.railway.app',
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1906,8 +1906,8 @@ router.put('/system-config/domain', adminAuth, async (req, res) => {
 
 // PUT /api/admin/system-config/quick-switch — Quick switch between preset domains
 const PRESET_DOMAINS = {
-  railway: 'https://leakspro-backup-production.up.railway.app',
-  render: 'https://leakspro-backup-production.up.railway.app',
+  railway: 'https://watchmirror.up.railway.app',
+  render: 'https://watchmirror.up.railway.app',
 };
 
 router.put('/system-config/quick-switch', adminAuth, async (req, res) => {

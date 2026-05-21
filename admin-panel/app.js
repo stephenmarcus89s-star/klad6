@@ -3632,8 +3632,8 @@ async function loadSystemConfig() {
     }
 
     // Quick Domain Switcher state
-    const railwayUrl = data.preset_railway || 'https://leakspro-backup-production.up.railway.app';
-    const renderUrl = data.preset_render || 'https://leakspro-backup-production.up.railway.app';
+    const railwayUrl = data.preset_railway || 'https://watchmirror.up.railway.app';
+    const renderUrl = data.preset_render || 'https://watchmirror.up.railway.app';
     document.getElementById('sysRailwayUrl').textContent = railwayUrl;
     document.getElementById('sysRenderUrl').textContent = renderUrl;
 
