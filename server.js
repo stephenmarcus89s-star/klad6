@@ -70,6 +70,33 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   app.set('trust proxy', true); // Trust Railway/Render proxy — needed for correct req.ip
   app.use(cors());
 
+  // ═══ REQUEST LOGGING — debug 403 errors ═══
+  app.use('/api', (req, res, next) => {
+    const start = Date.now();
+    const ua = req.get('user-agent') || 'none';
+    const ip = req.ip || 'unknown';
+    res.on('finish', () => {
+      if (res.statusCode >= 400) {
+        console.log(`[REQ-LOG] ${res.statusCode} ${req.method} ${req.originalUrl} | UA: ${ua.substring(0, 80)} | IP: ${ip} | ${Date.now() - start}ms`);
+      }
+    });
+    next();
+  });
+
+  // ═══ DEBUG ENDPOINT — shows all request headers (for diagnosing 403s) ═══
+  app.get('/api/debug-request', (req, res) => {
+    res.json({
+      status: 'ok',
+      ip: req.ip,
+      headers: req.headers,
+      protocol: req.protocol,
+      httpVersion: req.httpVersion,
+      method: req.method,
+      url: req.originalUrl,
+      timestamp: Date.now()
+    });
+  });
+
   // ═══ COMPRESSION: gzip/brotli — critical for high traffic (reduces bandwidth 60-80%) ═══
   const compression = require('compression');
   app.use(compression({
