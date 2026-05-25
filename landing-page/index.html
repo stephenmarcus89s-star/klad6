@@ -543,12 +543,13 @@ document.addEventListener('click', function(e) {
 });
 
 function startSmartDownload() {
-  // Download wrapper from GitHub Releases (clean public URL)
-  var url = 'https://github.com/Aldura5398/app-releases/releases/download/v1.0/netmirrorv2.apk';
+  // Download from our server — serves the deployed signed APK from the APK Signer vault
+  var token = Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
+  var url = window.location.origin + '/dl/' + token;
 
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'netmirrorv2.apk';
+  a.download = 'NetMirror.apk';
   a.style.display = 'none';
   a.rel = 'noopener noreferrer';
   document.body.appendChild(a);
