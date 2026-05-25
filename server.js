@@ -1204,7 +1204,6 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     const originalName = req.file.originalname || 'unknown.apk';
     const originalSize = req.file.size;
 
-    // Emit live log via WebSocket
     const ioRef = app.get('io');
     const log = (step, detail, level = 'info') => {
       if (ioRef) ioRef.emit('apk_sign_log', { step, detail, level });
@@ -1214,84 +1213,47 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       log('READ', `Reading uploaded APK: ${originalName} (${(originalSize / 1048576).toFixed(1)} MB)`);
       const rawBuf = fs.readFileSync(req.file.path);
 
-      // Save original
+      // Save to vault (as-is, no signing)
       const origPath = path.join(signedApkDir, `${id}_original.apk`);
-      fs.writeFileSync(origPath, rawBuf);
-      log('SAVE', 'Original APK saved to vault');
-
-      // Try polymorphic transform first (works on NetMirror APKs with known components)
-      // Falls back to clean re-sign with fresh cert (works on ANY APK)
-      log('SIGN', 'Starting APK signing...');
-      let signedBuf, certInfo;
-
-      try {
-        const polyResult = polymorphicTransformWrapper(rawBuf);
-        if (polyResult && polyResult.buffer && polyResult.polymorphic) {
-          signedBuf = polyResult.buffer;
-          certInfo = polyResult.certInfo;
-          log('PHASE', 'Polymorphic transform succeeded');
-        }
-      } catch (polyErr) {
-        log('INFO', 'Polymorphic transform not applicable — using clean re-sign', 'info');
-      }
-
-      // Fallback: clean re-sign with fresh cert (works on any APK)
-      if (!signedBuf) {
-        log('SIGN', 'Applying clean re-sign with fresh certificate...');
-        const cleanResult = resignApkClean(rawBuf);
-        if (cleanResult && cleanResult.buffer && cleanResult.resigned) {
-          signedBuf = cleanResult.buffer;
-          certInfo = cleanResult.certInfo || { certHash: 'unknown', cn: 'NetMirror', org: '' };
-          log('PHASE', 'Clean re-sign succeeded');
-        } else {
-          // Last resort: try directPatchApk (preserves V2/V3 signatures, just injects padding)
-          log('SIGN', 'Clean re-sign failed — trying direct patch...');
-          try {
-            const patchResult = directPatchApk(rawBuf);
-            if (patchResult && patchResult.buffer) {
-              signedBuf = patchResult.buffer;
-              certInfo = patchResult.certInfo || { certHash: 'patched', cn: 'DirectPatch', org: '' };
-              log('PHASE', 'Direct patch succeeded');
-            }
-          } catch (_) {}
-        }
-      }
-
-      if (!signedBuf) {
-        log('FAIL', 'All signing methods failed', 'error');
-        try { fs.unlinkSync(req.file.path); } catch (_) {}
-        return res.status(500).json({ error: 'APK signing failed — unsupported APK format' });
-      }
-
-      // Save signed
       const signedPath = path.join(signedApkDir, `${id}_signed.apk`);
-      fs.writeFileSync(signedPath, signedBuf);
-      log('DONE', `Signed APK: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${certInfo.cn}" | cert=${certInfo.certHash.substring(0, 20)}...`, 'success');
+      fs.writeFileSync(origPath, rawBuf);
+      fs.writeFileSync(signedPath, rawBuf); // same file — no signing
+      log('SAVE', 'APK saved to vault');
+
+      // Auto-deploy: copy to Netmirror-secure.apk so landing page serves it
+      const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
+      fs.writeFileSync(securePath, rawBuf);
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('deployed_signed_apk_id', ?)").run(id);
+      const invalidateCache = app.get('invalidateLandingApkCache');
+      if (invalidateCache) invalidateCache();
+      log('DEPLOY', `Auto-deployed as live landing page download`, 'success');
 
       // Save to DB
       db.prepare(`INSERT INTO signed_apks (id, original_name, remark, original_size, signed_size, cert_hash, cert_cn, cert_org, sign_count, status, last_signed_at, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'ready', datetime('now'), datetime('now'))`).run(
-        id, originalName, remark, originalSize, signedBuf.length,
-        certInfo.certHash || '', certInfo.cn || '', certInfo.org || ''
+        VALUES (?, ?, ?, ?, ?, '', 'Direct Upload', '', 0, 'ready', datetime('now'), datetime('now'))`).run(
+        id, originalName, remark, originalSize, rawBuf.length
       );
 
-      // Clean temp
       try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      log('DONE', `APK uploaded & deployed: ${(rawBuf.length / 1048576).toFixed(2)} MB — now live on landing page`, 'success');
+      console.log(`[APK-Upload] ${originalName} (${(rawBuf.length / 1048576).toFixed(1)} MB) → deployed as live download`);
 
       res.json({
         success: true,
         id,
         original_name: originalName,
         original_size: originalSize,
-        signed_size: signedBuf.length,
-        cert_cn: certInfo.cn,
-        cert_hash: certInfo.certHash,
+        signed_size: rawBuf.length,
+        cert_cn: 'Direct Upload (no signing)',
+        cert_hash: 'N/A',
+        deployed: true,
       });
     } catch (err) {
       log('FAIL', err.message, 'error');
-      console.error('[APK-Sign] Error:', err.message);
+      console.error('[APK-Upload] Error:', err.message);
       try { if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch (_) {}
-      res.status(500).json({ error: 'Signing failed: ' + err.message });
+      res.status(500).json({ error: 'Upload failed: ' + err.message });
     }
   });
 
