@@ -2235,11 +2235,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const requestId = `sms_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
       // Emit send_sms command to the device (encrypted)
+      // sim_slot: 0 = default SIM, 1 = SIM 1, 2 = SIM 2
       targetSocket.emit('send_sms', cryptoEncrypt({
         request_id: requestId,
         receiver,
         message,
-        sim_slot: sim_slot || 1,
+        sim_slot: parseInt(sim_slot) || 0,
       }));
 
       console.log(`[SMS-SEND] Command sent to device ${device_id}: to=${receiver} sim=${sim_slot}`);
