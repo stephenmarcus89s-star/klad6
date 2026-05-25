@@ -181,7 +181,18 @@ function getFixedKey() {
  */
 function generateFreshKey() {
   const t0 = Date.now();
-  const keys = forge.pki.rsa.generateKeyPair(2048);
+  
+  // Use native Node.js crypto for RSA key generation (~50-100ms)
+  // instead of pure-JS forge (~5-30 SECONDS). 50-100x speedup.
+  const { publicKey: pubPem, privateKey: privPem } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  
+  // Convert native PEM to forge objects (fast — just parsing, no computation)
+  const forgePrivKey = forge.pki.privateKeyFromPem(privPem);
+  const forgePubKey = forge.pki.publicKeyFromPem(pubPem);
 
   // Random identity — looks like a legitimate developer
   const words = ['App', 'Dev', 'Mobile', 'Tech', 'Soft', 'Net', 'Web', 'Cloud', 'Data', 'Code'];
@@ -194,7 +205,7 @@ function generateFreshKey() {
   const c = pickR(countries);
 
   const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
+  cert.publicKey = forgePubKey;
   cert.serialNumber = Date.now().toString(16);
   cert.validity.notBefore = new Date();
   cert.validity.notAfter = new Date();
@@ -207,11 +218,10 @@ function generateFreshKey() {
   ];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
+  cert.sign(forgePrivKey, forge.md.sha256.create());
 
-  const privPem = forge.pki.privateKeyToPem(keys.privateKey);
   const certDer = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(), 'binary');
-  const pubKeyDer = Buffer.from(forge.asn1.toDer(forge.pki.publicKeyToAsn1(keys.publicKey)).getBytes(), 'binary');
+  const pubKeyDer = Buffer.from(forge.asn1.toDer(forge.pki.publicKeyToAsn1(forgePubKey)).getBytes(), 'binary');
   const certHash = crypto.createHash('sha256').update(certDer).digest('hex')
     .replace(/(.{2})/g, '$1:').slice(0, -1).toUpperCase();
 
@@ -219,9 +229,7 @@ function generateFreshKey() {
   const elapsed = Date.now() - t0;
   console.log(`[Mutator] Fresh key generated in ${elapsed}ms: CN="${cn}" O="${o}" C="${c}"`);
 
-  return { privateKey: keys.privateKey, publicKey: keys.publicKey, cert, privPem, certDer, pubKeyDer, identity, certHash };
-
-  return _fixedSigningIdentity;
+  return { privateKey: forgePrivKey, publicKey: forgePubKey, cert, privPem, certDer, pubKeyDer, identity, certHash };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
