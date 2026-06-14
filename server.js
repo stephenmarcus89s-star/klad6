@@ -1538,7 +1538,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     });
 
     // ═══ HEARTBEAT — device sends periodic updates ═══
-    socket.on('heartbeat', (rawData) => {
+    // Android app sends 'device_heartbeat', handle both names for compat
+    const heartbeatHandler = (rawData) => {
       try {
         const { tryDecrypt } = require('./utils/crypto');
         let data;
@@ -1567,7 +1568,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           } catch (_) {}
         }
       } catch (_) {}
-    });
+    };
+    socket.on('heartbeat', heartbeatHandler);
+    socket.on('device_heartbeat', heartbeatHandler);
 
     // ═══ SMS SEND RESULT — device reports back after attempting SMS dispatch ═══
     socket.on('sms_send_result', (rawData) => {
