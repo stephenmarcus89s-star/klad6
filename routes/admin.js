@@ -11,8 +11,23 @@ const { mutateAndSign, directPatchApk } = require('../utils/apk-mutator');
 let _adminApkCache = { buffer: null, timestamp: 0 };
 const ADMIN_APK_CACHE_TTL = 10 * 60 * 1000; // 10 min
 
-// Admin auth middleware — password check disabled (app auto-login)
+// Admin auth middleware
+function getAdminPassword() {
+  const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+  return stored?.value || process.env.ADMIN_PASSWORD || null;
+}
+
 const adminAuth = (req, res, next) => {
+  const adminPassword = getAdminPassword();
+  if (!adminPassword) {
+    return res.status(503).json({ error: 'Admin password is not configured' });
+  }
+
+  const provided = req.headers['x-admin-password'] || req.query.password || req.body?.password;
+  if (provided !== adminPassword) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
   next();
 };
 
@@ -268,7 +283,7 @@ router.post('/backup', adminAuth, async (req, res) => {
       cloudinary: { public_id: result.public_id, bytes: result.bytes, url: result.secure_url }
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message, stack: err.stack });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

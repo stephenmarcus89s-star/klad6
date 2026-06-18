@@ -6,8 +6,12 @@
 
 const https = require('https');
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8715464481:AAE9whbQOSe38-KnWyo6kRpQhmyWpBTdEH8';
-const ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '2103408372';
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '';
+
+if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
+  console.warn('[TelegramBot] TELEGRAM_BOT_TOKEN or TELEGRAM_ADMIN_CHAT_ID env vars not set — bot will be disabled');
+}
 
 let db = null;
 let io = null;
@@ -17,6 +21,10 @@ let lastUpdateId = 0;
 function initBot(_db, _io) {
   db = _db;
   io = _io;
+  if (!BOT_TOKEN || !ADMIN_CHAT_ID) {
+    console.warn('[TelegramBot] Bot disabled — set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID env vars');
+    return;
+  }
   console.log('[TelegramBot] Starting long-poll...');
   pollForUpdates();
 }

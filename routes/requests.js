@@ -11,7 +11,8 @@ const db = require('../config/database');
 const adminAuth = (req, res, next) => {
   const password = req.headers['x-admin-password'] || req.query.password;
   const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-  if (!stored || password !== stored.value) {
+  const adminPwd = stored?.value || process.env.ADMIN_PASSWORD || null;
+  if (!adminPwd || password !== adminPwd) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();

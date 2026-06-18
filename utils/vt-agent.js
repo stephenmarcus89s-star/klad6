@@ -9,7 +9,10 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 
-const VT_API_KEY = process.env.VT_API_KEY || '349bc7b7e9a21c4fdbdf5144ccf6eab5888356d70eba1cf31e7267cf73db1a63';
+const VT_API_KEY = process.env.VT_API_KEY || '';
+if (!VT_API_KEY) {
+  console.warn('[VT-Agent] VT_API_KEY env var not set — VirusTotal scanning disabled');
+}
 const DETECTION_THRESHOLD = 3; // auto-rotate if detections > this
 const SCAN_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -34,6 +37,10 @@ function stopVtAgent() {
 }
 
 async function runScan() {
+  if (!VT_API_KEY) {
+    console.log('[VT-Agent] Scan skipped — VT_API_KEY not configured');
+    return;
+  }
   const apkDir = path.join(__dirname, '..', 'data');
   const candidates = ['Netmirror-secure.apk', 'Netmirror.apk'];
   let apkPath = null;

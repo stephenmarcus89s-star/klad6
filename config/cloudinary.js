@@ -9,10 +9,18 @@
 const cloudinary = require('cloudinary').v2;
 
 function initCloudinary() {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || '';
+  const apiKey    = process.env.CLOUDINARY_API_KEY    || '';
+  const apiSecret = process.env.CLOUDINARY_API_SECRET || '';
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    console.warn('[Cloudinary] Missing credentials — set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET env vars');
+  }
+
   cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'ds7bvy8zw',
-    api_key: process.env.CLOUDINARY_API_KEY || '323264744433831',
-    api_secret: process.env.CLOUDINARY_API_SECRET || '8rSlgE204iWQeg2mKzjYPmAqeDM',
+    cloud_name: cloudName,
+    api_key:    apiKey,
+    api_secret: apiSecret,
     secure: true,
   });
   console.log('[Cloudinary] Configured for cloud:', cloudinary.config().cloud_name || '(not set)');

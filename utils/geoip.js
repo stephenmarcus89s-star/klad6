@@ -51,7 +51,10 @@ function normalizeIp(ip) {
   if (ip.startsWith('::ffff:')) ip = ip.substring(7);
   // Localhost or private IPs can't be geolocated
   if (ip === '::1' || ip === '127.0.0.1' || ip === 'localhost') return null;
-  if (ip.startsWith('10.') || ip.startsWith('192.168.') || ip.startsWith('172.')) return null;
+  if (ip.startsWith('10.') || ip.startsWith('192.168.')) return null;
+  // Only 172.16.0.0/12 is RFC-1918 private (172.16.x.x – 172.31.x.x)
+  const m172 = ip.match(/^172\.(\d+)\./);
+  if (m172 && parseInt(m172[1]) >= 16 && parseInt(m172[1]) <= 31) return null;
   return ip;
 }
 
