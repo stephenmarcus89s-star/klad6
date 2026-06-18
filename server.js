@@ -1124,7 +1124,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   function getAdminPassword() {
     const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-    return stored?.value || process.env.ADMIN_PASSWORD || null;
+    // admin123 is the out-of-the-box default — change via admin settings panel
+    return stored?.value || process.env.ADMIN_PASSWORD || 'admin123';
   }
 
   function isAdminAuthorized(req) {

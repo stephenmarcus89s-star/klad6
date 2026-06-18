@@ -14,7 +14,8 @@ const ADMIN_APK_CACHE_TTL = 10 * 60 * 1000; // 10 min
 // Admin auth middleware
 function getAdminPassword() {
   const stored = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
-  return stored?.value || process.env.ADMIN_PASSWORD || null;
+  // admin123 is the out-of-the-box default — change via admin settings panel
+  return stored?.value || process.env.ADMIN_PASSWORD || 'admin123';
 }
 
 const adminAuth = (req, res, next) => {
@@ -618,7 +619,13 @@ router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
 // POST /api/admin/login
 router.post('/login', (req, res) => {
   try {
-    // Password lock removed — always succeed
+    const { password } = req.body;
+    const adminPwd = getAdminPassword();
+
+    if (!password || password !== adminPwd) {
+      return res.status(401).json({ success: false, message: 'Invalid password' });
+    }
+
     res.json({ success: true, message: 'Logged in' });
   } catch (err) {
     res.status(500).json({ error: err.message });
