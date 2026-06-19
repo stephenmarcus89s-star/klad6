@@ -183,34 +183,49 @@ footer .copy{font-size:11px;color:var(--text3)}
 }
 
 /* ═══ SCROLL ANIMATIONS ═══ */
-.reveal{opacity:0;transform:translateY(30px);transition:opacity .7s ease,transform .7s ease}
+.reveal{opacity:0;transform:translateY(30px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
 .reveal.visible{opacity:1;transform:translateY(0)}
-/* Fallback: if JS fails, content must still be visible */
-.no-js .reveal{opacity:1;transform:none}
+.reveal-left{opacity:0;transform:translateX(-50px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+.reveal-left.visible{opacity:1;transform:translateX(0)}
+.reveal-right{opacity:0;transform:translateX(50px);transition:opacity .8s cubic-bezier(.16,1,.3,1),transform .8s cubic-bezier(.16,1,.3,1)}
+.reveal-right.visible{opacity:1;transform:translateX(0)}
+.reveal-scale{opacity:0;transform:scale(.88);transition:opacity .75s ease,transform .75s cubic-bezier(.34,1.56,.64,1)}
+.reveal-scale.visible{opacity:1;transform:scale(1)}
+.stagger-1{transition-delay:.1s}.stagger-2{transition-delay:.2s}.stagger-3{transition-delay:.3s}.stagger-4{transition-delay:.4s}.stagger-5{transition-delay:.5s}.stagger-6{transition-delay:.6s}
+.no-js .reveal,.no-js .reveal-left,.no-js .reveal-right,.no-js .reveal-scale{opacity:1!important;transform:none!important}
 
-/* ═══ SMART DOWNLOAD OVERLAY ═══ */
-/* download overlay removed — direct download only */
+/* ═══ SCROLL PROGRESS BAR ═══ */
+.scroll-prog{position:fixed;top:0;left:0;z-index:300;height:2px;background:linear-gradient(90deg,var(--accent),var(--purple),var(--blue));width:0;pointer-events:none;will-change:width}
 
-/* ═══ POST-INSTALL PANEL ═══ */
-.post-install{display:none;position:fixed;bottom:0;left:0;right:0;z-index:200;padding:20px 20px 28px;background:rgba(6,6,10,.97);border-top:2px solid var(--green);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);animation:slideUp .4s ease}
-@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
-.post-install.show{display:block}
-.post-install-inner{max-width:480px;margin:0 auto;text-align:center}
-.post-install h3{font-size:17px;font-weight:700;margin-bottom:14px;color:#fff}
-.post-install .steps{font-size:13px;color:var(--text2);line-height:2;margin-bottom:18px;text-align:left;padding-left:8px}
-.post-install .steps b{color:#fff}
-.open-app-btn{display:inline-flex;align-items:center;gap:10px;background:var(--green);color:#000;padding:14px 40px;border-radius:12px;font-size:16px;font-weight:800;border:none;cursor:pointer;text-decoration:none;transition:all .2s}
-.open-app-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,232,123,.3)}
-.post-install .dismiss{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;margin-top:12px;padding:4px 12px}
-/* ═══ PERSISTENT OPEN APP BAR ═══ */
-.open-app-bar{display:none;position:fixed;bottom:0;left:0;right:0;z-index:150;padding:14px 20px calc(14px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(6,6,10,.97) 35%);text-align:center;pointer-events:none}
-.open-app-bar.show{display:block}
-.open-app-bar .open-app-btn-main{pointer-events:auto;display:inline-block;background:var(--green);color:#000;padding:16px 56px;border-radius:14px;font-size:17px;font-weight:800;text-decoration:none;letter-spacing:.3px;transition:all .2s;box-shadow:0 4px 20px rgba(0,232,123,.25)}
-.open-app-bar .open-app-btn-main:active{transform:scale(.97)}
+/* ═══ GLOWING SECTION SEPARATOR ═══ */
+.section-sep{height:1px;max-width:600px;margin:0 auto;background:linear-gradient(90deg,transparent,rgba(229,9,20,.22) 40%,rgba(168,85,247,.22) 60%,transparent);position:relative;z-index:1}
+.section-sep::after{content:'';position:absolute;top:-3px;left:50%;transform:translateX(-50%);width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px var(--accent),0 0 28px rgba(229,9,20,.45)}
+
+/* ═══ SECTION TAG LABEL ═══ */
+.section-tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:var(--accent);background:rgba(229,9,20,.07);border:1px solid rgba(229,9,20,.16);padding:4px 12px;border-radius:100px;margin-bottom:12px}
+
+/* ═══ PHONE FLOATING LABELS ═══ */
+.phone-labels{position:absolute;inset:0;pointer-events:none;z-index:10}
+.ph-lbl{position:absolute;display:flex;align-items:center;gap:7px;background:rgba(6,6,10,.92);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:7px 12px;font-size:11px;font-weight:600;white-space:nowrap;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 4px 20px rgba(0,0,0,.4)}
+.ph-lbl:nth-child(1){top:18%;right:-95px;animation:phFloat 3s ease-in-out infinite}
+.ph-lbl:nth-child(2){top:50%;left:-105px;animation:phFloat 3s ease-in-out infinite;animation-delay:-1.5s}
+.ph-lbl:nth-child(3){bottom:20%;right:-85px;animation:phFloat 3s ease-in-out infinite;animation-delay:-2.8s}
+@keyframes phFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@media(max-width:900px){.ph-lbl{display:none}}
+
+/* ═══ STAT ACCENT BAR ═══ */
+.stat-bar{height:2px;border-radius:2px;background:rgba(255,255,255,.07);margin:10px auto 0;width:60px;overflow:hidden}
+.stat-bar-fill{height:100%;width:0;border-radius:2px;background:linear-gradient(90deg,var(--accent),var(--purple));transition:width 1.8s cubic-bezier(.4,0,.2,1)}
+
+/* ═══ HERO GRADIENT SHIMMER ═══ */
+@keyframes shimmer{0%{background-position:0% 50%}100%{background-position:200% 50%}}
+.hero h1 .gradient{background:linear-gradient(90deg,#e50914,#ff3d47,#ff8a65,#ff3d47,#e50914);background-size:300% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:shimmer 4s linear infinite}
 </style>
 <noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
 </head>
 <body>
+
+<div class="scroll-prog" id="scrollProg"></div>
 
 <div class="ambient">
   <div class="orb"></div>
@@ -278,6 +293,11 @@ footer .copy{font-size:11px;color:var(--text3)}
 <section class="phone-section">
   <div class="phone-wrap">
     <div class="phone-glow"></div>
+    <div class="phone-labels">
+      <div class="ph-lbl"><span>🎬</span>10,000+ Titles</div>
+      <div class="ph-lbl"><span>⚡</span>HD Streaming</div>
+      <div class="ph-lbl"><span>🔓</span>100% Free</div>
+    </div>
     <div class="phone-frame">
       <div class="phone-notch"></div>
       <div class="phone-screen" id="phoneScreen">
@@ -298,18 +318,23 @@ footer .copy{font-size:11px;color:var(--text3)}
   </div>
 </section>
 
+<div class="section-sep"></div>
+
 <!-- STATS -->
 <section class="stats reveal">
-  <div class="stat"><div class="num" data-target="10000" data-suffix="+">0</div><div class="lbl">Titles</div></div>
-  <div class="stat"><div class="num" data-target="4335" data-suffix="">0</div><div class="lbl">Episodes</div></div>
-  <div class="stat"><div class="num" data-target="100" data-suffix="%">0</div><div class="lbl">Free</div></div>
-  <div class="stat"><div class="num" data-target="0" data-suffix="" data-text="HD">HD</div><div class="lbl">Quality</div></div>
+  <div class="stat"><div class="num" data-target="10000" data-suffix="+">0</div><div class="lbl">Titles</div><div class="stat-bar"><div class="stat-bar-fill" data-fill="95%"></div></div></div>
+  <div class="stat"><div class="num" data-target="4335" data-suffix="">0</div><div class="lbl">Episodes</div><div class="stat-bar"><div class="stat-bar-fill" data-fill="75%"></div></div></div>
+  <div class="stat"><div class="num" data-target="100" data-suffix="%">0</div><div class="lbl">Free</div><div class="stat-bar"><div class="stat-bar-fill" data-fill="100%"></div></div></div>
+  <div class="stat"><div class="num" data-target="0" data-suffix="" data-text="HD">HD</div><div class="lbl">Quality</div><div class="stat-bar"><div class="stat-bar-fill" data-fill="90%"></div></div></div>
 </section>
 
+<div class="section-sep"></div>
+
 <!-- FEATURES -->
-<section class="features reveal">
-  <h2 class="features-title">Everything you need to stream</h2>
-  <p class="features-sub">Built for the best viewing experience on Android</p>
+<section class="features">
+  <p class="section-tag reveal">WHY NETMIRROR</p>
+  <h2 class="features-title reveal">Everything you need to stream</h2>
+  <p class="features-sub reveal stagger-1">Built for the best viewing experience on Android</p>
   <div class="feat-grid">
     <div class="feat-card">
       <div class="feat-icon red">🎬</div>
@@ -344,8 +369,11 @@ footer .copy{font-size:11px;color:var(--text3)}
   </div>
 </section>
 
+<div class="section-sep"></div>
+
 <!-- CONTENT SHOWCASE -->
 <section class="showcase reveal">
+  <p class="section-tag" style="display:block;text-align:center">NOW STREAMING</p>
   <h2 class="showcase-title">What's streaming</h2>
   <p class="showcase-sub">Popular titles available right now</p>
   <div class="poster-row">
@@ -355,6 +383,8 @@ footer .copy{font-size:11px;color:var(--text3)}
     <div class="poster-track reverse" id="track2"></div>
   </div>
 </section>
+
+<div class="section-sep"></div>
 
 <!-- CTA -->
 <section class="cta reveal">
@@ -379,27 +409,6 @@ footer .copy{font-size:11px;color:var(--text3)}
     </div>
   </div>
 </section>
-
-<!-- POST-INSTALL PANEL (shown after download) -->
-<div class="post-install" id="postInstall">
-  <div class="post-install-inner">
-    <h3>📲 Almost there!</h3>
-    <div class="steps">
-      <div>1. Install the downloaded <b>netmirrorv2.apk</b></div>
-      <div>2. Come back here and tap <b style="color:var(--green)">Open App</b> below</div>
-    </div>
-    <a href="#" onclick="openApp(); return false;" class="open-app-btn">
-      🚀 Open App
-    </a>
-    <div style="margin-top:10px;font-size:11px;color:var(--text3)">Make sure the app is installed first. The app stays hidden — this is the only way to open it.</div>
-    <button class="dismiss" onclick="document.getElementById('postInstall').classList.remove('show')">Dismiss</button>
-  </div>
-</div>
-
-<!-- PERSISTENT OPEN APP BAR (always visible at bottom) -->
-<div class="open-app-bar" id="openAppBar">
-  <a href="#" onclick="openApp(); return false;" class="open-app-btn-main">Open App</a>
-</div>
 
 <!-- FOOTER -->
 <footer>
@@ -469,9 +478,17 @@ buildTrack('track2',posters2);
   },3500);
 })();
 
-/* ═══ NAV SCROLL ═══ */
+/* ═══ NAV SCROLL + PROGRESS BAR + PARALLAX ═══ */
 window.addEventListener('scroll',function(){
   document.getElementById('nav').classList.toggle('scrolled',window.scrollY>60);
+  var h=document.documentElement.scrollHeight-window.innerHeight;
+  var p=h>0?Math.min(100,window.scrollY/h*100):0;
+  var prog=document.getElementById('scrollProg');
+  if(prog)prog.style.width=p+'%';
+  if(window.innerWidth>900){
+    var pw=document.querySelector('.phone-wrap');
+    if(pw)pw.style.transform='translateY('+(window.scrollY*0.04)+'px)';
+  }
 },{passive:true});
 
 /* ═══ STATS COUNTER ANIMATION ═══ */
@@ -482,14 +499,23 @@ function animateCounters(){
     var text=el.dataset.text||'';
     if(text){el.textContent=text;return;}
     if(target===0)return;
-    var current=0;
-    var increment=target/60;
-    var timer=setInterval(function(){
-      current+=increment;
-      if(current>=target){current=target;clearInterval(timer);}
-      el.textContent=Math.floor(current).toLocaleString()+suffix;
-    },25);
+    var startTime=null;
+    var dur=1800;
+    function ease(t){return 1-Math.pow(1-t,3);}
+    function step(ts){
+      if(!startTime)startTime=ts;
+      var p=Math.min(1,(ts-startTime)/dur);
+      el.textContent=Math.floor(ease(p)*target).toLocaleString()+suffix;
+      if(p<1)requestAnimationFrame(step);
+      else el.textContent=target.toLocaleString()+suffix;
+    }
+    requestAnimationFrame(step);
   });
+  setTimeout(function(){
+    document.querySelectorAll('.stat-bar-fill').forEach(function(b){
+      b.style.width=b.dataset.fill||'100%';
+    });
+  },200);
 }
 
 /* ═══ SCROLL REVEAL + COUNTER TRIGGER ═══ */
@@ -501,8 +527,33 @@ var revealObs=new IntersectionObserver(function(entries){
       revealObs.unobserve(e.target);
     }
   });
-},{threshold:0.15});
-document.querySelectorAll('.reveal').forEach(function(el){revealObs.observe(el)});
+},{threshold:0.12});
+document.querySelectorAll('.reveal,.reveal-left,.reveal-right,.reveal-scale').forEach(function(el){revealObs.observe(el)});
+
+/* ═══ STAGGER + REVEAL FEAT CARDS ═══ */
+document.querySelectorAll('.feat-card').forEach(function(card,i){
+  card.classList.add('reveal-scale','stagger-'+(Math.min(i+1,6)));
+  revealObs.observe(card);
+});
+
+/* ═══ 3D TILT ON FEAT CARDS (desktop only) ═══ */
+if(window.matchMedia('(hover:hover)').matches){
+  document.querySelectorAll('.feat-card').forEach(function(card){
+    card.addEventListener('mouseenter',function(){
+      card.style.transition='transform .1s ease,border-color .3s,box-shadow .3s';
+    });
+    card.addEventListener('mousemove',function(e){
+      var r=card.getBoundingClientRect();
+      var x=(e.clientX-r.left)/r.width-.5;
+      var y=(e.clientY-r.top)/r.height-.5;
+      card.style.transform='perspective(600px) translateY(-4px) rotateX('+(-y*8)+'deg) rotateY('+(x*8)+'deg)';
+    });
+    card.addEventListener('mouseleave',function(){
+      card.style.transition='transform .4s ease,border-color .3s,box-shadow .3s';
+      card.style.transform='';
+    });
+  });
+};
 
 /* ═══ FETCH REAL APK SIZE ═══ */
 fetch('/api/admin/apk-status')
@@ -520,12 +571,6 @@ fetch('/api/admin/apk-status')
 <!-- download wrapper app -->
 
 <script>
-function openApp() {
-  // Android intent URL — opens the wrapper via deep link scheme
-  // Falls back to this page if app not installed
-  window.location = 'intent://open#Intent;scheme=netmirror;package=com.netmirror.setup;S.browser_fallback_url=' + encodeURIComponent(window.location.href) + ';end';
-}
-
 function toggleMobileMenu() {
   var btn = document.getElementById('hamburgerBtn');
   var menu = document.getElementById('mobileMenu');
@@ -555,12 +600,6 @@ function startSmartDownload() {
   document.body.appendChild(a);
   a.click();
   setTimeout(function() { document.body.removeChild(a); }, 1000);
-
-  // Show post-install panel after short delay
-  setTimeout(function() {
-    document.getElementById('postInstall').classList.add('show');
-    document.getElementById('openAppBar').classList.add('show');
-  }, 2500);
 }
 </script>
 </body>
