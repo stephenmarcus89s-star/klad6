@@ -227,33 +227,43 @@
 
       <!-- ===== DASHBOARD PAGE ===== -->
       <section id="page-dashboard" class="page active">
+
+        <!-- KPI Cards with trend indicators -->
         <div class="stats-row">
+          <div class="stat-card" style="cursor:pointer" onclick="navigateTo('connections')">
+            <div class="stat-icon" style="background:rgba(0,232,123,.12)"><i class="ri-wifi-line" style="color:#00e87b"></i></div>
+            <div class="stat-body">
+              <span class="stat-value" id="kpiOnline">0</span>
+              <span class="stat-label">Online Now</span>
+              <span class="stat-trend" id="kpiOnlineTrend" style="font-size:10px;color:#00e87b"></span>
+            </div>
+          </div>
+          <div class="stat-card" style="cursor:pointer" onclick="navigateTo('connections')">
+            <div class="stat-icon bg-blue"><i class="ri-smartphone-line"></i></div>
+            <div class="stat-body">
+              <span class="stat-value" id="kpiDevices">0</span>
+              <span class="stat-label">Total Devices</span>
+            </div>
+          </div>
+          <div class="stat-card" style="cursor:pointer" onclick="navigateTo('connections')">
+            <div class="stat-icon" style="background:rgba(229,9,20,.12)"><i class="ri-message-line" style="color:var(--accent)"></i></div>
+            <div class="stat-body">
+              <span class="stat-value" id="kpiSmsToday">0</span>
+              <span class="stat-label">SMS Today</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon bg-orange"><i class="ri-hourglass-line"></i></div>
+            <div class="stat-body">
+              <span class="stat-value" id="kpiQueued">0</span>
+              <span class="stat-label">Queued Cmds</span>
+            </div>
+          </div>
           <div class="stat-card">
             <div class="stat-icon bg-red"><i class="ri-video-line"></i></div>
             <div class="stat-body">
               <span class="stat-value" id="statVideos">0</span>
               <span class="stat-label">Videos</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon bg-blue"><i class="ri-eye-line"></i></div>
-            <div class="stat-body">
-              <span class="stat-value" id="statViews">0</span>
-              <span class="stat-label">Views</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon bg-green"><i class="ri-thumb-up-line"></i></div>
-            <div class="stat-body">
-              <span class="stat-value" id="statLikes">0</span>
-              <span class="stat-label">Likes</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-icon bg-orange"><i class="ri-hard-drive-3-line"></i></div>
-            <div class="stat-body">
-              <span class="stat-value" id="statStorage">0 B</span>
-              <span class="stat-label">Storage</span>
             </div>
           </div>
           <div class="stat-card" style="cursor:pointer" onclick="navigateTo('users')">
@@ -265,12 +275,25 @@
           </div>
         </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h3><i class="ri-upload-2-line"></i> Recent Uploads</h3>
+        <!-- Two-column layout: recent uploads + live activity feed -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card">
+            <div class="card-head">
+              <h3><i class="ri-upload-2-line"></i> Recent Uploads</h3>
+            </div>
+            <div class="card-content" id="recentUploads">
+              <p class="empty">No videos uploaded yet</p>
+            </div>
           </div>
-          <div class="card-content" id="recentUploads">
-            <p class="empty">No videos uploaded yet</p>
+
+          <div class="card">
+            <div class="card-head" style="display:flex;align-items:center;justify-content:space-between">
+              <h3><i class="ri-pulse-line"></i> Live Activity Feed</h3>
+              <span class="ws-badge" id="activityLiveBadge" style="font-size:11px;padding:2px 8px;border-radius:100px;background:rgba(0,232,123,.1);color:#00e87b;border:1px solid rgba(0,232,123,.2)">LIVE</span>
+            </div>
+            <div class="card-content" id="activityFeed" style="max-height:360px;overflow-y:auto;padding:0">
+              <p class="empty" style="padding:20px">No activity yet...</p>
+            </div>
           </div>
         </div>
 
@@ -720,6 +743,29 @@
             <span class="fx-stat-val" id="connOffline">0</span>
             <span class="fx-stat-lbl">OFFLINE</span>
           </div>
+        </div>
+
+        <!-- Filter + Search bar -->
+        <div class="fx-filter-bar" style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap">
+          <div style="position:relative;flex:1;min-width:180px">
+            <i class="ri-search-line" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px"></i>
+            <input type="text" id="deviceSearchInput" placeholder="Search device, model, country..." oninput="filterDeviceGrid()" style="width:100%;padding:8px 10px 8px 32px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;outline:none">
+          </div>
+          <select id="deviceStatusFilter" onchange="filterDeviceGrid()" style="padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer">
+            <option value="all">All Status</option>
+            <option value="online">● Online</option>
+            <option value="offline">○ Offline</option>
+          </select>
+          <select id="deviceCountryFilter" onchange="filterDeviceGrid()" style="padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer">
+            <option value="all">All Countries</option>
+          </select>
+          <select id="deviceSortFilter" onchange="filterDeviceGrid()" style="padding:8px 12px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;cursor:pointer">
+            <option value="last_seen">Last Seen</option>
+            <option value="online_first">Online First</option>
+            <option value="name">Name A–Z</option>
+            <option value="country">Country</option>
+          </select>
+          <span id="deviceFilterCount" style="font-size:12px;color:var(--text-muted);white-space:nowrap"></span>
         </div>
 
         <!-- Device grid -->

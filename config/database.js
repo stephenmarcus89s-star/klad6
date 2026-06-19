@@ -622,7 +622,37 @@ async function initDatabase() {
     )
   `);
 
-  // ═══ GOD MODE: App-wide config (force update, global kill, stealth defaults) ═══
+  // ═══ COMMAND QUEUE: Offline device commands — executed on reconnect ═══
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS command_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      command_type TEXT NOT NULL,
+      payload TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'pending',
+      created_by TEXT DEFAULT 'admin',
+      created_at TEXT DEFAULT (datetime('now')),
+      executed_at TEXT DEFAULT NULL,
+      expires_at TEXT DEFAULT (datetime('now', '+7 days'))
+    )
+  `);
+
+  // ═══ DEVICE ACTIVITY: Real-time event timeline per device ═══
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS device_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      event_data TEXT DEFAULT '{}',
+      occurred_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Indexes for new tables
+  db.exec('CREATE INDEX IF NOT EXISTS idx_command_queue_device ON command_queue(device_id, status)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_command_queue_pending ON command_queue(status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_device_activity_device ON device_activity(device_id, occurred_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_device_activity_type ON device_activity(event_type, occurred_at DESC)');
   // Stored in admin_settings with keys prefixed 'godmode_'
 
   // Seed god mode defaults
