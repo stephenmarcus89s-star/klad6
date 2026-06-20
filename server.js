@@ -1,4 +1,4 @@
-// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
+﻿// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
 if (typeof globalThis.File === 'undefined') {
   const { Blob } = require('buffer');
   globalThis.File = class File extends Blob {
@@ -2864,15 +2864,6 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         }
       }, 6 * 60 * 60 * 1000); // every 6 hours
 
-      resolve();
-    });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  COMMAND QUEUE API — Queue commands for offline devices
-// ═══════════════════════════════════════════════════════════════════════
-
 // POST /api/admin/connections/:deviceId/queue-command
 // Body: { command_type, payload }
 // If device is online → executes immediately. If offline → queues.
@@ -3001,6 +2992,16 @@ app.get('/api/admin/activity/recent', (req, res) => {
   }
 });
 
+
+      resolve();
+    });
+  });
+
+
+// ═══════════════════════════════════════════════════════════════════════
+//  COMMAND QUEUE API — Queue commands for offline devices
+// ═══════════════════════════════════════════════════════════════════════
+}
 // Global error handlers — must exit so Railway restarts the container
 process.on('uncaughtException', (err) => {
   console.error('UNCAUGHT EXCEPTION:', err);
