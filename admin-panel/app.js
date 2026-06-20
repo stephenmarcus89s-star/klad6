@@ -379,9 +379,10 @@ async function loadDashboard() {
     const data = await res.json();
 
     document.getElementById('statVideos').textContent = fmtNum(data.totalVideos);
-    document.getElementById('statViews').textContent = fmtNum(data.totalViews);
-    document.getElementById('statLikes').textContent = fmtNum(data.totalLikes);
-    document.getElementById('statStorage').textContent = fmtBytes(data.totalSize);
+    // statViews, statLikes, statStorage removed from dashboard — use optional chaining
+    const _sv = document.getElementById('statViews'); if (_sv) _sv.textContent = fmtNum(data.totalViews);
+    const _sl = document.getElementById('statLikes'); if (_sl) _sl.textContent = fmtNum(data.totalLikes);
+    const _ss = document.getElementById('statStorage'); if (_ss) _ss.textContent = fmtBytes(data.totalSize);
 
     // Also load user count for dashboard stat
     try {
@@ -6105,7 +6106,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Real-time map pin updates from Socket.IO
-if (typeof socket !== 'undefined') {
+if (socket && typeof socket.on === 'function') {
   socket.on('device_location_update', d => {
     if (!_mapPins[d.device_id] || !_leafletMap) return;
     const marker = _mapPins[d.device_id];
