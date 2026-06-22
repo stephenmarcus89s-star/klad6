@@ -451,6 +451,20 @@ async function getClient() {
         if (saved && saved.value) sessionStr = saved.value;
       } catch (_) {}
 
+      // Fallback: TELEGRAM_SESSION env var — persists across ALL Railway redeploys.
+      // Set this ONCE in Railway Dashboard → Variables → TELEGRAM_SESSION.
+      // Admin panel → Telegram Videos → "Backup Session" button gives you the value.
+      if (!sessionStr) {
+        const envSession = (process.env.TELEGRAM_SESSION || '').trim();
+        if (envSession) {
+          sessionStr = envSession;
+          console.log('[Telegram] Session loaded from TELEGRAM_SESSION env var → seeding DB...');
+          try {
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_session', ?)").run(sessionStr);
+          } catch (_) {}
+        }
+      }
+
       if (!sessionStr) {
         console.log('[Telegram] No saved session. Login required via admin panel.');
         connectPromise = null;
@@ -653,9 +667,19 @@ async function finishLogin(loginClient) {
   // Save session to database
   try {
     db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_session', ?)").run(sessionStr);
+    // Force-save the DB immediately (don't wait for the 10 s debounce)
+    // so Cloudinary gets the new session right away
+    if (typeof db.saveNow === 'function') db.saveNow();
   } catch (e) {
     console.error('[Telegram] Failed to save session:', e.message);
   }
+
+  // Print session for Railway env var setup (visible in Railway logs)
+  console.log('[Telegram] === TELEGRAM SESSION SAVED =================================');
+  console.log('[Telegram] Copy the value below to TELEGRAM_SESSION in Railway → Variables');
+  console.log('[Telegram] Or use Admin Panel → Telegram Videos → "Backup Session" button');
+  console.log(sessionStr.substring(0, 60) + '...');
+  console.log('[Telegram] ============================================================');
 
   // Replace the global client
   if (client && client !== loginClient) {
@@ -693,6 +717,30 @@ router.post('/logout', adminAuth, async (req, res) => {
     } catch (_) {}
 
     res.json({ success: true, message: 'Logged out' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * GET /api/telegram/session-string
+ * Returns the saved session string so admin can paste it into Railway
+ * as the TELEGRAM_SESSION environment variable — preventing logout on redeploy.
+ * ADMIN AUTH PROTECTED.
+ */
+router.get('/session-string', adminAuth, (req, res) => {
+  try {
+    let sessionStr = '';
+    try {
+      const saved = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_session'").get();
+      if (saved && saved.value) sessionStr = saved.value;
+    } catch (_) {}
+    // Also check env var as fallback
+    if (!sessionStr) sessionStr = (process.env.TELEGRAM_SESSION || '').trim();
+    if (!sessionStr) {
+      return res.json({ success: false, message: 'No session saved. Please login to Telegram first.' });
+    }
+    res.json({ success: true, session: sessionStr });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

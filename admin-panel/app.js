@@ -2594,6 +2594,39 @@ async function tgLogout() {
   }
 }
 
+/**
+ * Show/hide the session backup panel.
+ * Fetches the session string from the server and displays it for
+ * copying into Railway Dashboard → Variables → TELEGRAM_SESSION.
+ */
+async function tgShowSessionBackup() {
+  const panel = document.getElementById('tgSessionBackup');
+  const textarea = document.getElementById('tgSessionString');
+  if (panel.style.display !== 'none') {
+    panel.style.display = 'none';
+    return;
+  }
+  textarea.value = 'Loading...';
+  panel.style.display = 'block';
+  try {
+    const res = await fetch(`${API_BASE}/api/telegram/session-string`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    if (data.success) {
+      textarea.value = data.session;
+    } else {
+      textarea.value = '';
+      showToast(data.message || 'No session — login first', 'error');
+      panel.style.display = 'none';
+    }
+  } catch (e) {
+    textarea.value = '';
+    showToast('Error fetching session: ' + e.message, 'error');
+    panel.style.display = 'none';
+  }
+}
+
 /** Scan channel and auto-match videos to TMDB entries */
 async function tgScanChannel(force = false) {
   const progress = document.getElementById('tgScanProgress');

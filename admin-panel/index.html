@@ -612,9 +612,29 @@
                 <button class="btn btn-outline btn-sm" onclick="tgLoadVideos()">
                   <i class="ri-list-check"></i> Refresh List
                 </button>
+                <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="tgShowSessionBackup()" title="Copy session to Railway env var — prevents logout on redeploy">
+                  <i class="ri-key-2-line"></i> Backup Session
+                </button>
                 <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="tgLogout()">
                   <i class="ri-logout-box-r-line"></i> Logout
                 </button>
+              </div>
+
+              <!-- Session backup panel (collapsed by default) -->
+              <div id="tgSessionBackup" style="display:none;margin-bottom:16px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid #4CAF50">
+                <p style="font-size:12px;color:#4CAF50;font-weight:600;margin:0 0 6px">
+                  🔑 Paste this value as <code>TELEGRAM_SESSION</code> in Railway → Variables to survive all future redeploys:
+                </p>
+                <div style="display:flex;gap:8px;align-items:flex-start">
+                  <textarea id="tgSessionString" readonly
+                    style="flex:1;font-family:monospace;font-size:11px;padding:8px;height:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;resize:none;word-break:break-all"
+                    placeholder="Loading..."></textarea>
+                  <button class="btn btn-primary btn-sm" style="white-space:nowrap"
+                    onclick="navigator.clipboard.writeText(document.getElementById('tgSessionString').value).then(()=>showToast('Session copied to clipboard!','success'))">
+                    <i class="ri-file-copy-line"></i> Copy
+                  </button>
+                </div>
+                <p style="font-size:11px;color:var(--muted);margin:6px 0 0">After pasting in Railway, click <b>Deploy</b> — you will never need to log in again.</p>
               </div>
 
               <p style="color:var(--muted);margin-bottom:12px;font-size:13px">
