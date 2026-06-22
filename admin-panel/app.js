@@ -6463,6 +6463,8 @@ async function loadAdultVideos() {
     }
     if (videos.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted)">No adult videos yet. Click "Add Video" to add one.</td></tr>';
+      // Auto-show the add form when there are no videos
+      showAdultAddForm();
       return;
     }
     tbody.innerHTML = videos.map(v => `
@@ -6492,8 +6494,76 @@ function showAdultAddForm() {
   document.getElementById('adultGenre').value = 'General';
   document.getElementById('adultType').value = 'movie';
   document.getElementById('adultFeatured').checked = false;
+  // Reset upload previews
+  const prev = document.getElementById('adultThumbPreview'); if (prev) { prev.src=''; prev.style.display='none'; }
+  ['adultThumbProgress','adultVideoProgress'].forEach(id => { const el=document.getElementById(id); if(el) el.style.display='none'; });
   document.getElementById('adultAddForm').style.display = 'block';
   document.getElementById('adultAddForm').scrollIntoView({ behavior: 'smooth' });
+}
+
+/**
+ * Upload a media file (thumbnail image or video) to the server.
+ * Fills the corresponding URL input after upload completes.
+ * @param {HTMLInputElement} input  - the file input element
+ * @param {'thumb'|'video'}  type   - which field to fill after upload
+ */
+async function uploadAdultMedia(input, type) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const isThumb = type === 'thumb';
+  const progressEl = document.getElementById(isThumb ? 'adultThumbProgress' : 'adultVideoProgress');
+  const urlInput   = document.getElementById(isThumb ? 'adultThumb' : 'adultVideoUrl');
+
+  if (progressEl) progressEl.style.display = 'block';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/api/admin/adult-videos/upload-media`);
+    xhr.setRequestHeader('x-admin-password', adminPassword);
+
+    // Show progress for video uploads
+    if (!isThumb) {
+      const bar  = document.getElementById('adultVideoProgressBar');
+      const text = document.getElementById('adultVideoProgressText');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && bar && text) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          bar.style.width = pct + '%';
+          text.textContent = `Uploading... ${pct}%`;
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (progressEl) progressEl.style.display = 'none';
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (data.success && data.url) {
+          if (urlInput) urlInput.value = data.url;
+          if (isThumb) {
+            const prev = document.getElementById('adultThumbPreview');
+            if (prev) { prev.src = data.url; prev.style.display = 'block'; }
+          }
+          showToast(isThumb ? 'Thumbnail uploaded!' : 'Video uploaded!', 'success');
+        } else {
+          showToast('Upload failed: ' + (data.error || 'Unknown error'), 'error');
+        }
+      } catch(e) { showToast('Upload response error', 'error'); }
+    };
+    xhr.onerror = () => {
+      if (progressEl) progressEl.style.display = 'none';
+      showToast('Upload failed — network error', 'error');
+    };
+    xhr.send(formData);
+  } catch(e) {
+    if (progressEl) progressEl.style.display = 'none';
+    showToast('Upload error: ' + e.message, 'error');
+  }
+  // Reset the file input so same file can be re-selected if needed
+  input.value = '';
 }
 
 async function editAdultVideo(id) {

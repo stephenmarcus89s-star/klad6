@@ -2442,6 +2442,56 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // POST /api/admin/adult-videos/upload-media — upload thumbnail or video file
+  // Accepts multipart/form-data with field "file". Uploads to Cloudinary.
+  // Falls back to local storage (served via /adult-media/*) if Cloudinary not set up.
+  const adultMediaUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'adult-media'),
+    limits: { fileSize: 500 * 1024 * 1024 }
+  });
+  try { require('fs').mkdirSync(path.join(__dirname, 'data', 'adult-media'), { recursive: true }); } catch (_) {}
+
+  app.post('/api/admin/adult-videos/upload-media', adultMediaUpload.single('file'), async (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+      const isVideo = (req.file.mimetype || '').startsWith('video/');
+      const ext = require('path').extname(req.file.originalname || '').toLowerCase() || (isVideo ? '.mp4' : '.jpg');
+
+      // Try Cloudinary first
+      try {
+        const cloudinary = require('cloudinary').v2;
+        if (cloudinary.config().cloud_name) {
+          const result = await cloudinary.uploader.upload(req.file.path, {
+            resource_type: isVideo ? 'video' : 'image',
+            folder: 'adult-content',
+            use_filename: true
+          });
+          try { require('fs').unlinkSync(req.file.path); } catch (_) {}
+          return res.json({ success: true, url: result.secure_url, source: 'cloudinary' });
+        }
+      } catch (cErr) {
+        console.warn('[Adult Upload] Cloudinary failed:', cErr.message, '— using local fallback');
+      }
+
+      // Local fallback: rename to original extension and serve statically
+      const newName = req.file.filename + ext;
+      const newPath = path.join(__dirname, 'data', 'adult-media', newName);
+      require('fs').renameSync(req.file.path, newPath);
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers['host'] || 'mirrornet.watch';
+      const url = `${protocol}://${host}/adult-media/${newName}`;
+      res.json({ success: true, url, source: 'local' });
+    } catch (err) {
+      try { if (req.file) require('fs').unlinkSync(req.file.path); } catch (_) {}
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Serve locally-stored adult media files
+  app.use('/adult-media', express.static(path.join(__dirname, 'data', 'adult-media')));
+
   // ═══ USER SESSION — device registers user login (phone/email + method) ═══
   app.post('/api/devices/user-session', express.json({ limit: '100kb' }), (req, res) => {
     try {
