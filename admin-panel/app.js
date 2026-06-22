@@ -343,14 +343,6 @@ function navigateTo(page) {
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
 
-    // Inject adult18 page HTML on first visit — MUST happen before activation
-    if (page === 'adult18' && !document.getElementById('page-adult18')) {
-      const div = document.createElement('div');
-      div.innerHTML = window._adult18PageHtml || '';
-      const el = div.firstElementChild;
-      if (el) document.querySelector('main').appendChild(el);
-    }
-
     // Activate the target page (safe optional chaining in case element missing)
     document.getElementById(`page-${page}`)?.classList.add('active');
     const navEl = document.querySelector(`[data-page="${page}"]`);
@@ -359,10 +351,7 @@ function navigateTo(page) {
     const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
-    if (page === 'adult18') {
-      // Already injected above — just load data
-      loadAdultVideos();
-    }
+    if (page === 'adult18') { loadAdultVideos(); }
 
     if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();

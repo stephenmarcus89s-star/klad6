@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -1944,93 +1944,64 @@
 
   <script src="app.js"></script>
 
-  <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
-  <script>
-  // Inline page HTML injected by JS on page switch — defined as a template
-  window._adult18PageHtml = `
-  <section id="page-adult18" class="page">
-    <div class="card">
-      <div class="card-head card-head-flex">
-        <h3><i class="ri-fire-fill" style="color:#ff5252"></i> 18+ Content Manager</h3>
-        <button class="btn btn-primary btn-sm" onclick="showAdultAddForm()"><i class="ri-add-line"></i> Add Video</button>
-      </div>
-      <div class="card-content">
-        <!-- Add / Edit Form -->
-        <div id="adultAddForm" style="display:none;background:var(--surface);border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid var(--border)">
-          <h4 style="margin:0 0 16px;color:var(--text)"><i class="ri-video-add-line"></i> <span id="adultFormTitle">Add Adult Video</span></h4>
-          <input type="hidden" id="adultEditId">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-            <div class="field" style="grid-column:1/-1">
-              <label>Title *</label>
-              <input type="text" id="adultTitle" placeholder="Video title">
+      <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
+      <section id="page-adult18" class="page">
+        <div class="card">
+          <div class="card-head card-head-flex">
+            <h3><i class="ri-fire-fill" style="color:#ff5252"></i> 18+ Content Manager</h3>
+            <button class="btn btn-primary btn-sm" onclick="showAdultAddForm()"><i class="ri-add-line"></i> Add Video</button>
+          </div>
+          <div class="card-content">
+            <!-- Add / Edit Form -->
+            <div id="adultAddForm" style="display:none;background:var(--surface);border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid var(--border)">
+              <h4 style="margin:0 0 16px;color:var(--text)"><i class="ri-video-add-line"></i> <span id="adultFormTitle">Add Adult Video</span></h4>
+              <input type="hidden" id="adultEditId">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div class="field" style="grid-column:1/-1"><label>Title *</label><input type="text" id="adultTitle" placeholder="Video title"></div>
+                <div class="field"><label>Thumbnail URL</label><input type="text" id="adultThumb" placeholder="https://..."></div>
+                <div class="field"><label>Video URL (streaming)</label><input type="text" id="adultVideoUrl" placeholder="https://..."></div>
+                <div class="field">
+                  <label>Genre</label>
+                  <select id="adultGenre" style="padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;width:100%">
+                    <option>General</option><option>Romance</option><option>Drama</option><option>Comedy</option><option>Action</option><option>Thriller</option><option>Fantasy</option><option>Documentary</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Type</label>
+                  <select id="adultType" style="padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;width:100%">
+                    <option value="movie">Movie</option><option value="series">Series</option><option value="short">Short</option>
+                  </select>
+                </div>
+                <div class="field"><label>Duration (seconds)</label><input type="number" id="adultDuration" placeholder="0"></div>
+                <div class="field"><label>Tags (comma-separated)</label><input type="text" id="adultTags" placeholder="tag1, tag2"></div>
+                <div class="field" style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" id="adultFeatured" style="width:16px;height:16px">
+                  <label for="adultFeatured" style="margin:0">Featured (show first)</label>
+                </div>
+                <div class="field" style="grid-column:1/-1">
+                  <label>Description</label>
+                  <textarea id="adultDesc" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical" placeholder="Short description..."></textarea>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="btn btn-primary" onclick="saveAdultVideo()"><i class="ri-save-line"></i> Save</button>
+                <button class="btn btn-outline" onclick="document.getElementById('adultAddForm').style.display='none'">Cancel</button>
+              </div>
             </div>
-            <div class="field">
-              <label>Thumbnail URL</label>
-              <input type="text" id="adultThumb" placeholder="https://...">
-            </div>
-            <div class="field">
-              <label>Video URL (streaming)</label>
-              <input type="text" id="adultVideoUrl" placeholder="https://...">
-            </div>
-            <div class="field">
-              <label>Genre</label>
-              <select id="adultGenre" style="padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;width:100%">
-                <option>General</option><option>Romance</option><option>Drama</option>
-                <option>Comedy</option><option>Action</option><option>Thriller</option>
-                <option>Fantasy</option><option>Documentary</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Type</label>
-              <select id="adultType" style="padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;width:100%">
-                <option value="movie">Movie</option>
-                <option value="series">Series</option>
-                <option value="short">Short</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>Duration (seconds)</label>
-              <input type="number" id="adultDuration" placeholder="0">
-            </div>
-            <div class="field">
-              <label>Tags (comma-separated)</label>
-              <input type="text" id="adultTags" placeholder="tag1, tag2">
-            </div>
-            <div class="field" style="display:flex;align-items:center;gap:8px">
-              <input type="checkbox" id="adultFeatured" style="width:16px;height:16px">
-              <label for="adultFeatured" style="margin:0">Featured (show first)</label>
-            </div>
-            <div class="field" style="grid-column:1/-1">
-              <label>Description</label>
-              <textarea id="adultDesc" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical" placeholder="Short description..."></textarea>
+            <!-- Stats row -->
+            <div id="adultStats" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
+            <!-- Video table -->
+            <div style="overflow-x:auto">
+              <table class="data-table" id="adultTable">
+                <thead><tr><th>Thumbnail</th><th>Title</th><th>Genre</th><th>Type</th><th>Featured</th><th>Added</th><th>Actions</th></tr></thead>
+                <tbody id="adultTableBody">
+                  <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">Click the nav link to load...</td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
-          <div style="display:flex;gap:8px;margin-top:12px">
-            <button class="btn btn-primary" onclick="saveAdultVideo()"><i class="ri-save-line"></i> Save</button>
-            <button class="btn btn-outline" onclick="document.getElementById('adultAddForm').style.display='none'">Cancel</button>
-          </div>
         </div>
+      </section>
 
-        <!-- Stats row -->
-        <div id="adultStats" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap"></div>
-
-        <!-- Video table -->
-        <div style="overflow-x:auto">
-          <table class="data-table" id="adultTable">
-            <thead>
-              <tr>
-                <th>Thumbnail</th><th>Title</th><th>Genre</th><th>Type</th>
-                <th>Featured</th><th>Added</th><th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="adultTableBody">
-              <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted)">Loading...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </section>`;
-  </script>
 </body>
 </html>
