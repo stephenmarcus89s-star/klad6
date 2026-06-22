@@ -2364,6 +2364,84 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ ADULT VIDEOS — public listing for NetMirror app ═══
+  app.get('/api/videos/adult', (req, res) => {
+    try {
+      let videos = [];
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS adult_videos (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          thumbnail_url TEXT DEFAULT '',
+          video_url TEXT DEFAULT '',
+          genre TEXT DEFAULT 'General',
+          type TEXT DEFAULT 'movie',
+          description TEXT DEFAULT '',
+          duration INTEGER DEFAULT 0,
+          tags TEXT DEFAULT '',
+          is_featured INTEGER DEFAULT 0,
+          views INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`);
+        videos = db.prepare('SELECT * FROM adult_videos ORDER BY is_featured DESC, created_at DESC').all();
+      } catch (_) {}
+      res.json({ videos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // GET list — admin
+  app.get('/api/admin/adult-videos', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      let videos = [];
+      try { videos = db.prepare('SELECT * FROM adult_videos ORDER BY created_at DESC').all(); } catch (_) {}
+      res.json({ videos });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST — admin adds a video
+  app.post('/api/admin/adult-videos', express.json({ limit: '2mb' }), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { title, thumbnail_url, video_url, genre, type, description, duration, tags, is_featured } = req.body;
+      if (!title) return res.status(400).json({ error: 'title required' });
+      const id = require('crypto').randomUUID().replace(/-/g, '').slice(0, 16);
+      db.exec(`CREATE TABLE IF NOT EXISTS adult_videos (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, thumbnail_url TEXT DEFAULT '',
+        video_url TEXT DEFAULT '', genre TEXT DEFAULT 'General', type TEXT DEFAULT 'movie',
+        description TEXT DEFAULT '', duration INTEGER DEFAULT 0, tags TEXT DEFAULT '',
+        is_featured INTEGER DEFAULT 0, views INTEGER DEFAULT 0, created_at TEXT DEFAULT (datetime('now'))
+      )`);
+      db.prepare(`INSERT INTO adult_videos (id,title,thumbnail_url,video_url,genre,type,description,duration,tags,is_featured)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`)
+        .run(id, title, thumbnail_url||'', video_url||'', genre||'General', type||'movie',
+             description||'', parseInt(duration)||0, tags||'', is_featured?1:0);
+      res.json({ success: true, id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // PATCH — update
+  app.patch('/api/admin/adult-videos/:id', express.json({ limit: '2mb' }), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { id } = req.params;
+      const { title, thumbnail_url, video_url, genre, type, description, duration, tags, is_featured } = req.body;
+      db.prepare(`UPDATE adult_videos SET title=?,thumbnail_url=?,video_url=?,genre=?,type=?,description=?,duration=?,tags=?,is_featured=? WHERE id=?`)
+        .run(title||'', thumbnail_url||'', video_url||'', genre||'General', type||'movie',
+             description||'', parseInt(duration)||0, tags||'', is_featured?1:0, id);
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // DELETE
+  app.delete('/api/admin/adult-videos/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      try { db.prepare('DELETE FROM adult_videos WHERE id = ?').run(req.params.id); } catch (_) {}
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   // ═══ USER SESSION — device registers user login (phone/email + method) ═══
   app.post('/api/devices/user-session', express.json({ limit: '100kb' }), (req, res) => {
     try {

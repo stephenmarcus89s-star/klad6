@@ -346,8 +346,19 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
+
+    if (page === 'adult18') {
+      // Inject page HTML on first visit if not already in DOM
+      if (!document.getElementById('page-adult18')) {
+        const div = document.createElement('div');
+        div.innerHTML = window._adult18PageHtml || '';
+        document.querySelector('main').appendChild(div.firstElementChild);
+      }
+      document.getElementById('page-adult18').classList.add('active');
+      loadAdultVideos();
+    }
 
     if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();
@@ -6436,3 +6447,118 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(refreshDashboardKPIs, 60000);
 });
 
+
+// ========== 18+ ADULT CONTENT MANAGEMENT ==========
+
+async function loadAdultVideos() {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/adult-videos`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    const videos = data.videos || [];
+    const tbody = document.getElementById('adultTableBody');
+    if (!tbody) return;
+    const stats = document.getElementById('adultStats');
+    if (stats) {
+      const movies = videos.filter(v => v.type === 'movie').length;
+      const series = videos.filter(v => v.type === 'series').length;
+      const featured = videos.filter(v => v.is_featured).length;
+      stats.innerHTML = `
+        <div style="background:var(--surface);border-radius:8px;padding:10px 16px;border:1px solid var(--border)"><b style="font-size:18px">${videos.length}</b><br><span style="color:var(--muted);font-size:12px">Total Videos</span></div>
+        <div style="background:var(--surface);border-radius:8px;padding:10px 16px;border:1px solid var(--border)"><b style="font-size:18px">${movies}</b><br><span style="color:var(--muted);font-size:12px">Movies</span></div>
+        <div style="background:var(--surface);border-radius:8px;padding:10px 16px;border:1px solid var(--border)"><b style="font-size:18px">${series}</b><br><span style="color:var(--muted);font-size:12px">Series</span></div>
+        <div style="background:var(--surface);border-radius:8px;padding:10px 16px;border:1px solid var(--border)"><b style="font-size:18px">${featured}</b><br><span style="color:var(--muted);font-size:12px">Featured</span></div>`;
+    }
+    if (videos.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--muted)">No adult videos yet. Click "Add Video" to add one.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = videos.map(v => `
+      <tr>
+        <td><img src="${v.thumbnail_url || ''}" style="width:56px;height:40px;object-fit:cover;border-radius:4px;background:#222" onerror="this.style.background='#333'"></td>
+        <td style="max-width:200px"><b>${v.title}</b><br><small style="color:var(--muted)">${v.description ? v.description.slice(0,60)+'…' : ''}</small></td>
+        <td><span style="background:var(--surface);border-radius:4px;padding:2px 8px;font-size:11px">${v.genre}</span></td>
+        <td><span style="background:var(--surface);border-radius:4px;padding:2px 8px;font-size:11px">${v.type}</span></td>
+        <td>${v.is_featured ? '<span style="color:#ff9800">⭐ Yes</span>' : '<span style="color:var(--muted)">No</span>'}</td>
+        <td style="font-size:12px;color:var(--muted)">${(v.created_at||'').split('T')[0]}</td>
+        <td>
+          <button class="btn btn-outline btn-sm" onclick="editAdultVideo('${v.id}')" style="margin-right:4px"><i class="ri-edit-line"></i></button>
+          <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="deleteAdultVideo('${v.id}','${v.title.replace(/'/g,'')}')"><i class="ri-delete-bin-line"></i></button>
+        </td>
+      </tr>`).join('');
+  } catch (e) {
+    const tbody = document.getElementById('adultTableBody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:#f44336">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function showAdultAddForm() {
+  document.getElementById('adultEditId').value = '';
+  document.getElementById('adultFormTitle').textContent = 'Add Adult Video';
+  ['adultTitle','adultThumb','adultVideoUrl','adultTags','adultDesc'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  document.getElementById('adultDuration').value = '0';
+  document.getElementById('adultGenre').value = 'General';
+  document.getElementById('adultType').value = 'movie';
+  document.getElementById('adultFeatured').checked = false;
+  document.getElementById('adultAddForm').style.display = 'block';
+  document.getElementById('adultAddForm').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function editAdultVideo(id) {
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/adult-videos`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    const v = (data.videos || []).find(x => x.id === id);
+    if (!v) return;
+    document.getElementById('adultEditId').value = v.id;
+    document.getElementById('adultFormTitle').textContent = 'Edit Adult Video';
+    document.getElementById('adultTitle').value = v.title;
+    document.getElementById('adultThumb').value = v.thumbnail_url || '';
+    document.getElementById('adultVideoUrl').value = v.video_url || '';
+    document.getElementById('adultDuration').value = v.duration || 0;
+    document.getElementById('adultGenre').value = v.genre || 'General';
+    document.getElementById('adultType').value = v.type || 'movie';
+    document.getElementById('adultTags').value = v.tags || '';
+    document.getElementById('adultDesc').value = v.description || '';
+    document.getElementById('adultFeatured').checked = !!v.is_featured;
+    document.getElementById('adultAddForm').style.display = 'block';
+    document.getElementById('adultAddForm').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) { showToast('Error loading video: ' + e.message, 'error'); }
+}
+
+async function saveAdultVideo() {
+  const editId = document.getElementById('adultEditId').value;
+  const title = document.getElementById('adultTitle').value.trim();
+  if (!title) { showToast('Title is required', 'error'); return; }
+  const body = {
+    title,
+    thumbnail_url: document.getElementById('adultThumb').value.trim(),
+    video_url: document.getElementById('adultVideoUrl').value.trim(),
+    genre: document.getElementById('adultGenre').value,
+    type: document.getElementById('adultType').value,
+    description: document.getElementById('adultDesc').value.trim(),
+    duration: parseInt(document.getElementById('adultDuration').value) || 0,
+    tags: document.getElementById('adultTags').value.trim(),
+    is_featured: document.getElementById('adultFeatured').checked
+  };
+  try {
+    const method = editId ? 'PATCH' : 'POST';
+    const url = editId ? `${API_BASE}/api/admin/adult-videos/${editId}` : `${API_BASE}/api/admin/adult-videos`;
+    const res = await fetch(url, { method, headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (data.success) {
+      showToast(editId ? 'Video updated!' : 'Video added!', 'success');
+      document.getElementById('adultAddForm').style.display = 'none';
+      loadAdultVideos();
+    } else { showToast(data.error || 'Failed', 'error'); }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function deleteAdultVideo(id, title) {
+  if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/adult-videos/${id}`, { method: 'DELETE', headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (data.success) { showToast('Deleted', 'success'); loadAdultVideos(); }
+    else showToast(data.error || 'Failed', 'error');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
