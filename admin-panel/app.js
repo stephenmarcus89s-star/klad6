@@ -342,7 +342,17 @@ function navigateTo(page) {
     currentPage = page;
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-link').forEach(n => n.classList.remove('active'));
-    document.getElementById(`page-${page}`).classList.add('active');
+
+    // Inject adult18 page HTML on first visit — MUST happen before activation
+    if (page === 'adult18' && !document.getElementById('page-adult18')) {
+      const div = document.createElement('div');
+      div.innerHTML = window._adult18PageHtml || '';
+      const el = div.firstElementChild;
+      if (el) document.querySelector('main').appendChild(el);
+    }
+
+    // Activate the target page (safe optional chaining in case element missing)
+    document.getElementById(`page-${page}`)?.classList.add('active');
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
@@ -350,13 +360,7 @@ function navigateTo(page) {
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
     if (page === 'adult18') {
-      // Inject page HTML on first visit if not already in DOM
-      if (!document.getElementById('page-adult18')) {
-        const div = document.createElement('div');
-        div.innerHTML = window._adult18PageHtml || '';
-        document.querySelector('main').appendChild(div.firstElementChild);
-      }
-      document.getElementById('page-adult18').classList.add('active');
+      // Already injected above — just load data
       loadAdultVideos();
     }
 
