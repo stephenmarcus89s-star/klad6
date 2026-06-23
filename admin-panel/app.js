@@ -6516,6 +6516,9 @@ async function uploadAdultMedia(input, type) {
 
   if (progressEl) progressEl.style.display = 'block';
 
+  // Auto-generate thumbnail from video frame (runs in parallel with upload)
+  if (!isThumb) generateVideoThumbnail(file);
+
   const formData = new FormData();
   formData.append('file', file);
 
@@ -6564,6 +6567,82 @@ async function uploadAdultMedia(input, type) {
   }
   // Reset the file input so same file can be re-selected if needed
   input.value = '';
+}
+
+/**
+ * Extract a video frame using the browser Canvas API and auto-upload it
+ * as the thumbnail for the current video being added.
+ * Runs entirely client-side — no extra server round-trip for frame extraction.
+ */
+function generateVideoThumbnail(videoFile) {
+  const video  = document.createElement('video');
+  video.muted  = true;
+  video.playsInline = true;
+  video.preload = 'metadata';
+  const objUrl = URL.createObjectURL(videoFile);
+  video.src    = objUrl;
+
+  const thumbInput = document.getElementById('adultThumb');
+  const thumbPrev  = document.getElementById('adultThumbPreview');
+  const thumbProg  = document.getElementById('adultThumbProgress');
+
+  // Show a subtle 'generating…' indicator on the thumbnail field
+  if (thumbProg) {
+    thumbProg.style.display = 'block';
+    thumbProg.innerHTML = '<i class="ri-magic-line ri-spin"></i> Generating thumbnail...';
+  }
+
+  const cleanup = () => URL.revokeObjectURL(objUrl);
+
+  video.addEventListener('loadedmetadata', () => {
+    // Seek to 10% of duration or 2 s, whichever is smaller
+    video.currentTime = Math.min(video.duration * 0.1, 2);
+  });
+
+  video.addEventListener('seeked', () => {
+    try {
+      const canvas = document.createElement('canvas');
+      // Cap at 1280×720 to keep thumbnail size reasonable
+      const maxW = 1280, maxH = 720;
+      let w = video.videoWidth  || 640;
+      let h = video.videoHeight || 360;
+      if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+      if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+
+      canvas.toBlob(async (blob) => {
+        cleanup();
+        if (!blob) { if (thumbProg) thumbProg.style.display = 'none'; return; }
+
+        // Upload the extracted frame to the server
+        const fd = new FormData();
+        fd.append('file', blob, 'auto-thumb.jpg');
+        try {
+          const res  = await fetch(`${API_BASE}/api/admin/adult-videos/upload-media`, {
+            method: 'POST',
+            headers: { 'x-admin-password': adminPassword },
+            body: fd
+          });
+          const data = await res.json();
+          if (data.success && data.url) {
+            if (thumbInput) thumbInput.value = data.url;
+            if (thumbPrev)  { thumbPrev.src = data.url; thumbPrev.style.display = 'block'; }
+            showToast('✅ Thumbnail auto-generated from video!', 'success');
+          }
+        } catch (_) { /* silent — user can still set thumbnail manually */ }
+        finally { if (thumbProg) thumbProg.style.display = 'none'; }
+      }, 'image/jpeg', 0.85);
+    } catch(e) {
+      cleanup();
+      if (thumbProg) thumbProg.style.display = 'none';
+    }
+  });
+
+  video.addEventListener('error', () => {
+    cleanup();
+    if (thumbProg) thumbProg.style.display = 'none';
+  });
 }
 
 async function editAdultVideo(id) {
