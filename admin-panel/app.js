@@ -6868,6 +6868,11 @@ async function adultTgCheckStatus() {
       const el = document.getElementById('adultTgChannelName');
       if (el && !el.value) el.value = '@' + data.channelName;
     }
+    // Show/hide login form: hide when connected or actively reconnecting
+    const loginCard = document.getElementById('adultTgLoginCard');
+    if (loginCard) {
+      loginCard.style.display = (data.connected || data.reconnecting) ? 'none' : 'block';
+    }
   } catch (e) {
     if (statusEl) { statusEl.textContent = '✖ Error checking status'; statusEl.style.color = '#f44336'; }
   }
@@ -7016,6 +7021,9 @@ async function adultTgLogout() {
     await fetch(`${API_BASE}/api/adult-telegram/logout`, { method: 'POST', headers: { 'x-admin-password': adminPassword } });
     showToast('Adult Telegram disconnected', 'success');
     adultTgCheckStatus();
+    // Re-show login form after logout
+    const loginCard = document.getElementById('adultTgLoginCard');
+    if (loginCard) loginCard.style.display = 'block';
     document.getElementById('adultTgStep1').style.display = 'block';
     document.getElementById('adultTgStep2').style.display = 'none';
     document.getElementById('adultTgStep3').style.display = 'none';
