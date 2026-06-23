@@ -6918,13 +6918,29 @@ async function setAdultChannel() {
 }
 
 async function adultTgScan() {
-  showToast('Scanning channel...', 'success');
+  const btn = document.querySelector('[onclick="adultTgScan()"]');
+  if (btn) btn.disabled = true;
+  showToast('Scanning channel…', 'success');
   try {
     const res = await fetch(`${API_BASE}/api/adult-telegram/scan?limit=100`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
-    if (data.success) { showToast(`Imported ${data.imported} new videos!`, 'success'); adultTgLoadVideos(); adultTgCheckStatus(); }
-    else showToast(data.error || 'Scan failed', 'error');
-  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    if (data.success) {
+      const msg = data.imported > 0
+        ? `✓ Imported ${data.imported} new video(s). Total in DB: ${data.totalInDb}`
+        : data.skipped > 0
+          ? `All ${data.skipped} video(s) already imported. Total in DB: ${data.totalInDb}`
+          : `No video messages found in last ${data.total} messages.`;
+      showToast(msg, 'success');
+      adultTgLoadVideos();
+      adultTgCheckStatus();
+    } else {
+      showToast(data.error || 'Scan failed', 'error');
+    }
+  } catch (e) {
+    showToast('Scan error: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function adultTgSendCode() {
@@ -6962,6 +6978,8 @@ async function adultTgVerifyCode() {
       if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Logged in!'; }
       showToast('Adult Telegram connected!', 'success');
       adultTgCheckStatus(); adultTgLoadVideos();
+      // Auto-show session backup so user remembers to set Railway env var
+      setTimeout(() => adultTgShowSessionBackup(), 800);
     } else if (data.needs2FA) {
       document.getElementById('adultTgStep2').style.display = 'none';
       document.getElementById('adultTgStep3').style.display = 'block';

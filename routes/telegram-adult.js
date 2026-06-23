@@ -39,6 +39,27 @@ let ioRef          = null;
 
 router.setIo = (io) => { ioRef = io; };
 
+// ── CREATE adult_videos TABLE IMMEDIATELY (fix: table was missing causing silent INSERT failures) ──
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS adult_videos (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    thumbnail_url TEXT DEFAULT '',
+    video_url TEXT DEFAULT '',
+    genre TEXT DEFAULT 'General',
+    type TEXT DEFAULT 'movie',
+    description TEXT DEFAULT '',
+    duration INTEGER DEFAULT 0,
+    tags TEXT DEFAULT '',
+    is_featured INTEGER DEFAULT 0,
+    views INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  console.log('[TelegramAdult] adult_videos table ensured');
+} catch (e) {
+  console.warn('[TelegramAdult] Table init warning:', e.message);
+}
+
 // ── Admin auth ────────────────────────────────────────────────────────────────
 const adminAuth = (req, res, next) => {
   const password = req.headers['x-admin-password'] || req.query.password;
@@ -91,11 +112,11 @@ function importAdultVideo(msg, msgId) {
       (doc.attributes || []).some(a => a.className === 'DocumentAttributeVideo');
     if (!isVideo) return false;
 
-    // Check if already imported (video_url contains the msgId)
+    // Check if already imported
     const existing = db.prepare(
       "SELECT id FROM adult_videos WHERE video_url LIKE ?"
     ).get(`%/stream/${msgId}`);
-    if (existing) return false;
+    if (existing) return 'skipped';
 
     let fileName = 'video.mp4'; let dur = 0;
     for (const a of (doc.attributes || [])) {
@@ -139,6 +160,17 @@ async function getClient() {
           sessionStr = env;
           try { db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr); } catch (_) {}
         }
+      }
+      // Fallback: use main Telegram session if no dedicated adult session saved
+      // (works when both channels use the same Telegram account)
+      if (!sessionStr) {
+        try {
+          const mainSaved = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_session'").get();
+          if (mainSaved && mainSaved.value) {
+            sessionStr = mainSaved.value;
+            console.log('[TelegramAdult] No adult session found — trying main Telegram session as fallback');
+          }
+        } catch (_) {}
       }
       if (!sessionStr) { connectPromise = null; return null; }
 
@@ -333,12 +365,18 @@ router.get('/scan', adminAuth, async (req, res) => {
     if (!channelEntity) return res.status(503).json({ error: 'Channel not set. Please set the channel username first.' });
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const messages = await cl.getMessages(channelEntity, { limit });
-    let imported = 0;
+    let imported = 0; let skipped = 0; let notVideo = 0;
     for (const msg of messages) {
-      if (importAdultVideo(msg, Number(msg.id))) imported++;
+      const result = importAdultVideo(msg, Number(msg.id));
+      if (result === true) imported++;
+      else if (result === 'skipped') skipped++;
+      else notVideo++;
     }
+    console.log(`[TelegramAdult] Scan complete: ${imported} imported, ${skipped} already existed, ${notVideo} non-video`);
     if (ioRef && imported > 0) ioRef.emit('adult_video_added', { count: imported });
-    res.json({ success: true, imported, total: messages.length });
+    // Verify count in DB
+    const dbCount = (() => { try { return db.prepare("SELECT COUNT(*) AS c FROM adult_videos WHERE video_url LIKE '%/api/adult-telegram/stream/%'").get()?.c || 0; } catch (_) { return -1; } })();
+    res.json({ success: true, imported, skipped, total: messages.length, totalInDb: dbCount });
   } catch (e) {
     console.error('[TelegramAdult] scan error:', e.message);
     res.status(500).json({ error: e.message });
@@ -436,9 +474,26 @@ async function finishAdultLogin(lc) {
   const sessionStr = lc.session.save();
   try {
     db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr);
-    if (typeof db.saveNow === 'function') db.saveNow();
-  } catch (_) {}
-  console.log('[TelegramAdult] Session saved — set TELEGRAM_ADULT_SESSION in Railway env vars!');
+    // Force immediate cloud backup regardless of video count (bypass the videos < 5 threshold)
+    try {
+      const { initCloudinary, uploadDbBackup } = require('../config/cloudinary');
+      const fs2   = require('fs');
+      const path2 = require('path');
+      const DB_PATH = path2.join(__dirname, '..', 'data', 'leakspro.db');
+      // Write DB to disk first
+      if (typeof db.saveNow === 'function') db.saveNow();
+      initCloudinary();
+      uploadDbBackup(DB_PATH)
+        .then(() => console.log('[TelegramAdult] FORCED Cloudinary backup after session save'))
+        .catch(e => console.warn('[TelegramAdult] Forced backup failed:', e.message));
+    } catch (backupErr) {
+      console.warn('[TelegramAdult] Backup error:', backupErr.message);
+      if (typeof db.saveNow === 'function') db.saveNow();
+    }
+  } catch (e) {
+    console.error('[TelegramAdult] Session save error:', e.message);
+  }
+  console.log('[TelegramAdult] Session saved. IMPORTANT: also set TELEGRAM_ADULT_SESSION env var in Railway!');
   if (client && client !== lc) { try { await client.disconnect(); } catch (_) {} }
   client = lc; connected = true;
   const ch = getChannelName();
