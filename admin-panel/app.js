@@ -353,7 +353,16 @@ function navigateTo(page) {
 
     if (page === 'adult18')      { loadAdultVideos(); }
     if (page === 'appupdate')    { loadCurrentUpdate(); }
-    if (page === 'telegram-adult') { adultTgCheckStatus(); adultTgLoadVideos(); }
+    if (page === 'telegram-adult') {
+      adultTgCheckStatus();
+      adultTgLoadVideos();
+      // Auto-refresh status every 8s while on this page
+      if (window._adultTgPollTimer) clearInterval(window._adultTgPollTimer);
+      window._adultTgPollTimer = setInterval(() => {
+        if (currentPage === 'telegram-adult') adultTgCheckStatus();
+        else clearInterval(window._adultTgPollTimer);
+      }, 8000);
+    }
 
     if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();
@@ -6855,15 +6864,19 @@ async function adultTgLoadVideos() {
   try {
     const res = await fetch(`${API_BASE}/api/admin/adult-videos`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
-    const tgVids = (data.videos || []).filter(v => v.telegram_msg_id > 0);
+    // Filter videos imported from Telegram (their video_url contains the stream path)
+    const tgVids = (data.videos || []).filter(v =>
+      (v.video_url || '').includes('/api/adult-telegram/stream/') ||
+      (v.description || '').startsWith('[TG:')
+    );
     if (tgVids.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No Telegram videos yet. Scan the channel or upload a video to the channel.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No Telegram videos yet. Click "Scan Channel" to import existing videos, or upload a new video to the channel.</td></tr>';
       return;
     }
     tbody.innerHTML = tgVids.map(v => `<tr>
-      <td><b>${v.title}</b><br><small style="color:var(--muted)">${v.file_name||''}</small></td>
+      <td><b>${v.title}</b><br><small style="color:var(--muted)">${(v.description||'').replace(/\[TG:\d+\] /, '')}</small></td>
       <td>${v.duration ? Math.floor(v.duration/60)+'m '+Math.floor(v.duration%60)+'s' : '—'}</td>
-      <td>${v.file_size ? (v.file_size/1024/1024).toFixed(1)+' MB' : '—'}</td>
+      <td>—</td>
       <td style="font-size:11px;color:var(--muted)">${(v.created_at||'').split('T')[0]}</td>
       <td>
         <a href="${API_BASE}${v.video_url}" target="_blank" class="btn btn-outline btn-sm" title="Stream"><i class="ri-play-line"></i></a>
@@ -6923,6 +6936,7 @@ async function adultTgVerifyCode() {
   const code = document.getElementById('adultTgCode')?.value.trim();
   const msg  = document.getElementById('adultTgLoginMsg');
   if (!code) return showToast('Enter OTP code', 'error');
+  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = 'Verifying…'; }
   try {
     const res = await fetch(`${API_BASE}/api/adult-telegram/verify-code`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
@@ -6930,15 +6944,23 @@ async function adultTgVerifyCode() {
     });
     const data = await res.json();
     if (data.success) {
-      if (msg) msg.textContent = '✓ Logged in!';
+      if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Logged in!'; }
       showToast('Adult Telegram connected!', 'success');
       adultTgCheckStatus(); adultTgLoadVideos();
     } else if (data.needs2FA) {
       document.getElementById('adultTgStep2').style.display = 'none';
       document.getElementById('adultTgStep3').style.display = 'block';
-      if (msg) msg.textContent = '2FA required.';
-    } else { showToast(data.error || 'Verify failed', 'error'); }
-  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+      if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = '2FA required.'; }
+    } else {
+      // Show exact server error
+      const errText = data.error || 'Verification failed';
+      if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + errText; }
+      showToast(errText, 'error');
+    }
+  } catch (e) {
+    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message; }
+    showToast('Error: ' + e.message, 'error');
+  }
 }
 
 async function adultTgVerify2FA() {

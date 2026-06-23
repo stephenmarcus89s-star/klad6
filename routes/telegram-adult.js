@@ -1,21 +1,19 @@
 ﻿/**
- * Adult Telegram Channel Integration
+ * Adult Telegram Channel Integration  — v2 (fixed)
  *
- * Separate MTProto session for a private adult content channel.
- * Features:
- *  - Real-time NewMessage event handler: when admin uploads a video,
- *    it appears INSTANTLY in the app via Socket.IO broadcast.
- *  - Original-quality HTTP Range streaming (no re-encoding unless E-AC3/DDP).
- *  - Session stored as 'telegram_adult_session' (separate from main channel).
- *  - Videos tracked in adult_videos table with telegram_msg_id.
+ * Key fixes over v1:
+ *  - Removed broken require('telegram/events') — module didn't exist
+ *  - Server-side interval poll every 5 min auto-imports new videos
+ *  - INSERT uses only guaranteed-to-exist base columns
+ *  - Thumbnail extracted from Telegram document thumbs (PhotoStrippedSize)
+ *  - HTTP Range streaming preserved for original quality
  */
-const express    = require('express');
-const router     = express.Router();
+const express = require('express');
+const router  = express.Router();
 const { TelegramClient } = require('telegram');
 const { StringSession }  = require('telegram/sessions');
 const { Api }            = require('telegram/tl');
 const { computeCheck }   = require('telegram/Password');
-const { NewMessage }     = require('telegram/events');
 const db   = require('../config/database');
 const fs   = require('fs');
 const path = require('path');
@@ -37,9 +35,8 @@ let connected      = false;
 let channelEntity  = null;
 let connectPromise = null;
 let pendingLogin   = { client: null, phoneCodeHash: null, phone: null };
-let ioRef          = null;   // set by server.js via router.setIo()
+let ioRef          = null;
 
-// Expose a way for server.js to pass the Socket.IO instance
 router.setIo = (io) => { ioRef = io; };
 
 // ── Admin auth ────────────────────────────────────────────────────────────────
@@ -53,7 +50,7 @@ const adminAuth = (req, res, next) => {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function getAdultChannelName() {
+function getChannelName() {
   try {
     const r = db.prepare("SELECT value FROM admin_settings WHERE key = 'adult_channel_username'").get();
     return (r && r.value) || '';
@@ -65,26 +62,64 @@ function needsTranscode(name) {
   return u.includes('DDP') || u.includes('EAC3') || u.includes('E-AC-3') || u.includes('ATMOS');
 }
 
-// ── Ensure adult_videos table has telegram columns ────────────────────────────
-function ensureAdultTable() {
+/** Extract a base64 thumbnail from the Telegram document thumbs array */
+function extractThumb(doc) {
   try {
-    db.exec(`CREATE TABLE IF NOT EXISTS adult_videos (
-      id TEXT PRIMARY KEY, title TEXT NOT NULL, thumbnail_url TEXT DEFAULT '',
-      video_url TEXT DEFAULT '', genre TEXT DEFAULT 'General', type TEXT DEFAULT 'movie',
-      description TEXT DEFAULT '', duration INTEGER DEFAULT 0, tags TEXT DEFAULT '',
-      is_featured INTEGER DEFAULT 0, views INTEGER DEFAULT 0,
-      telegram_msg_id INTEGER DEFAULT 0, file_size INTEGER DEFAULT 0,
-      file_name TEXT DEFAULT '', mime_type TEXT DEFAULT 'video/mp4',
-      created_at TEXT DEFAULT (datetime('now'))
-    )`);
-    // Add telegram columns if upgrading existing table
-    try { db.exec("ALTER TABLE adult_videos ADD COLUMN telegram_msg_id INTEGER DEFAULT 0"); } catch (_) {}
-    try { db.exec("ALTER TABLE adult_videos ADD COLUMN file_size INTEGER DEFAULT 0"); } catch (_) {}
-    try { db.exec("ALTER TABLE adult_videos ADD COLUMN file_name TEXT DEFAULT ''"); } catch (_) {}
-    try { db.exec("ALTER TABLE adult_videos ADD COLUMN mime_type TEXT DEFAULT 'video/mp4'"); } catch (_) {}
-  } catch (_) {}
+    const thumbs = doc.thumbs || [];
+    // PhotoStrippedSize is a tiny inline preview
+    const stripped = thumbs.find(t => t.className === 'PhotoStrippedSize');
+    if (stripped && stripped.bytes && stripped.bytes.length > 3) {
+      const b = Buffer.from(stripped.bytes);
+      // gramjs stripped bytes need a small header repair for JPEG
+      const header = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]);
+      const patched = Buffer.concat([header, b.slice(3)]);
+      return 'data:image/jpeg;base64,' + patched.toString('base64');
+    }
+    // Fall back to first available thumb
+    const anyThumb = thumbs.find(t => t.className === 'PhotoSize' || t.className === 'PhotoSizeEmpty');
+    if (!anyThumb) return '';
+    return ''; // Can't easily download photo sizes without additional request
+  } catch (_) { return ''; }
 }
-ensureAdultTable();
+
+/** Import a single Telegram message as an adult video (idempotent) */
+function importAdultVideo(msg, msgId) {
+  try {
+    if (!msg.media || msg.media.className !== 'MessageMediaDocument') return false;
+    const doc = msg.media.document;
+    const isVideo = (doc.mimeType || '').startsWith('video/') ||
+      (doc.attributes || []).some(a => a.className === 'DocumentAttributeVideo');
+    if (!isVideo) return false;
+
+    // Check if already imported (video_url contains the msgId)
+    const existing = db.prepare(
+      "SELECT id FROM adult_videos WHERE video_url LIKE ?"
+    ).get(`%/stream/${msgId}`);
+    if (existing) return false;
+
+    let fileName = 'video.mp4'; let dur = 0;
+    for (const a of (doc.attributes || [])) {
+      if (a.className === 'DocumentAttributeFilename') fileName = a.fileName || fileName;
+      if (a.className === 'DocumentAttributeVideo')    dur = Number(a.duration || 0);
+    }
+    const rawTitle  = (msg.message || '').split('\n')[0].trim() || fileName.replace(/\.[^.]+$/, '');
+    const title     = rawTitle.slice(0, 200); // trim very long titles
+    const thumbUrl  = extractThumb(doc);
+    const streamUrl = `/api/adult-telegram/stream/${msgId}`;
+    const id        = require('crypto').randomUUID().replace(/-/g, '').slice(0, 16);
+
+    // Use only the guaranteed base columns (created by server.js)
+    db.prepare(`INSERT OR IGNORE INTO adult_videos
+      (id, title, thumbnail_url, video_url, genre, type, description, duration)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, title, thumbUrl, streamUrl, 'General', 'movie',
+           `[TG:${msgId}] ${fileName}`, Math.round(dur));
+    return true;
+  } catch (e) {
+    console.error('[TelegramAdult] importAdultVideo error:', e.message);
+    return false;
+  }
+}
 
 // ── Client connection ─────────────────────────────────────────────────────────
 async function getClient() {
@@ -98,13 +133,13 @@ async function getClient() {
         const saved = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_adult_session'").get();
         if (saved && saved.value) sessionStr = saved.value;
       } catch (_) {}
-
-      // Env-var fallback (survives Railway redeploys)
       if (!sessionStr) {
         const env = (process.env.TELEGRAM_ADULT_SESSION || '').trim();
-        if (env) { sessionStr = env; try { db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr); } catch (_) {} }
+        if (env) {
+          sessionStr = env;
+          try { db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr); } catch (_) {}
+        }
       }
-
       if (!sessionStr) { connectPromise = null; return null; }
 
       if (client) { try { await client.disconnect(); } catch (_) {} client = null; connected = false; }
@@ -117,31 +152,28 @@ async function getClient() {
         connected = false; client = null; connectPromise = null; return null;
       }
       connected = true;
-
-      const channelName = getAdultChannelName();
-      if (channelName) {
+      const ch = getChannelName();
+      if (ch) {
         try {
-          channelEntity = await client.getEntity(channelName);
-          console.log(`[TelegramAdult] Connected to channel: ${channelEntity.title || channelName}`);
-          // Register real-time new-message watcher
-          registerNewMessageHandler();
+          channelEntity = await client.getEntity(ch);
+          console.log('[TelegramAdult] Connected to channel:', channelEntity.title || ch);
         } catch (e) {
-          console.log(`[TelegramAdult] Connected but channel not found: ${e.message}`);
+          console.log('[TelegramAdult] Channel not found:', e.message);
         }
       }
       return client;
     } catch (e) {
-      console.error('[TelegramAdult] Connect failed:', e.message);
+      console.error('[TelegramAdult] Connect error:', e.message);
       connected = false; client = null; connectPromise = null; throw e;
     } finally { connectPromise = null; }
   })();
   return connectPromise;
 }
 
-// Auto-connect on startup
-setTimeout(() => getClient().catch(() => {}), 4000);
+// Auto-connect on startup (non-blocking)
+setTimeout(() => getClient().catch(() => {}), 4500);
 
-// Periodic reconnect
+// Reconnect every 2 min if disconnected
 setInterval(async () => {
   if (connected) return;
   try {
@@ -151,73 +183,33 @@ setInterval(async () => {
   } catch (_) {}
 }, 120_000);
 
-// ── Real-time new-message handler ─────────────────────────────────────────────
-function registerNewMessageHandler() {
-  if (!client || !channelEntity) return;
+// Auto-scan for new videos every 5 minutes (instead of event handler)
+setInterval(async () => {
+  if (!connected || !channelEntity) return;
   try {
-    client.addEventHandler(async (event) => {
-      try {
-        const msg = event.message;
-        if (!msg || !msg.media || msg.media.className !== 'MessageMediaDocument') return;
-        const doc = msg.media.document;
-        // Must be a video or document we recognise as video
-        const isVideo = (doc.mimeType || '').startsWith('video/') ||
-          (doc.attributes || []).some(a => a.className === 'DocumentAttributeVideo');
-        if (!isVideo) return;
+    const cl = await getClient();
+    if (!cl) return;
+    // Fetch last 10 messages — fast check for new uploads
+    const messages = await cl.getMessages(channelEntity, { limit: 10 });
+    let added = 0;
+    for (const msg of messages) {
+      if (importAdultVideo(msg, Number(msg.id))) {
+        added++;
+        if (ioRef) ioRef.emit('adult_video_added', { telegram_msg_id: Number(msg.id) });
+      }
+    }
+    if (added > 0) console.log('[TelegramAdult] Auto-scan added', added, 'new video(s)');
+  } catch (_) {}
+}, 5 * 60 * 1000);
 
-        // Get filename
-        let fileName = 'video.mp4';
-        let duration  = 0;
-        for (const attr of (doc.attributes || [])) {
-          if (attr.className === 'DocumentAttributeFilename') fileName = attr.fileName || fileName;
-          if (attr.className === 'DocumentAttributeVideo')    duration  = Number(attr.duration || 0);
-        }
+// ── Routes ────────────────────────────────────────────────────────────────────
 
-        const title    = (msg.message || '').split('\n')[0].trim() || fileName.replace(/\.[^.]+$/, '');
-        const msgId    = Number(msg.id);
-        const fileSize = Number(doc.size || 0);
-        const channelName = getAdultChannelName();
-        const streamUrl   = `/api/adult-telegram/stream/${msgId}`;
-
-        // Avoid duplicate
-        const existing = db.prepare("SELECT id FROM adult_videos WHERE telegram_msg_id = ?").get(msgId);
-        if (existing) return;
-
-        const id = require('crypto').randomUUID().replace(/-/g, '').slice(0, 16);
-        db.prepare(`INSERT INTO adult_videos
-          (id, title, video_url, genre, type, duration, telegram_msg_id, file_size, file_name, mime_type)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`)
-          .run(id, title, streamUrl, 'General', 'movie',
-               Math.round(duration), msgId, fileSize, fileName, doc.mimeType || 'video/mp4');
-
-        console.log(`[TelegramAdult] New video: "${title}" msgId=${msgId}`);
-
-        // Broadcast to app via Socket.IO
-        if (ioRef) ioRef.emit('adult_video_added', { id, title, video_url: streamUrl, telegram_msg_id: msgId });
-
-        // Telegram bot alert
-        try {
-          const { sendAlert } = require('../utils/telegram-bot');
-          sendAlert(`🔞 <b>New Adult Video</b>\n"${title}"\n<a href="${streamUrl}">Stream</a>`);
-        } catch (_) {}
-      } catch (e) { console.error('[TelegramAdult] NewMessage error:', e.message); }
-    }, new NewMessage({}));
-    console.log('[TelegramAdult] Real-time new-message watcher registered');
-  } catch (e) { console.error('[TelegramAdult] addEventHandler failed:', e.message); }
-}
-
-// ── GET /status ───────────────────────────────────────────────────────────────
 router.get('/status', adminAuth, async (req, res) => {
-  const channelName = getAdultChannelName();
-  res.json({
-    connected,
-    channelName,
-    channelTitle: channelEntity?.title || null,
-    videoCount: (() => { try { return db.prepare("SELECT COUNT(*) AS c FROM adult_videos WHERE telegram_msg_id > 0").get()?.c || 0; } catch (_) { return 0; } })()
-  });
+  const ch = getChannelName();
+  const count = (() => { try { return db.prepare("SELECT COUNT(*) AS c FROM adult_videos WHERE video_url LIKE '%/api/adult-telegram/stream/%'").get()?.c || 0; } catch (_) { return 0; } })();
+  res.json({ connected, channelName: ch, channelTitle: channelEntity?.title || null, videoCount: count });
 });
 
-// ── GET /session-string (for backup to env var) ───────────────────────────────
 router.get('/session-string', adminAuth, (req, res) => {
   try {
     let s = '';
@@ -228,64 +220,79 @@ router.get('/session-string', adminAuth, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── POST /set-channel ─────────────────────────────────────────────────────────
 router.post('/set-channel', adminAuth, express.json(), async (req, res) => {
-  const { username } = req.body;
+  const { username } = req.body || {};
   if (!username) return res.status(400).json({ error: 'username required' });
-  db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('adult_channel_username', ?)").run(username.replace('@', ''));
-  // Re-resolve entity if already connected
+  const ch = username.replace('@', '').trim();
+  db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('adult_channel_username', ?)").run(ch);
   if (client && connected) {
-    try { channelEntity = await client.getEntity(username.replace('@', '')); registerNewMessageHandler(); } catch (_) {}
+    try { channelEntity = await client.getEntity(ch); } catch (_) {}
   }
-  res.json({ success: true });
+  res.json({ success: true, channelName: ch });
 });
 
-// ── POST /send-code ───────────────────────────────────────────────────────────
-router.post('/send-code', adminAuth, async (req, res) => {
+router.post('/send-code', adminAuth, express.json(), async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone } = req.body || {};
     if (!phone) return res.status(400).json({ error: 'phone required' });
-    const lc = new TelegramClient(new StringSession(''), API_ID, API_HASH, { connectionRetries: 5 });
+    if (pendingLogin.client) {
+      try { await pendingLogin.client.disconnect(); } catch (_) {}
+    }
+    const lc = new TelegramClient(new StringSession(''), API_ID, API_HASH, { connectionRetries: 3, timeout: 20 });
     await lc.connect();
     const result = await lc.invoke(new Api.auth.SendCode({
       phoneNumber: phone, apiId: API_ID, apiHash: API_HASH, settings: new Api.CodeSettings({})
     }));
     pendingLogin = { client: lc, phoneCodeHash: result.phoneCodeHash, phone };
-    res.json({ success: true, message: 'OTP sent to Telegram app' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    console.log('[TelegramAdult] OTP sent to', phone);
+    res.json({ success: true, message: 'OTP sent to your Telegram app' });
+  } catch (e) {
+    console.error('[TelegramAdult] send-code error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// ── POST /verify-code ─────────────────────────────────────────────────────────
-router.post('/verify-code', adminAuth, async (req, res) => {
+router.post('/verify-code', adminAuth, express.json(), async (req, res) => {
   try {
-    const { code } = req.body;
-    if (!code || !pendingLogin.client) return res.status(400).json({ error: 'code required or no pending login' });
+    const { code } = req.body || {};
+    if (!code) return res.status(400).json({ error: 'OTP code required' });
+    if (!pendingLogin.client || !pendingLogin.phoneCodeHash) {
+      return res.status(400).json({ error: 'No pending login. Please send OTP first (do not refresh page between steps).' });
+    }
     try {
       await pendingLogin.client.invoke(new Api.auth.SignIn({
-        phoneNumber: pendingLogin.phone, phoneCodeHash: pendingLogin.phoneCodeHash, phoneCode: code
+        phoneNumber: pendingLogin.phone,
+        phoneCodeHash: pendingLogin.phoneCodeHash,
+        phoneCode: code
       }));
       await finishAdultLogin(pendingLogin.client);
-      res.json({ success: true, message: 'Logged in!' });
+      res.json({ success: true, message: 'Logged in successfully!' });
     } catch (e) {
-      if (e.errorMessage === 'SESSION_PASSWORD_NEEDED') return res.json({ success: false, needs2FA: true });
+      if (e.errorMessage === 'SESSION_PASSWORD_NEEDED') {
+        return res.json({ success: false, needs2FA: true });
+      }
       throw e;
     }
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[TelegramAdult] verify-code error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// ── POST /verify-2fa ──────────────────────────────────────────────────────────
-router.post('/verify-2fa', adminAuth, async (req, res) => {
+router.post('/verify-2fa', adminAuth, express.json(), async (req, res) => {
   try {
-    const { password } = req.body;
-    if (!password || !pendingLogin.client) return res.status(400).json({ error: 'password required' });
+    const { password } = req.body || {};
+    if (!password || !pendingLogin.client) return res.status(400).json({ error: 'password required or no pending login' });
     const srp = await pendingLogin.client.invoke(new Api.account.GetPassword());
     await pendingLogin.client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(srp, password) }));
     await finishAdultLogin(pendingLogin.client);
     res.json({ success: true, message: 'Logged in with 2FA!' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[TelegramAdult] verify-2fa error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// ── POST /logout ──────────────────────────────────────────────────────────────
 router.post('/logout', adminAuth, async (req, res) => {
   try {
     if (client) { try { await client.disconnect(); } catch (_) {} }
@@ -295,62 +302,31 @@ router.post('/logout', adminAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-async function finishAdultLogin(lc) {
-  const sessionStr = lc.session.save();
-  try {
-    db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr);
-    if (typeof db.saveNow === 'function') db.saveNow();
-  } catch (_) {}
-  console.log('[TelegramAdult] Session saved. Set TELEGRAM_ADULT_SESSION in Railway env vars.');
-  if (client && client !== lc) { try { await client.disconnect(); } catch (_) {} }
-  client = lc; connected = true;
-  const channelName = getAdultChannelName();
-  if (channelName) {
-    try { channelEntity = await lc.getEntity(channelName); registerNewMessageHandler(); } catch (_) {}
-  }
-  pendingLogin = { client: null, phoneCodeHash: null, phone: null };
-}
-
-// ── GET /scan — bulk import existing channel videos ───────────────────────────
 router.get('/scan', adminAuth, async (req, res) => {
   try {
     const cl = await getClient();
-    if (!cl || !channelEntity) return res.status(503).json({ error: 'Not connected to adult channel' });
+    if (!cl || !connected) return res.status(503).json({ error: 'Not connected. Please login first.' });
+    if (!channelEntity) return res.status(503).json({ error: 'Channel not set. Please set the channel username first.' });
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const messages = await cl.getMessages(channelEntity, { limit });
     let imported = 0;
     for (const msg of messages) {
-      if (!msg.media || msg.media.className !== 'MessageMediaDocument') continue;
-      const doc = msg.media.document;
-      const isVideo = (doc.mimeType || '').startsWith('video/') ||
-        (doc.attributes || []).some(a => a.className === 'DocumentAttributeVideo');
-      if (!isVideo) continue;
-      const msgId = Number(msg.id);
-      const existing = db.prepare("SELECT id FROM adult_videos WHERE telegram_msg_id = ?").get(msgId);
-      if (existing) continue;
-      let fileName = 'video.mp4'; let dur = 0;
-      for (const a of (doc.attributes || [])) {
-        if (a.className === 'DocumentAttributeFilename') fileName = a.fileName || fileName;
-        if (a.className === 'DocumentAttributeVideo')    dur = Number(a.duration || 0);
-      }
-      const title = (msg.message || '').split('\n')[0].trim() || fileName.replace(/\.[^.]+$/, '');
-      const id = require('crypto').randomUUID().replace(/-/g,'').slice(0,16);
-      db.prepare(`INSERT INTO adult_videos (id,title,video_url,genre,type,duration,telegram_msg_id,file_size,file_name,mime_type)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`)
-        .run(id, title, `/api/adult-telegram/stream/${msgId}`, 'General', 'movie',
-             Math.round(dur), msgId, Number(doc.size||0), fileName, doc.mimeType||'video/mp4');
-      imported++;
+      if (importAdultVideo(msg, Number(msg.id))) imported++;
     }
+    if (ioRef && imported > 0) ioRef.emit('adult_video_added', { count: imported });
     res.json({ success: true, imported, total: messages.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    console.error('[TelegramAdult] scan error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
-// ── GET /stream/:messageId — original-quality HTTP Range streaming ─────────────
+// ── Streaming — original quality with HTTP Range support ──────────────────────
 router.get('/stream/:messageId', async (req, res) => {
   try {
     let cl = await getClient();
     if (!cl || !connected) return res.status(503).json({ error: 'Adult channel not connected' });
-    if (!channelEntity) return res.status(503).json({ error: 'Channel entity missing' });
+    if (!channelEntity) return res.status(503).json({ error: 'Channel not configured' });
 
     const messageId = parseInt(req.params.messageId);
     if (!messageId) return res.status(400).json({ error: 'Invalid message ID' });
@@ -360,24 +336,23 @@ router.get('/stream/:messageId', async (req, res) => {
 
     const msg = messages[0];
     if (!msg.media || msg.media.className !== 'MessageMediaDocument')
-      return res.status(400).json({ error: 'Not a video' });
+      return res.status(400).json({ error: 'Not a video message' });
 
     const doc      = msg.media.document;
     const fileSize = Number(doc.size || 0);
-    let mimeType = doc.mimeType || 'video/mp4';
-    let fileName = 'video.mp4';
+    let mimeType   = doc.mimeType || 'video/mp4';
+    let fileName   = 'video.mp4';
     for (const a of (doc.attributes || [])) {
       if (a.className === 'DocumentAttributeFilename') fileName = a.fileName || fileName;
     }
 
     const CHUNK = 1024 * 1024; // 1 MB
-    const rangeHeader = req.headers['range'];
 
-    // ── E-AC3/DDP transcode path ───────────────────────────────────────────────
+    // Transcode E-AC3/DDP → AAC (video copied at original quality)
     if (ffmpegPath && needsTranscode(fileName)) {
       res.writeHead(200, {
         'Content-Type': 'video/mp4', 'Accept-Ranges': 'none',
-        'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache',
+        'Transfer-Encoding': 'chunked', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive'
       });
       const ff = spawn(ffmpegPath, [
         '-hide_banner', '-loglevel', 'error',
@@ -397,43 +372,56 @@ router.get('/stream/:messageId', async (req, res) => {
       return;
     }
 
-    // ── Direct HTTP Range streaming (original quality, zero re-encoding) ──────
+    // Direct HTTP Range streaming — zero re-encoding, original quality
+    const rangeHeader = req.headers['range'];
     if (rangeHeader && fileSize > 0) {
       const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
-      const start = parseInt(startStr, 10) || 0;
-      const end   = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1) : Math.min(start + CHUNK - 1, fileSize - 1);
+      const start  = parseInt(startStr, 10) || 0;
+      const end    = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1) : Math.min(start + CHUNK - 1, fileSize - 1);
       const length = end - start + 1;
-
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': length,
-        'Content-Type': mimeType,
-        'Cache-Control': 'no-cache',
+        'Accept-Ranges': 'bytes', 'Content-Length': length,
+        'Content-Type': mimeType, 'Cache-Control': 'no-cache'
       });
-      for await (const chunk of cl.iterDownload({ file: doc, requestSize: CHUNK, dcId: doc.dcId, offset: BigInt(start), limit: BigInt(length) })) {
+      for await (const chunk of cl.iterDownload({
+        file: doc, requestSize: CHUNK, dcId: doc.dcId,
+        offset: BigInt(start), limit: BigInt(length)
+      })) {
         if (res.writableEnded) break;
         res.write(Buffer.from(chunk));
       }
-      if (!res.writableEnded) res.end();
     } else {
-      // Full file
       res.writeHead(200, {
-        'Content-Length': fileSize || undefined,
-        'Content-Type': mimeType,
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-cache',
+        'Content-Length': fileSize || undefined, 'Content-Type': mimeType,
+        'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache'
       });
       for await (const chunk of cl.iterDownload({ file: doc, requestSize: CHUNK, dcId: doc.dcId })) {
         if (res.writableEnded) break;
         res.write(Buffer.from(chunk));
       }
-      if (!res.writableEnded) res.end();
     }
+    if (!res.writableEnded) res.end();
   } catch (e) {
     console.error('[TelegramAdult] Stream error:', e.message);
     if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
+
+async function finishAdultLogin(lc) {
+  const sessionStr = lc.session.save();
+  try {
+    db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_adult_session', ?)").run(sessionStr);
+    if (typeof db.saveNow === 'function') db.saveNow();
+  } catch (_) {}
+  console.log('[TelegramAdult] Session saved — set TELEGRAM_ADULT_SESSION in Railway env vars!');
+  if (client && client !== lc) { try { await client.disconnect(); } catch (_) {} }
+  client = lc; connected = true;
+  const ch = getChannelName();
+  if (ch) {
+    try { channelEntity = await lc.getEntity(ch); } catch (_) {}
+  }
+  pendingLogin = { client: null, phoneCodeHash: null, phone: null };
+}
 
 module.exports = router;
