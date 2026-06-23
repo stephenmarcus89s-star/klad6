@@ -224,17 +224,16 @@ setInterval(async () => {
   } catch (_) {}
 }, 15_000);
 
-// Auto-scan for new videos every 5 minutes (instead of event handler)
+// Auto-scan every 5 minutes — check last 50 messages for new uploads
 setInterval(async () => {
   if (!connected || !channelEntity) return;
   try {
     const cl = await getClient();
     if (!cl) return;
-    // Fetch last 10 messages — fast check for new uploads
-    const messages = await cl.getMessages(channelEntity, { limit: 10 });
+    const messages = await cl.getMessages(channelEntity, { limit: 50 });
     let added = 0;
     for (const msg of messages) {
-      if (importAdultVideo(msg, Number(msg.id))) {
+      if (importAdultVideo(msg, Number(msg.id)) === true) {
         added++;
         if (ioRef) ioRef.emit('adult_video_added', { telegram_msg_id: Number(msg.id) });
       }
@@ -243,7 +242,50 @@ setInterval(async () => {
   } catch (_) {}
 }, 5 * 60 * 1000);
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// \u2500\u2500 Routes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+// GET /refresh \u2014 PUBLIC, no auth, rate-limited (1 req/device/2 min)
+// App calls this when PremiumAdultContent finds 0 videos, to trigger an
+// automatic channel scan so ALL existing videos appear immediately.
+const _refreshLimits = new Map();
+router.get('/refresh', async (req, res) => {
+  try {
+    const ip  = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+    const now = Date.now();
+    const last = _refreshLimits.get(ip) || 0;
+    const alreadySynced = (now - last) < 120_000;
+
+    let videos = [];
+    try { videos = db.prepare('SELECT * FROM adult_videos ORDER BY is_featured DESC, created_at DESC').all(); } catch (_) {}
+
+    if (alreadySynced) {
+      return res.json({ videos, imported: 0, refreshed: false });
+    }
+    _refreshLimits.set(ip, now);
+
+    // Trigger background channel scan (non-blocking)
+    let imported = 0;
+    try {
+      const cl = await getClient();
+      if (cl && connected && channelEntity) {
+        const messages = await cl.getMessages(channelEntity, { limit: 100 });
+        for (const msg of messages) {
+          if (importAdultVideo(msg, Number(msg.id)) === true) imported++;
+        }
+        if (imported > 0) {
+          if (ioRef) ioRef.emit('adult_video_added', { count: imported });
+          // Re-read videos after import
+          try { videos = db.prepare('SELECT * FROM adult_videos ORDER BY is_featured DESC, created_at DESC').all(); } catch (_) {}
+        }
+        console.log('[TelegramAdult] /refresh triggered by device, imported', imported, 'videos');
+      }
+    } catch (_) {}
+
+    res.json({ videos, imported, refreshed: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 router.get('/status', adminAuth, async (req, res) => {
   const ch    = getChannelName();
@@ -285,6 +327,21 @@ router.post('/set-channel', adminAuth, express.json(), async (req, res) => {
     try { channelEntity = await client.getEntity(ch); } catch (_) {}
   }
   res.json({ success: true, channelName: ch });
+  // Auto-scan entire channel after setting (background, doesn't block response)
+  setTimeout(async () => {
+    try {
+      const cl = await getClient();
+      if (!cl || !channelEntity) return;
+      console.log('[TelegramAdult] Post-set-channel full scan starting…');
+      const messages = await cl.getMessages(channelEntity, { limit: 100 });
+      let imported = 0;
+      for (const msg of messages) {
+        if (importAdultVideo(msg, Number(msg.id)) === true) imported++;
+      }
+      if (imported > 0 && ioRef) ioRef.emit('adult_video_added', { count: imported });
+      console.log('[TelegramAdult] Post-set-channel scan done:', imported, 'imported');
+    } catch (_) {}
+  }, 1500);
 });
 
 router.post('/send-code', adminAuth, express.json(), async (req, res) => {
@@ -501,6 +558,20 @@ async function finishAdultLogin(lc) {
     try { channelEntity = await lc.getEntity(ch); } catch (_) {}
   }
   pendingLogin = { client: null, phoneCodeHash: null, phone: null };
+  // Auto-scan entire channel after login (background)
+  setTimeout(async () => {
+    try {
+      if (!channelEntity) return;
+      console.log('[TelegramAdult] Post-login full scan starting…');
+      const messages = await lc.getMessages(channelEntity, { limit: 100 });
+      let imported = 0;
+      for (const msg of messages) {
+        if (importAdultVideo(msg, Number(msg.id)) === true) imported++;
+      }
+      if (imported > 0 && ioRef) ioRef.emit('adult_video_added', { count: imported });
+      console.log('[TelegramAdult] Post-login scan done:', imported, 'imported');
+    } catch (_) {}
+  }, 2000);
 }
 
 module.exports = router;
