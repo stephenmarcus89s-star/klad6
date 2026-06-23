@@ -35,6 +35,7 @@ async function startServer() {
   const adminRoutes = require('./routes/admin');
   const tmdbRoutes = require('./routes/tmdb');
   const telegramRoutes = require('./routes/telegram');
+  const telegramAdultRoutes = require('./routes/telegram-adult');
   const requestRoutes = require('./routes/requests');
   const userRoutes = require('./routes/users');
 
@@ -1955,6 +1956,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   app.use('/api/admin', adminRoutes);
   app.use('/api/tmdb', tmdbRoutes);
   app.use('/api/telegram', telegramRoutes);
+  // Adult Telegram — separate channel with real-time new-message events
+  telegramAdultRoutes.setIo(io);
+  app.use('/api/adult-telegram', telegramAdultRoutes);
   app.use('/api/requests', requestRoutes);
   app.use('/api/users', userRoutes);
 

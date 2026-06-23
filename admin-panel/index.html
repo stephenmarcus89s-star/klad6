@@ -91,6 +91,9 @@
         <a href="#" class="nav-link" data-page="telegram">
           <i class="ri-telegram-fill"></i><span>Telegram Videos</span>
         </a>
+        <a href="#" class="nav-link" data-page="telegram-adult">
+          <i class="ri-fire-fill" style="color:#E53935"></i><span>Adult Telegram</span>
+        </a>
         <a href="#" class="nav-link" data-page="videos">
           <i class="ri-video-line"></i><span>All Videos</span>
         </a>
@@ -1548,6 +1551,99 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- ===== ADULT TELEGRAM PAGE ===== -->
+      <section id="page-telegram-adult" class="page">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+
+          <!-- Connection status card -->
+          <div class="card" style="margin:0">
+            <div class="card-head card-head-flex">
+              <h3><i class="ri-fire-fill" style="color:#E53935"></i> Adult Channel Status</h3>
+              <span id="adultTgStatus" class="ws-badge" style="font-size:12px">\u23f3 Checking\u2026</span>
+            </div>
+            <div class="card-content">
+              <div id="adultTgChannelInfo" style="margin-bottom:14px;padding:10px;background:var(--surface);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--muted)">
+                Loading\u2026
+              </div>
+              <div class="field">
+                <label>Adult Channel Username <span style="color:var(--muted);font-size:11px">(e.g. myadultchannel)</span></label>
+                <div style="display:flex;gap:8px;margin-top:4px">
+                  <input type="text" id="adultTgChannelName" placeholder="@channelname" style="flex:1">
+                  <button class="btn btn-primary btn-sm" onclick="setAdultChannel()"><i class="ri-check-line"></i> Set</button>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-primary btn-sm" onclick="adultTgScan()"><i class="ri-refresh-line"></i> Scan Channel</button>
+                <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="adultTgLogout()"><i class="ri-logout-box-r-line"></i> Logout</button>
+              </div>
+
+              <!-- Session backup -->
+              <div style="margin-top:12px">
+                <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="adultTgShowSessionBackup()">
+                  <i class="ri-key-2-line"></i> Backup Session \u2192 Railway
+                </button>
+                <div id="adultTgSessionBackup" style="display:none;margin-top:8px;padding:10px;background:var(--surface);border-radius:6px;border:1px solid #4CAF50">
+                  <p style="font-size:11px;color:#4CAF50;margin:0 0 6px">Set <code>TELEGRAM_ADULT_SESSION</code> env var in Railway:</p>
+                  <div style="display:flex;gap:8px">
+                    <textarea id="adultTgSessionStr" readonly style="flex:1;font-family:monospace;font-size:10px;padding:6px;height:50px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;resize:none"></textarea>
+                    <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('adultTgSessionStr').value).then(()=>showToast('Copied!','success'))">Copy</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Phone login card (shown when not connected) -->
+          <div class="card" style="margin:0" id="adultTgLoginCard">
+            <div class="card-head"><h3><i class="ri-phone-line"></i> Phone Login</h3></div>
+            <div class="card-content">
+              <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Login with a Telegram account that has access to your private adult channel.</p>
+
+              <!-- Step 1: Phone -->
+              <div id="adultTgStep1">
+                <div class="field"><label>Phone Number</label><input type="text" id="adultTgPhone" placeholder="+91XXXXXXXXXX"></div>
+                <button class="btn btn-primary" onclick="adultTgSendCode()" id="adultTgSendBtn"><i class="ri-send-plane-line"></i> Send Code</button>
+              </div>
+
+              <!-- Step 2: OTP -->
+              <div id="adultTgStep2" style="display:none;margin-top:12px">
+                <div class="field"><label>OTP Code from Telegram</label><input type="text" id="adultTgCode" placeholder="12345" style="letter-spacing:4px;font-size:18px;text-align:center" maxlength="6"></div>
+                <button class="btn btn-primary" onclick="adultTgVerifyCode()"><i class="ri-check-line"></i> Verify</button>
+              </div>
+
+              <!-- Step 3: 2FA -->
+              <div id="adultTgStep3" style="display:none;margin-top:12px">
+                <div class="field"><label>Two-Factor Password</label><input type="password" id="adultTg2FA" placeholder="Enter 2FA password"></div>
+                <button class="btn btn-primary" onclick="adultTgVerify2FA()"><i class="ri-shield-check-line"></i> Submit</button>
+              </div>
+
+              <div id="adultTgLoginMsg" style="margin-top:8px;font-size:12px;color:var(--muted)"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Video list -->
+        <div class="card" style="margin:0">
+          <div class="card-head card-head-flex">
+            <h3><i class="ri-video-line"></i> Adult Videos (from Telegram)</h3>
+            <span id="adultTgVideoCount" style="color:var(--muted);font-size:13px">0 videos</span>
+          </div>
+          <div class="card-content">
+            <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
+              Videos are added automatically in real-time when you upload to the Telegram channel. Use "Scan Channel" to import existing videos.
+            </p>
+            <div style="overflow-x:auto">
+              <table class="data-table" id="adultTgTable">
+                <thead><tr><th>Title</th><th>Duration</th><th>Size</th><th>Added</th><th>Actions</th></tr></thead>
+                <tbody id="adultTgTableBody"><tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">Connect to a channel to see videos.</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
       </section>
 
       <!-- ===== APP UPDATE PAGE ===== -->

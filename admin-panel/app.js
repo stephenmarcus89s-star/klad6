@@ -348,11 +348,12 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update', 'telegram-adult': 'Adult Telegram' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
-    if (page === 'adult18') { loadAdultVideos(); }
-    if (page === 'appupdate') { loadCurrentUpdate(); }
+    if (page === 'adult18')      { loadAdultVideos(); }
+    if (page === 'appupdate')    { loadCurrentUpdate(); }
+    if (page === 'telegram-adult') { adultTgCheckStatus(); adultTgLoadVideos(); }
 
     if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();
@@ -6819,4 +6820,162 @@ async function clearAppUpdate() {
     if (data.success) { showToast('Update cleared.', 'success'); loadCurrentUpdate(); }
     else showToast(data.error || 'Failed', 'error');
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ========== ADULT TELEGRAM MANAGEMENT ==========
+
+async function adultTgCheckStatus() {
+  const statusEl  = document.getElementById('adultTgStatus');
+  const infoEl    = document.getElementById('adultTgChannelInfo');
+  const countEl   = document.getElementById('adultTgVideoCount');
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/status`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (statusEl) {
+      statusEl.textContent = data.connected ? `● Connected${data.channelTitle ? ' — ' + data.channelTitle : ''}` : '○ Not connected';
+      statusEl.style.color = data.connected ? '#4CAF50' : '#9E9E9E';
+    }
+    if (infoEl) {
+      if (data.connected) {
+        infoEl.innerHTML = `<b style="color:var(--text)">Channel:</b> <span style="color:var(--accent)">@${data.channelName || '?'}</span> — ${data.channelTitle || ''}<br><span style="color:var(--muted);font-size:11px">${data.videoCount || 0} Telegram videos indexed</span>`;
+      } else {
+        infoEl.innerHTML = '<span style="color:var(--muted)">Not connected. Use Phone Login below.</span>';
+      }
+    }
+    if (countEl) countEl.textContent = `${data.videoCount || 0} Telegram videos`;
+    if (data.channelName) { const el = document.getElementById('adultTgChannelName'); if (el && !el.value) el.value = '@' + data.channelName; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '✖ Error'; statusEl.style.color = '#f44336'; }
+  }
+}
+
+async function adultTgLoadVideos() {
+  const tbody = document.getElementById('adultTgTableBody');
+  if (!tbody) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/adult-videos`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    const tgVids = (data.videos || []).filter(v => v.telegram_msg_id > 0);
+    if (tgVids.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted)">No Telegram videos yet. Scan the channel or upload a video to the channel.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = tgVids.map(v => `<tr>
+      <td><b>${v.title}</b><br><small style="color:var(--muted)">${v.file_name||''}</small></td>
+      <td>${v.duration ? Math.floor(v.duration/60)+'m '+Math.floor(v.duration%60)+'s' : '—'}</td>
+      <td>${v.file_size ? (v.file_size/1024/1024).toFixed(1)+' MB' : '—'}</td>
+      <td style="font-size:11px;color:var(--muted)">${(v.created_at||'').split('T')[0]}</td>
+      <td>
+        <a href="${API_BASE}${v.video_url}" target="_blank" class="btn btn-outline btn-sm" title="Stream"><i class="ri-play-line"></i></a>
+        <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="deleteAdultVideo('${v.id}','${v.title.replace(/'/g,'')}')"><i class="ri-delete-bin-line"></i></button>
+      </td>
+    </tr>`).join('');
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="color:#f44336;padding:16px">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function setAdultChannel() {
+  const name = document.getElementById('adultTgChannelName')?.value.trim();
+  if (!name) return showToast('Enter a channel username', 'error');
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/set-channel`, {
+      method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: name })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Channel set! Real-time watcher activated.', 'success'); adultTgCheckStatus(); }
+    else showToast(data.error || 'Failed', 'error');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function adultTgScan() {
+  showToast('Scanning channel...', 'success');
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/scan?limit=100`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (data.success) { showToast(`Imported ${data.imported} new videos!`, 'success'); adultTgLoadVideos(); adultTgCheckStatus(); }
+    else showToast(data.error || 'Scan failed', 'error');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function adultTgSendCode() {
+  const phone = document.getElementById('adultTgPhone')?.value.trim();
+  const msg   = document.getElementById('adultTgLoginMsg');
+  if (!phone) return showToast('Enter phone number', 'error');
+  const btn = document.getElementById('adultTgSendBtn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/send-code`, {
+      method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone })
+    });
+    const data = await res.json();
+    if (data.success) {
+      document.getElementById('adultTgStep1').style.display = 'none';
+      document.getElementById('adultTgStep2').style.display = 'block';
+      if (msg) msg.textContent = '✓ Code sent to your Telegram app.';
+    } else { showToast(data.error || 'Failed', 'error'); if (btn) btn.disabled = false; }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); if (btn) btn.disabled = false; }
+}
+
+async function adultTgVerifyCode() {
+  const code = document.getElementById('adultTgCode')?.value.trim();
+  const msg  = document.getElementById('adultTgLoginMsg');
+  if (!code) return showToast('Enter OTP code', 'error');
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/verify-code`, {
+      method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (msg) msg.textContent = '✓ Logged in!';
+      showToast('Adult Telegram connected!', 'success');
+      adultTgCheckStatus(); adultTgLoadVideos();
+    } else if (data.needs2FA) {
+      document.getElementById('adultTgStep2').style.display = 'none';
+      document.getElementById('adultTgStep3').style.display = 'block';
+      if (msg) msg.textContent = '2FA required.';
+    } else { showToast(data.error || 'Verify failed', 'error'); }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function adultTgVerify2FA() {
+  const password = document.getElementById('adultTg2FA')?.value;
+  if (!password) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/verify-2fa`, {
+      method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Adult Telegram connected with 2FA!', 'success'); adultTgCheckStatus(); }
+    else showToast(data.error || 'Failed', 'error');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function adultTgLogout() {
+  if (!confirm('Disconnect Adult Telegram?')) return;
+  try {
+    await fetch(`${API_BASE}/api/adult-telegram/logout`, { method: 'POST', headers: { 'x-admin-password': adminPassword } });
+    showToast('Adult Telegram disconnected', 'success');
+    adultTgCheckStatus();
+    document.getElementById('adultTgStep1').style.display = 'block';
+    document.getElementById('adultTgStep2').style.display = 'none';
+    document.getElementById('adultTgStep3').style.display = 'none';
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function adultTgShowSessionBackup() {
+  const panel = document.getElementById('adultTgSessionBackup');
+  const area  = document.getElementById('adultTgSessionStr');
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  area.value = 'Loading...'; panel.style.display = 'block';
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/session-string`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (data.success) area.value = data.session;
+    else { area.value = ''; showToast(data.message || 'Not logged in yet', 'error'); panel.style.display = 'none'; }
+  } catch (e) { panel.style.display = 'none'; showToast('Error: ' + e.message, 'error'); }
 }
