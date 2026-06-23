@@ -1550,6 +1550,94 @@
         </div>
       </section>
 
+      <!-- ===== APP UPDATE PAGE ===== -->
+      <section id="page-appupdate" class="page">
+
+        <!-- Status bar -->
+        <div id="currentUpdateInfo" style="margin-bottom:18px;padding:16px;background:var(--surface);border-radius:10px;border:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <i class="ri-information-line" style="font-size:20px;color:var(--muted)"></i>
+            <span id="currentUpdateText" style="color:var(--muted);font-size:13px">Loading…</span>
+          </div>
+          <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336;display:none" id="clearUpdateBtn" onclick="clearAppUpdate()">
+            <i class="ri-delete-bin-line"></i> Clear Active Update
+          </button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+          <!-- LEFT: Version info -->
+          <div class="card" style="margin:0">
+            <div class="card-head"><h3><i class="ri-code-s-slash-line"></i> Version Info</h3></div>
+            <div class="card-content">
+              <div class="field">
+                <label>Version Code <span style="color:#f44336">*</span></label>
+                <input type="number" id="updateVersionCode" placeholder="e.g. 502" min="1" style="width:100%">
+                <p style="color:var(--muted);font-size:11px;margin-top:4px">Must be higher than the currently installed app version code.</p>
+              </div>
+              <div class="field">
+                <label>Version Name <span style="color:#f44336">*</span></label>
+                <input type="text" id="updateVersionName" placeholder="e.g. 5.2.0" style="width:100%">
+              </div>
+              <div class="field">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+                  <input type="checkbox" id="updateMandatory" style="width:16px;height:16px">
+                  Mandatory update (users cannot skip or dismiss)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT: APK + poster -->
+          <div class="card" style="margin:0">
+            <div class="card-head"><h3><i class="ri-upload-cloud-2-line"></i> APK File</h3></div>
+            <div class="card-content">
+              <div class="field">
+                <label>Upload APK File</label>
+                <label class="btn btn-primary" style="cursor:pointer;display:inline-flex;align-items:center;gap:8px;margin-top:4px">
+                  <i class="ri-upload-cloud-2-line"></i> Choose APK File
+                  <input type="file" id="updateApkFile" accept=".apk" style="display:none" onchange="uploadUpdateApk(this)">
+                </label>
+                <div id="updateApkProgress" style="display:none;margin-top:8px;padding:8px 12px;background:var(--surface);border-radius:6px;border:1px solid var(--border)">
+                  <div style="display:flex;align-items:center;gap:8px;color:var(--accent);font-size:13px">
+                    <i class="ri-loader-4-line ri-spin"></i>
+                    <span id="updateApkProgressText">Uploading APK… 0%</span>
+                  </div>
+                  <div style="background:var(--border);border-radius:4px;height:4px;margin-top:6px">
+                    <div id="updateApkProgressBar" style="background:var(--accent);height:4px;border-radius:4px;width:0%;transition:width 0.3s"></div>
+                  </div>
+                </div>
+                <p style="color:var(--muted);font-size:11px;margin-top:6px">Or paste a direct URL below (GitHub releases, CDN, etc.)</p>
+              </div>
+              <div class="field">
+                <label>APK URL <span style="color:#f44336">*</span></label>
+                <input type="text" id="updateApkUrl" placeholder="https://…" style="width:100%">
+              </div>
+              <div class="field">
+                <label>Banner Poster URL <span style="color:var(--muted);font-size:11px">(optional — shown on home screen)</span></label>
+                <input type="text" id="updatePosterUrl" placeholder="https://…" style="width:100%">
+                <img id="updatePosterPreview" src="" style="display:none;max-height:60px;border-radius:6px;margin-top:6px;object-fit:cover" onload="this.style.display='block'" onerror="this.style.display='none'">
+              </div>
+            </div>
+          </div>
+
+          <!-- FULL WIDTH: Changelog + actions -->
+          <div class="card" style="margin:0;grid-column:1/-1">
+            <div class="card-head"><h3><i class="ri-file-list-3-line"></i> Changelog</h3></div>
+            <div class="card-content">
+              <textarea id="updateChangelog" rows="4" placeholder="Describe what's new in this update…" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;resize:vertical;font-size:13px"></textarea>
+              <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+                <button class="btn btn-primary" onclick="pushAppUpdate()" style="min-width:180px">
+                  <i class="ri-send-plane-line"></i> Push Update to All Users
+                </button>
+                <span id="updateStatusMsg" style="font-size:13px;font-weight:600"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
       <!-- ═══ GPS LIVE MAP ═══ -->
       <section id="page-gpsmap" class="page">
         <div class="page-head">
@@ -2034,60 +2122,6 @@
       <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
       </section>
   </div>
-
-      <!-- ===== APP UPDATE PAGE ===== -->
-      <section id="page-appupdate" class="page">
-        <div class="card">
-          <div class="card-head card-head-flex">
-            <h3><i class="ri-refresh-line" style="color:#4CAF50"></i> In-App Update Manager</h3>
-          </div>
-          <div class="card-content">
-            <div id="currentUpdateInfo" style="margin-bottom:20px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid var(--border)">
-              <p style="color:var(--muted);font-size:13px">Loading current update info...</p>
-            </div>
-            <h4 style="margin:0 0 14px;color:var(--text)"><i class="ri-upload-cloud-2-line"></i> Push New Update</h4>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div class="field">
-                <label>Version Code * <span style="color:var(--muted);font-size:11px">(integer, higher than current)</span></label>
-                <input type="number" id="updateVersionCode" placeholder="e.g. 6" min="1">
-              </div>
-              <div class="field">
-                <label>Version Name *</label>
-                <input type="text" id="updateVersionName" placeholder="e.g. 5.1.0">
-              </div>
-              <div class="field" style="grid-column:1/-1">
-                <label>APK File</label>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
-                  <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0">
-                    <i class="ri-upload-cloud-2-line"></i> Upload APK
-                    <input type="file" id="updateApkFile" accept=".apk" style="display:none" onchange="uploadUpdateApk(this)">
-                  </label>
-                  <span style="color:var(--muted);font-size:12px">— or paste direct URL —</span>
-                  <input type="text" id="updateApkUrl" placeholder="https://..." style="flex:1;min-width:200px">
-                </div>
-                <div id="updateApkProgress" style="display:none;margin-top:6px;font-size:12px;color:var(--accent)"><i class="ri-loader-4-line ri-spin"></i> Uploading APK...</div>
-              </div>
-              <div class="field" style="grid-column:1/-1">
-                <label>Update Poster / Banner Image URL <span style="color:var(--muted);font-size:11px">(shown on home screen to users)</span></label>
-                <input type="text" id="updatePosterUrl" placeholder="https://...">
-              </div>
-              <div class="field" style="grid-column:1/-1">
-                <label>Changelog / What's New</label>
-                <textarea id="updateChangelog" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical" placeholder="What changed in this update..."></textarea>
-              </div>
-              <div class="field" style="display:flex;align-items:center;gap:8px">
-                <input type="checkbox" id="updateMandatory" style="width:16px;height:16px">
-                <label for="updateMandatory" style="margin:0">Mandatory update (user cannot skip)</label>
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;margin-top:16px">
-              <button class="btn btn-primary" onclick="pushAppUpdate()"><i class="ri-send-plane-line"></i> Push Update to Users</button>
-              <button class="btn btn-outline" style="color:#f44336;border-color:#f44336" onclick="clearAppUpdate()"><i class="ri-delete-bin-line"></i> Clear Update</button>
-            </div>
-            <div id="updateStatusMsg" style="display:none;margin-top:12px;padding:10px;border-radius:6px;font-size:13px"></div>
-          </div>
-        </div>
-      </section>
 
   <script src="app.js"></script>
 

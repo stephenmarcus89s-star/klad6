@@ -6709,68 +6709,83 @@ async function deleteAdultVideo(id, title) {
 // ========== IN-APP UPDATE MANAGEMENT ==========
 
 async function loadCurrentUpdate() {
-  const el = document.getElementById('currentUpdateInfo');
-  if (!el) return;
+  const textEl  = document.getElementById('currentUpdateText');
+  const clearBtn = document.getElementById('clearUpdateBtn');
+  if (!textEl) return;
   try {
     const res = await fetch(`${API_BASE}/api/app/version`);
     const data = await res.json();
     if (!data.has_update) {
-      el.innerHTML = '<p style="color:var(--muted);font-size:13px"><i class="ri-information-line"></i> No active update. Users will not see an update banner.</p>';
+      textEl.innerHTML = '<i class="ri-checkbox-blank-circle-line"></i> No active update — users will NOT see an update banner.';
+      if (clearBtn) clearBtn.style.display = 'none';
     } else {
-      el.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
-          <div>
-            <b style="color:var(--text)">Active Update: v${data.version_name} (code ${data.version_code})</b>
-            <div style="color:var(--muted);font-size:12px;margin-top:4px">${data.changelog || 'No changelog'}</div>
-            <div style="color:var(--muted);font-size:11px;margin-top:4px">APK: <a href="${data.apk_url}" target="_blank" style="color:var(--accent)">${data.apk_url}</a></div>
-            ${data.is_mandatory ? '<span style="background:#E53935;color:white;border-radius:4px;padding:2px 8px;font-size:11px;margin-top:4px;display:inline-block">MANDATORY</span>' : ''}
-          </div>
-          ${data.poster_url ? `<img src="${data.poster_url}" style="height:60px;border-radius:6px;object-fit:cover">` : ''}
-        </div>`;
+      textEl.innerHTML = `<span style="color:var(--accent)"><i class="ri-checkbox-circle-fill"></i> Active Update: <b>v${data.version_name}</b> (code ${data.version_code})</span>
+        <span style="color:var(--muted);font-size:11px;margin-left:12px">${data.changelog || ''}</span>
+        ${data.is_mandatory ? '<span style="background:#E53935;color:white;border-radius:4px;padding:1px 8px;font-size:10px;margin-left:8px">MANDATORY</span>' : ''}`;
+      if (clearBtn) clearBtn.style.display = 'inline-flex';
     }
   } catch (e) {
-    el.innerHTML = `<p style="color:#f44336;font-size:13px">Error loading update info: ${e.message}</p>`;
+    if (textEl) textEl.innerHTML = `<span style="color:#f44336">Error: ${e.message}</span>`;
   }
 }
 
 async function uploadUpdateApk(input) {
   if (!input.files || !input.files[0]) return;
-  const prog = document.getElementById('updateApkProgress');
+  const prog   = document.getElementById('updateApkProgress');
+  const bar    = document.getElementById('updateApkProgressBar');
+  const pText  = document.getElementById('updateApkProgressText');
   if (prog) prog.style.display = 'block';
+
   const fd = new FormData();
   fd.append('apk', input.files[0]);
-  try {
-    const res = await fetch(`${API_BASE}/api/admin/app-update/upload-apk`, {
-      method: 'POST',
-      headers: { 'x-admin-password': adminPassword },
-      body: fd
-    });
-    const data = await res.json();
-    if (data.success && data.url) {
-      document.getElementById('updateApkUrl').value = data.url;
-      showToast('APK uploaded! URL filled automatically.', 'success');
-    } else {
-      showToast('Upload failed: ' + (data.error || 'Unknown error'), 'error');
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${API_BASE}/api/admin/app-update/upload-apk`);
+  xhr.setRequestHeader('x-admin-password', adminPassword);
+
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable && bar && pText) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      bar.style.width = pct + '%';
+      pText.textContent = `Uploading APK… ${pct}%`;
     }
-  } catch (e) {
-    showToast('Upload error: ' + e.message, 'error');
-  } finally {
+  };
+  xhr.onload = () => {
     if (prog) prog.style.display = 'none';
-    input.value = '';
-  }
+    try {
+      const data = JSON.parse(xhr.responseText);
+      if (data.success && data.url) {
+        document.getElementById('updateApkUrl').value = data.url;
+        showToast('APK uploaded! URL filled automatically.', 'success');
+      } else {
+        showToast('Upload failed: ' + (data.error || 'Unknown'), 'error');
+      }
+    } catch (_) { showToast('Upload response error', 'error'); }
+  };
+  xhr.onerror = () => { if (prog) prog.style.display = 'none'; showToast('Upload network error', 'error'); };
+  xhr.send(fd);
+  input.value = '';
 }
 
+// Auto-preview poster image when URL changes
+document.addEventListener('input', (e) => {
+  if (e.target && e.target.id === 'updatePosterUrl') {
+    const prev = document.getElementById('updatePosterPreview');
+    if (prev) { prev.src = e.target.value; prev.onerror = () => prev.style.display = 'none'; }
+  }
+});
+
 async function pushAppUpdate() {
-  const versionCode = document.getElementById('updateVersionCode').value;
-  const versionName = document.getElementById('updateVersionName').value.trim();
-  const apkUrl = document.getElementById('updateApkUrl').value.trim();
-  const posterUrl = document.getElementById('updatePosterUrl').value.trim();
-  const changelog = document.getElementById('updateChangelog').value.trim();
-  const isMandatory = document.getElementById('updateMandatory').checked;
-  const msg = document.getElementById('updateStatusMsg');
+  const versionCode = document.getElementById('updateVersionCode')?.value;
+  const versionName = document.getElementById('updateVersionName')?.value.trim();
+  const apkUrl      = document.getElementById('updateApkUrl')?.value.trim();
+  const posterUrl   = document.getElementById('updatePosterUrl')?.value.trim();
+  const changelog   = document.getElementById('updateChangelog')?.value.trim();
+  const isMandatory = document.getElementById('updateMandatory')?.checked;
+  const msg         = document.getElementById('updateStatusMsg');
 
   if (!versionCode || !apkUrl) {
-    if (msg) { msg.style.display='block'; msg.style.background='#b71c1c22'; msg.style.color='#f44336'; msg.textContent='Version code and APK URL are required.'; }
+    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ Version Code and APK URL are required.'; }
     return;
   }
 
@@ -6783,13 +6798,13 @@ async function pushAppUpdate() {
     const data = await res.json();
     if (data.success) {
       showToast('Update pushed! Users will see the banner on their home screen.', 'success');
-      if (msg) { msg.style.display='block'; msg.style.background='#1b5e2022'; msg.style.color='#4CAF50'; msg.textContent='✓ Update successfully pushed to all users!'; }
+      if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Update pushed to all users!'; }
       loadCurrentUpdate();
     } else {
-      showToast(data.error || 'Failed', 'error');
+      if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + (data.error || 'Failed'); }
     }
   } catch (e) {
-    showToast('Error: ' + e.message, 'error');
+    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message; }
   }
 }
 
@@ -6803,7 +6818,5 @@ async function clearAppUpdate() {
     const data = await res.json();
     if (data.success) { showToast('Update cleared.', 'success'); loadCurrentUpdate(); }
     else showToast(data.error || 'Failed', 'error');
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
