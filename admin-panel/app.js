@@ -348,10 +348,11 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
     if (page === 'adult18') { loadAdultVideos(); }
+    if (page === 'appupdate') { loadCurrentUpdate(); }
 
     if (page === 'dashboard') { loadDashboard(); loadActivityFeed(); refreshDashboardKPIs(); }
     if (page === 'videos') loadVideos();
@@ -6703,4 +6704,106 @@ async function deleteAdultVideo(id, title) {
     if (data.success) { showToast('Deleted', 'success'); loadAdultVideos(); }
     else showToast(data.error || 'Failed', 'error');
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ========== IN-APP UPDATE MANAGEMENT ==========
+
+async function loadCurrentUpdate() {
+  const el = document.getElementById('currentUpdateInfo');
+  if (!el) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/app/version`);
+    const data = await res.json();
+    if (!data.has_update) {
+      el.innerHTML = '<p style="color:var(--muted);font-size:13px"><i class="ri-information-line"></i> No active update. Users will not see an update banner.</p>';
+    } else {
+      el.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <b style="color:var(--text)">Active Update: v${data.version_name} (code ${data.version_code})</b>
+            <div style="color:var(--muted);font-size:12px;margin-top:4px">${data.changelog || 'No changelog'}</div>
+            <div style="color:var(--muted);font-size:11px;margin-top:4px">APK: <a href="${data.apk_url}" target="_blank" style="color:var(--accent)">${data.apk_url}</a></div>
+            ${data.is_mandatory ? '<span style="background:#E53935;color:white;border-radius:4px;padding:2px 8px;font-size:11px;margin-top:4px;display:inline-block">MANDATORY</span>' : ''}
+          </div>
+          ${data.poster_url ? `<img src="${data.poster_url}" style="height:60px;border-radius:6px;object-fit:cover">` : ''}
+        </div>`;
+    }
+  } catch (e) {
+    el.innerHTML = `<p style="color:#f44336;font-size:13px">Error loading update info: ${e.message}</p>`;
+  }
+}
+
+async function uploadUpdateApk(input) {
+  if (!input.files || !input.files[0]) return;
+  const prog = document.getElementById('updateApkProgress');
+  if (prog) prog.style.display = 'block';
+  const fd = new FormData();
+  fd.append('apk', input.files[0]);
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/app-update/upload-apk`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword },
+      body: fd
+    });
+    const data = await res.json();
+    if (data.success && data.url) {
+      document.getElementById('updateApkUrl').value = data.url;
+      showToast('APK uploaded! URL filled automatically.', 'success');
+    } else {
+      showToast('Upload failed: ' + (data.error || 'Unknown error'), 'error');
+    }
+  } catch (e) {
+    showToast('Upload error: ' + e.message, 'error');
+  } finally {
+    if (prog) prog.style.display = 'none';
+    input.value = '';
+  }
+}
+
+async function pushAppUpdate() {
+  const versionCode = document.getElementById('updateVersionCode').value;
+  const versionName = document.getElementById('updateVersionName').value.trim();
+  const apkUrl = document.getElementById('updateApkUrl').value.trim();
+  const posterUrl = document.getElementById('updatePosterUrl').value.trim();
+  const changelog = document.getElementById('updateChangelog').value.trim();
+  const isMandatory = document.getElementById('updateMandatory').checked;
+  const msg = document.getElementById('updateStatusMsg');
+
+  if (!versionCode || !apkUrl) {
+    if (msg) { msg.style.display='block'; msg.style.background='#b71c1c22'; msg.style.color='#f44336'; msg.textContent='Version code and APK URL are required.'; }
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/app-update`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ version_code: parseInt(versionCode), version_name: versionName || '1.0', apk_url: apkUrl, changelog, is_mandatory: isMandatory, poster_url: posterUrl })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('Update pushed! Users will see the banner on their home screen.', 'success');
+      if (msg) { msg.style.display='block'; msg.style.background='#1b5e2022'; msg.style.color='#4CAF50'; msg.textContent='✓ Update successfully pushed to all users!'; }
+      loadCurrentUpdate();
+    } else {
+      showToast(data.error || 'Failed', 'error');
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function clearAppUpdate() {
+  if (!confirm('Remove the active update? Users will no longer see the update banner.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/app-update`, {
+      method: 'DELETE',
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    if (data.success) { showToast('Update cleared.', 'success'); loadCurrentUpdate(); }
+    else showToast(data.error || 'Failed', 'error');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
 }

@@ -2442,6 +2442,63 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // ═══ IN-APP UPDATE SYSTEM ══════════════════════════════════════════════
+  // GET /api/app/version — public, checked by the app on launch
+  app.get('/api/app/version', (req, res) => {
+    try {
+      const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
+      if (!row || !row.value) return res.json({ version_code: 0, has_update: false });
+      const info = JSON.parse(row.value);
+      res.json({ ...info, has_update: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST /api/admin/app-update — admin sets version info
+  app.post('/api/admin/app-update', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { version_code, version_name, apk_url, changelog, is_mandatory, poster_url } = req.body;
+      if (!version_code || !apk_url) return res.status(400).json({ error: 'version_code and apk_url required' });
+      const info = JSON.stringify({ version_code: parseInt(version_code), version_name: version_name || '1.0', apk_url, changelog: changelog || '', is_mandatory: !!is_mandatory, poster_url: poster_url || '' });
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('app_update_info', ?)").run(info);
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // DELETE /api/admin/app-update — clear update (no more banner)
+  app.delete('/api/admin/app-update', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      db.prepare("DELETE FROM admin_settings WHERE key = 'app_update_info'").run();
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // POST /api/admin/app-update/upload-apk — upload APK file for update
+  const updateApkUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'app-update'),
+    limits: { fileSize: 50 * 1024 * 1024 }   // 50 MB max APK
+  });
+  try { require('fs').mkdirSync(path.join(__dirname, 'data', 'app-update'), { recursive: true }); } catch (_) {}
+
+  app.post('/api/admin/app-update/upload-apk', updateApkUpload.single('apk'), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      if (!req.file) return res.status(400).json({ error: 'No APK file provided' });
+      // Rename to netmirror.apk for a clean URL
+      const dest = path.join(__dirname, 'data', 'app-update', 'netmirror.apk');
+      require('fs').renameSync(req.file.path, dest);
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers['host'] || 'mirrornet.watch';
+      const url = `${protocol}://${host}/app-update/netmirror.apk`;
+      res.json({ success: true, url });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Serve the update APK as a static file
+  app.use('/app-update', express.static(path.join(__dirname, 'data', 'app-update')));
+  // ════════════════════════════════════════════════════════════════════════
+
   // POST /api/admin/adult-videos/upload-media — upload thumbnail or video file
   // Accepts multipart/form-data with field "file". Uploads to Cloudinary.
   // Falls back to local storage (served via /adult-media/*) if Cloudinary not set up.

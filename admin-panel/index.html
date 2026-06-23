@@ -130,6 +130,9 @@
         <a href="#" class="nav-link" data-page="adult18">
           <i class="ri-fire-fill" style="color:#ff5252"></i><span>18+ Content</span>
         </a>
+        <a href="#" class="nav-link" data-page="appupdate">
+          <i class="ri-refresh-line" style="color:#4CAF50"></i><span>App Update</span>
+        </a>
       </nav>
 
       <div class="sidebar-bottom">
@@ -2031,6 +2034,60 @@
       <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
       </section>
   </div>
+
+      <!-- ===== APP UPDATE PAGE ===== -->
+      <section id="page-appupdate" class="page">
+        <div class="card">
+          <div class="card-head card-head-flex">
+            <h3><i class="ri-refresh-line" style="color:#4CAF50"></i> In-App Update Manager</h3>
+          </div>
+          <div class="card-content">
+            <div id="currentUpdateInfo" style="margin-bottom:20px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid var(--border)">
+              <p style="color:var(--muted);font-size:13px">Loading current update info...</p>
+            </div>
+            <h4 style="margin:0 0 14px;color:var(--text)"><i class="ri-upload-cloud-2-line"></i> Push New Update</h4>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="field">
+                <label>Version Code * <span style="color:var(--muted);font-size:11px">(integer, higher than current)</span></label>
+                <input type="number" id="updateVersionCode" placeholder="e.g. 6" min="1">
+              </div>
+              <div class="field">
+                <label>Version Name *</label>
+                <input type="text" id="updateVersionName" placeholder="e.g. 5.1.0">
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label>APK File</label>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">
+                  <label class="btn btn-outline btn-sm" style="cursor:pointer;margin:0">
+                    <i class="ri-upload-cloud-2-line"></i> Upload APK
+                    <input type="file" id="updateApkFile" accept=".apk" style="display:none" onchange="uploadUpdateApk(this)">
+                  </label>
+                  <span style="color:var(--muted);font-size:12px">— or paste direct URL —</span>
+                  <input type="text" id="updateApkUrl" placeholder="https://..." style="flex:1;min-width:200px">
+                </div>
+                <div id="updateApkProgress" style="display:none;margin-top:6px;font-size:12px;color:var(--accent)"><i class="ri-loader-4-line ri-spin"></i> Uploading APK...</div>
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label>Update Poster / Banner Image URL <span style="color:var(--muted);font-size:11px">(shown on home screen to users)</span></label>
+                <input type="text" id="updatePosterUrl" placeholder="https://...">
+              </div>
+              <div class="field" style="grid-column:1/-1">
+                <label>Changelog / What's New</label>
+                <textarea id="updateChangelog" rows="3" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;resize:vertical" placeholder="What changed in this update..."></textarea>
+              </div>
+              <div class="field" style="display:flex;align-items:center;gap:8px">
+                <input type="checkbox" id="updateMandatory" style="width:16px;height:16px">
+                <label for="updateMandatory" style="margin:0">Mandatory update (user cannot skip)</label>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px">
+              <button class="btn btn-primary" onclick="pushAppUpdate()"><i class="ri-send-plane-line"></i> Push Update to Users</button>
+              <button class="btn btn-outline" style="color:#f44336;border-color:#f44336" onclick="clearAppUpdate()"><i class="ri-delete-bin-line"></i> Clear Update</button>
+            </div>
+            <div id="updateStatusMsg" style="display:none;margin-top:12px;padding:10px;border-radius:6px;font-size:13px"></div>
+          </div>
+        </div>
+      </section>
 
   <script src="app.js"></script>
 
