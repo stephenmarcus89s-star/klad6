@@ -148,7 +148,15 @@ async function getClient() {
         connectionRetries: 5, timeout: 30
       });
       await client.connect();
-      try { await client.getMe(); } catch (_) {
+      // Verify session is valid — retry up to 2x before giving up
+      let meOk = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try { await client.getMe(); meOk = true; break; } catch (_) {
+          if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      if (!meOk) {
+        console.warn('[TelegramAdult] getMe failed after retries — session likely expired');
         connected = false; client = null; connectPromise = null; return null;
       }
       connected = true;
@@ -170,18 +178,19 @@ async function getClient() {
   return connectPromise;
 }
 
-// Auto-connect on startup (non-blocking)
-setTimeout(() => getClient().catch(() => {}), 4500);
+// Auto-connect on startup — fast (800ms to avoid race with first status check)
+setTimeout(() => getClient().catch(() => {}), 800);
 
-// Reconnect every 2 min if disconnected
+// Reconnect every 15s if disconnected and session exists
 setInterval(async () => {
   if (connected) return;
   try {
-    const saved = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_adult_session'").get();
-    if (!saved || !saved.value) return;
+    const hasSess = !!db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_adult_session'").get()?.value ||
+                    !!(process.env.TELEGRAM_ADULT_SESSION || '').trim();
+    if (!hasSess) return;
     await getClient();
   } catch (_) {}
-}, 120_000);
+}, 15_000);
 
 // Auto-scan for new videos every 5 minutes (instead of event handler)
 setInterval(async () => {
@@ -205,9 +214,24 @@ setInterval(async () => {
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 router.get('/status', adminAuth, async (req, res) => {
-  const ch = getChannelName();
+  const ch    = getChannelName();
   const count = (() => { try { return db.prepare("SELECT COUNT(*) AS c FROM adult_videos WHERE video_url LIKE '%/api/adult-telegram/stream/%'").get()?.c || 0; } catch (_) { return 0; } })();
-  res.json({ connected, channelName: ch, channelTitle: channelEntity?.title || null, videoCount: count });
+
+  // If not connected, check if a session exists in DB or env var
+  let hasSession = false;
+  let reconnecting = false;
+  if (!connected) {
+    try {
+      const r = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_adult_session'").get();
+      hasSession = !!(r && r.value) || !!(process.env.TELEGRAM_ADULT_SESSION || '').trim();
+    } catch (_) {}
+    if (hasSession) {
+      reconnecting = true;  // session exists — auto-connect is running / will run
+      if (!connectPromise) getClient().catch(() => {});  // trigger reconnect if idle
+    }
+  }
+
+  res.json({ connected, reconnecting, hasSession, channelName: ch, channelTitle: channelEntity?.title || null, videoCount: count });
 });
 
 router.get('/session-string', adminAuth, (req, res) => {

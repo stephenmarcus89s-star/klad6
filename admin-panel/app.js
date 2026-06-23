@@ -6840,21 +6840,36 @@ async function adultTgCheckStatus() {
   try {
     const res = await fetch(`${API_BASE}/api/adult-telegram/status`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
+
+    // Three states: connected | reconnecting (session saved, restoring) | not connected
     if (statusEl) {
-      statusEl.textContent = data.connected ? `● Connected${data.channelTitle ? ' — ' + data.channelTitle : ''}` : '○ Not connected';
-      statusEl.style.color = data.connected ? '#4CAF50' : '#9E9E9E';
+      if (data.connected) {
+        statusEl.textContent = `● Connected${data.channelTitle ? ' — ' + data.channelTitle : ''}`;
+        statusEl.style.color = '#4CAF50';
+      } else if (data.reconnecting) {
+        statusEl.textContent = '⟳ Session found — reconnecting…';
+        statusEl.style.color = '#FF9800';
+      } else {
+        statusEl.textContent = '○ Not connected';
+        statusEl.style.color = '#9E9E9E';
+      }
     }
     if (infoEl) {
       if (data.connected) {
-        infoEl.innerHTML = `<b style="color:var(--text)">Channel:</b> <span style="color:var(--accent)">@${data.channelName || '?'}</span> — ${data.channelTitle || ''}<br><span style="color:var(--muted);font-size:11px">${data.videoCount || 0} Telegram videos indexed</span>`;
+        infoEl.innerHTML = `<b style="color:var(--text)">Channel:</b> <span style="color:var(--accent)">@${data.channelName || '?'}</span>${data.channelTitle ? ' — ' + data.channelTitle : ''}<br><span style="color:var(--muted);font-size:11px">${data.videoCount || 0} Telegram videos indexed</span>`;
+      } else if (data.reconnecting) {
+        infoEl.innerHTML = `<span style="color:#FF9800"><i class="ri-refresh-line ri-spin"></i> Restoring session from database… usually takes &lt;15 seconds.</span>${data.videoCount > 0 ? '<br><span style="color:var(--muted);font-size:11px">' + data.videoCount + ' videos in database (videos always persist).</span>' : ''}`;
       } else {
-        infoEl.innerHTML = '<span style="color:var(--muted)">Not connected. Use Phone Login below.</span>';
+        infoEl.innerHTML = '<span style="color:var(--muted)">No saved session. Use Phone Login to connect.</span>';
       }
     }
     if (countEl) countEl.textContent = `${data.videoCount || 0} Telegram videos`;
-    if (data.channelName) { const el = document.getElementById('adultTgChannelName'); if (el && !el.value) el.value = '@' + data.channelName; }
+    if (data.channelName) {
+      const el = document.getElementById('adultTgChannelName');
+      if (el && !el.value) el.value = '@' + data.channelName;
+    }
   } catch (e) {
-    if (statusEl) { statusEl.textContent = '✖ Error'; statusEl.style.color = '#f44336'; }
+    if (statusEl) { statusEl.textContent = '✖ Error checking status'; statusEl.style.color = '#f44336'; }
   }
 }
 
