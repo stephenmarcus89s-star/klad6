@@ -2478,6 +2478,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       if (!version_code || !apk_url) return res.status(400).json({ error: 'version_code and apk_url required' });
       const info = JSON.stringify({ version_code: parseInt(version_code), version_name: version_name || '1.0', apk_url, changelog: changelog || '', is_mandatory: !!is_mandatory, poster_url: poster_url || '' });
       db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('app_update_info', ?)").run(info);
+      try { if (typeof db.saveNow === 'function') db.saveNow(); } catch (_) {}   // persist now so the update survives a restart
       res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
@@ -2498,17 +2499,41 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
   try { require('fs').mkdirSync(path.join(__dirname, 'data', 'app-update'), { recursive: true }); } catch (_) {}
 
-  app.post('/api/admin/app-update/upload-apk', updateApkUpload.single('apk'), (req, res) => {
+  app.post('/api/admin/app-update/upload-apk', updateApkUpload.single('apk'), async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       if (!req.file) return res.status(400).json({ error: 'No APK file provided' });
-      // Rename to netmirror.apk for a clean URL
+      // Keep a local copy (clean URL) — works until the next redeploy
       const dest = path.join(__dirname, 'data', 'app-update', 'netmirror.apk');
       require('fs').renameSync(req.file.path, dest);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
       const host = req.headers['host'] || 'mirrornet.watch';
-      const url = `${protocol}://${host}/app-update/netmirror.apk`;
-      res.json({ success: true, url });
+      const localUrl = `${protocol}://${host}/app-update/netmirror.apk`;
+
+      // Upload to Cloudinary so the APK survives Railway redeploys (ephemeral disk)
+      let url = localUrl;
+      try {
+        const { initCloudinary } = require('../config/cloudinary');
+        initCloudinary();
+        const cloudinary = require('cloudinary').v2;
+        const result = await new Promise((resolve, reject) => {
+          cloudinary.uploader.upload(dest, {
+            resource_type: 'raw',
+            public_id: 'leakspro/app-update/netmirror',
+            overwrite: true,
+            invalidate: true,
+            timeout: 180000,
+          }, (err, r) => err ? reject(err) : resolve(r));
+        });
+        if (result && result.secure_url) {
+          url = result.secure_url;
+          console.log('[AppUpdate] APK uploaded to Cloudinary:', url);
+        }
+      } catch (e) {
+        console.warn('[AppUpdate] Cloudinary APK upload failed, using local URL:', e.message);
+      }
+
+      res.json({ success: true, url, localUrl });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
