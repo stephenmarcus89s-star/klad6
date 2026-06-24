@@ -56,8 +56,24 @@ class SqliteCompat {
       // (protects against redeploy where Cloudinary restore failed)
       const videoCount = this._db.exec("SELECT COUNT(*) FROM videos");
       const count = videoCount[0]?.values?.[0]?.[0] || 0;
-      if (count < 5) {
-        console.log(`[DB] Skipping Cloudinary backup — only ${count} videos (safety threshold: 5)`);
+
+      // Also consider adult videos and critical sessions/channel config so the
+      // adult section survives restarts even when the main library is small.
+      let adultCount = 0;
+      try {
+        const a = this._db.exec("SELECT COUNT(*) FROM adult_videos");
+        adultCount = a[0]?.values?.[0]?.[0] || 0;
+      } catch (_) {}
+      let hasCritical = false;
+      try {
+        const s = this._db.exec("SELECT COUNT(*) FROM admin_settings WHERE key IN ('telegram_session','telegram_adult_session','adult_channel_username')");
+        hasCritical = (s[0]?.values?.[0]?.[0] || 0) > 0;
+      } catch (_) {}
+
+      // Only skip when the DB genuinely looks freshly-empty (failed restore):
+      // no videos, no adult videos, and no sessions/channel configured.
+      if (count < 5 && adultCount === 0 && !hasCritical) {
+        console.log(`[DB] Skipping Cloudinary backup — DB looks empty (${count} videos, ${adultCount} adult, no sessions)`);
         return;
       }
 

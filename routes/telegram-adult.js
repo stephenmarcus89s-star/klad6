@@ -74,8 +74,10 @@ const adminAuth = (req, res, next) => {
 function getChannelName() {
   try {
     const r = db.prepare("SELECT value FROM admin_settings WHERE key = 'adult_channel_username'").get();
-    return (r && r.value) || '';
-  } catch (_) { return ''; }
+    if (r && r.value) return r.value;
+  } catch (_) {}
+  // Fallback to env var so the channel survives a DB reset / fresh Railway deploy
+  return (process.env.TELEGRAM_ADULT_CHANNEL || '').replace('@', '').trim();
 }
 
 function needsTranscode(name) {
@@ -323,6 +325,8 @@ router.post('/set-channel', adminAuth, express.json(), async (req, res) => {
   if (!username) return res.status(400).json({ error: 'username required' });
   const ch = username.replace('@', '').trim();
   db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('adult_channel_username', ?)").run(ch);
+  // Persist immediately so the channel survives a Railway restart (don't wait for the debounced backup)
+  try { if (typeof db.saveNow === 'function') db.saveNow(); } catch (_) {}
   if (client && connected) {
     try { channelEntity = await client.getEntity(ch); } catch (_) {}
   }
