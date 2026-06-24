@@ -43,12 +43,22 @@ async function jget(path) {
 }
 
 // ── normalise a Jikan anime object → compact shape the app consumes ─────────
+function trailerUrl(t) {
+  if (!t) return '';
+  if (t.youtube_id) return 'https://www.youtube.com/watch?v=' + t.youtube_id;
+  if (t.url && /youtu/.test(t.url)) return t.url;
+  // Jikan often only fills embed_url — pull the id out of it.
+  if (t.embed_url) {
+    const m = String(t.embed_url).match(/embed\/([A-Za-z0-9_-]{6,})/);
+    if (m) return 'https://www.youtube.com/watch?v=' + m[1];
+  }
+  return '';
+}
 function norm(a) {
   if (!a) return null;
   const img = (a.images && a.images.jpg && (a.images.jpg.large_image_url || a.images.jpg.image_url)) ||
               (a.images && a.images.webp && a.images.webp.large_image_url) || '';
   const title = a.title_english || a.title || a.title_japanese || 'Untitled';
-  const ytId  = a.trailer && a.trailer.youtube_id;
   return {
     id:       a.mal_id,
     title,
@@ -61,7 +71,7 @@ function norm(a) {
     rating:   a.rating || '',
     genres:   (a.genres || []).map(g => g.name).filter(Boolean),
     synopsis: a.synopsis || '',
-    trailer:  (a.trailer && a.trailer.url) || (ytId ? ('https://www.youtube.com/watch?v=' + ytId) : '')
+    trailer:  trailerUrl(a.trailer)
   };
 }
 function clean(a) {
