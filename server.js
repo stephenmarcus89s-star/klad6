@@ -38,8 +38,7 @@ async function startServer() {
   const telegramAdultRoutes = require('./routes/telegram-adult');
   const requestRoutes = require('./routes/requests');
   const userRoutes = require('./routes/users');
-
-  // Import WebSocket handler
+const animeRoutes = require('./routes/anime');
   const setupWebSocket = require('./websocket/handler');
 const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
@@ -1961,6 +1960,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   app.use('/api/adult-telegram', telegramAdultRoutes);
   app.use('/api/requests', requestRoutes);
   app.use('/api/users', userRoutes);
+  app.use('/api/anime', animeRoutes);
 
   // Health check
   app.get('/api/health', (req, res) => {
