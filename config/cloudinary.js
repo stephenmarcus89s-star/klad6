@@ -173,10 +173,16 @@ function downloadDbBackup() {
 // No file extension in the public_id so Cloudinary's .apk block doesn't apply.
 const APP_UPDATE_PUBLIC_ID = 'leakspro/app_update/netmirror_update';
 
-/** Upload the OTA update APK as a raw resource (overwrites the previous one). */
-function uploadAppUpdateApk(apkPath) {
+/** Upload the OTA update APK as a raw resource (overwrites the previous one).
+ *  Uploads the raw BYTES via a stream (no source filename) so Cloudinary cannot
+ *  infer a '.apk' format and block it. Accepts a file path or a Buffer. */
+function uploadAppUpdateApk(apkPathOrBuffer) {
   return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload(apkPath, {
+    let buf;
+    try {
+      buf = Buffer.isBuffer(apkPathOrBuffer) ? apkPathOrBuffer : require('fs').readFileSync(apkPathOrBuffer);
+    } catch (e) { return reject(e); }
+    const stream = cloudinary.uploader.upload_stream({
       resource_type: 'raw',
       public_id: APP_UPDATE_PUBLIC_ID,
       overwrite: true,
@@ -186,6 +192,7 @@ function uploadAppUpdateApk(apkPath) {
       if (err) return reject(err);
       resolve(result);
     });
+    stream.end(buf);
   });
 }
 

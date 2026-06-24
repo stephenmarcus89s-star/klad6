@@ -2515,6 +2515,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // resource with a no-extension public_id so Cloudinary's .apk block does not
       // apply. Falls back to the local URL only if Cloudinary is unavailable.
       let url = localUrl;
+      let persistError = null;
       try {
         const { initCloudinary, uploadAppUpdateApk } = require('./config/cloudinary');
         initCloudinary();
@@ -2523,13 +2524,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           url = result.secure_url;
           console.log('[AppUpdate] APK persisted to Cloudinary:', url);
         } else {
+          persistError = 'no secure_url';
           console.warn('[AppUpdate] Cloudinary returned no secure_url — using local URL');
         }
       } catch (e) {
+        persistError = e.message;
         console.warn('[AppUpdate] Cloudinary APK upload failed, using local URL:', e.message);
       }
 
-      res.json({ success: true, url, localUrl });
+      res.json({ success: true, url, localUrl, persistError });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
