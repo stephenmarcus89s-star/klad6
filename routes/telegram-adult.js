@@ -14,6 +14,7 @@ const { TelegramClient } = require('telegram');
 const { StringSession }  = require('telegram/sessions');
 const { Api }            = require('telegram/tl');
 const { computeCheck }   = require('telegram/Password');
+const bigInt             = require('big-integer');
 const db   = require('../config/database');
 const fs   = require('fs');
 const path = require('path');
@@ -473,7 +474,15 @@ router.get('/stream/:messageId', async (req, res) => {
       if (a.className === 'DocumentAttributeFilename') fileName = a.fileName || fileName;
     }
 
-    const CHUNK = 1024 * 1024; // 1 MB
+    const CHUNK = 1024 * 1024; // 1 MB (must be divisible by 4096; offset must be CHUNK-aligned)
+
+    // Build an explicit file location — gramjs needs this (not the raw doc) to
+    // open a borrowed sender to the file's DC. Passing the raw document object
+    // makes iterDownload hang on cross-DC files. This mirrors the proven
+    // main-channel streamer in routes/telegram.js.
+    const fileLocation = new Api.InputDocumentFileLocation({
+      id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: ''
+    });
 
     // Transcode E-AC3/DDP → AAC (video copied at original quality)
     if (ffmpegPath && needsTranscode(fileName)) {
@@ -491,7 +500,7 @@ router.get('/stream/:messageId', async (req, res) => {
       ff.stdout.pipe(res);
       ff.stderr.on('data', () => {});
       res.on('close', () => { try { ff.kill('SIGKILL'); } catch (_) {} });
-      for await (const chunk of cl.iterDownload({ file: doc, requestSize: CHUNK, dcId: doc.dcId })) {
+      for await (const chunk of cl.iterDownload({ file: fileLocation, dcId: doc.dcId, offset: bigInt(0), requestSize: CHUNK })) {
         if (!ff.stdin.writable || res.writableEnded) break;
         ff.stdin.write(Buffer.from(chunk));
       }
@@ -500,40 +509,39 @@ router.get('/stream/:messageId', async (req, res) => {
     }
 
     // Direct HTTP Range streaming — zero re-encoding, original quality.
-    // gramjs requires the download offset to be a multiple of 4096, so we
-    // request from an aligned offset and trim the leading/trailing delta.
-    const ALIGN = 4096;
-    const dcId  = (doc.dcId != null) ? doc.dcId : undefined;
-    const REQ   = 512 * 1024; // 512 KB request blocks (safe, divisible by 4096)
+    // Offset is aligned to the 1 MB request boundary (MTProto requires the
+    // download offset to be aligned and a request must not cross a 1 MB
+    // boundary), and the leading delta is trimmed from the first chunk.
     const rangeHeader = req.headers['range'];
 
     if (rangeHeader && fileSize > 0) {
       const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
-      const reqStart = Math.max(0, parseInt(startStr, 10) || 0);
-      const reqEnd   = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1)
-                              : Math.min(reqStart + CHUNK - 1, fileSize - 1);
-      const length   = reqEnd - reqStart + 1;
+      const start = Math.max(0, parseInt(startStr, 10) || 0);
+      const end   = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1)
+                           : Math.min(start + CHUNK - 1, fileSize - 1);
+      const downloadSize = end - start + 1;
 
       res.writeHead(206, {
-        'Content-Range': `bytes ${reqStart}-${reqEnd}/${fileSize}`,
-        'Accept-Ranges': 'bytes', 'Content-Length': length,
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes', 'Content-Length': downloadSize,
         'Content-Type': mimeType, 'Cache-Control': 'no-cache'
       });
       if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-      const alignedStart = Math.floor(reqStart / ALIGN) * ALIGN;
-      let skip = reqStart - alignedStart;   // bytes to drop from the first chunk
-      let sent = 0;
+      const alignedOffset = Math.floor(start / CHUNK) * CHUNK;
+      let needSkip   = start - alignedOffset;   // bytes to drop from the first chunk
+      let downloaded = 0;
       for await (const chunk of cl.iterDownload({
-        file: doc, requestSize: REQ, dcId, offset: BigInt(alignedStart)
+        file: fileLocation, dcId: doc.dcId, offset: bigInt(alignedOffset), requestSize: CHUNK
       })) {
-        if (res.writableEnded) break;
+        if (res.destroyed || res.writableEnded) break;
         let buf = Buffer.from(chunk);
-        if (skip > 0) { const d = Math.min(skip, buf.length); buf = buf.subarray(d); skip -= d; }
-        if (buf.length === 0) continue;
-        if (sent + buf.length > length) buf = buf.subarray(0, length - sent);
-        res.write(buf); sent += buf.length;
-        if (sent >= length) break;
+        if (needSkip > 0) { buf = buf.subarray(needSkip); needSkip = 0; }
+        const remaining = downloadSize - downloaded;
+        if (remaining <= 0) break;
+        if (buf.length > remaining) buf = buf.subarray(0, remaining);
+        res.write(buf); downloaded += buf.length;
+        if (downloaded >= downloadSize) break;
       }
     } else {
       res.writeHead(200, {
@@ -541,8 +549,10 @@ router.get('/stream/:messageId', async (req, res) => {
         'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache'
       });
       if (typeof res.flushHeaders === 'function') res.flushHeaders();
-      for await (const chunk of cl.iterDownload({ file: doc, requestSize: REQ, dcId })) {
-        if (res.writableEnded) break;
+      for await (const chunk of cl.iterDownload({
+        file: fileLocation, dcId: doc.dcId, offset: bigInt(0), requestSize: CHUNK
+      })) {
+        if (res.destroyed || res.writableEnded) break;
         res.write(Buffer.from(chunk));
       }
     }
