@@ -13,17 +13,31 @@ function initCloudinary() {
   const apiKey    = process.env.CLOUDINARY_API_KEY    || '';
   const apiSecret = process.env.CLOUDINARY_API_SECRET || '';
 
-  if (!cloudName || !apiKey || !apiSecret) {
-    console.warn('[Cloudinary] Missing credentials — set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET env vars');
+  // 1) Explicit 3-var env config
+  if (cloudName && apiKey && apiSecret) {
+    cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret, secure: true });
+    console.log('[Cloudinary] Configured (env vars) for cloud:', cloudinary.config().cloud_name);
+    return;
   }
+  // 2) CLOUDINARY_URL — the SDK auto-parses it; do NOT overwrite with empty values
+  if (process.env.CLOUDINARY_URL) {
+    cloudinary.config({ secure: true });
+    console.log('[Cloudinary] Configured (CLOUDINARY_URL) for cloud:', cloudinary.config().cloud_name || '(from url)');
+    return;
+  }
+  // 3) Fall back to credentials saved in admin_settings (DB)
+  try {
+    const db = require('./database');
+    const get = (k) => { try { return db.prepare("SELECT value FROM admin_settings WHERE key = ?").get(k)?.value || ''; } catch (_) { return ''; } };
+    const cn = get('cloudinary_cloud_name'), ak = get('cloudinary_api_key'), as = get('cloudinary_api_secret');
+    if (cn && ak && as) {
+      cloudinary.config({ cloud_name: cn, api_key: ak, api_secret: as, secure: true });
+      console.log('[Cloudinary] Configured (admin_settings) for cloud:', cn);
+      return;
+    }
+  } catch (e) { console.warn('[Cloudinary] DB credential lookup failed:', e.message); }
 
-  cloudinary.config({
-    cloud_name: cloudName,
-    api_key:    apiKey,
-    api_secret: apiSecret,
-    secure: true,
-  });
-  console.log('[Cloudinary] Configured for cloud:', cloudinary.config().cloud_name || '(not set)');
+  console.warn('[Cloudinary] Missing credentials — set CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET, CLOUDINARY_URL, or admin_settings');
 }
 
 /**
