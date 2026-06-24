@@ -2510,27 +2510,43 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const host = req.headers['host'] || 'mirrornet.watch';
       const localUrl = `${protocol}://${host}/app-update/netmirror.apk`;
 
-      // Upload to Cloudinary so the APK survives Railway redeploys (ephemeral disk)
+      // Upload to GitHub Releases so the APK survives Railway redeploys (ephemeral disk).
+      // GitHub serves APKs fine (Cloudinary blocks .apk). Falls back to the local URL.
       let url = localUrl;
       try {
-        const { initCloudinary } = require('../config/cloudinary');
-        initCloudinary();
-        const cloudinary = require('cloudinary').v2;
-        const result = await new Promise((resolve, reject) => {
-          cloudinary.uploader.upload(dest, {
-            resource_type: 'raw',
-            public_id: 'leakspro/app-update/netmirror',
-            overwrite: true,
-            invalidate: true,
-            timeout: 180000,
-          }, (err, r) => err ? reject(err) : resolve(r));
-        });
-        if (result && result.secure_url) {
-          url = result.secure_url;
-          console.log('[AppUpdate] APK uploaded to Cloudinary:', url);
+        const tokenRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
+        if (tokenRow && tokenRow.value) {
+          const REPO  = 'Aldura5398/klad4';
+          const ASSET = 'NetMirror-update.apk';
+          const apkData = require('fs').readFileSync(dest);
+          const ghHeaders = { 'Authorization': `token ${tokenRow.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
+          const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers: ghHeaders });
+          if (relRes.ok) {
+            const relData = await relRes.json();
+            for (const asset of (relData.assets || [])) {
+              if (asset.name === ASSET) {
+                try { await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers: ghHeaders }); } catch (_) {}
+              }
+            }
+            const upRes = await fetch(`https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=${ASSET}`, {
+              method: 'POST',
+              headers: { ...ghHeaders, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apkData.length.toString() },
+              body: apkData
+            });
+            if (upRes.ok) {
+              url = `https://github.com/${REPO}/releases/download/latest/${ASSET}`;
+              console.log('[AppUpdate] APK pushed to GitHub Releases:', url);
+            } else {
+              console.warn('[AppUpdate] GitHub asset upload failed:', upRes.status);
+            }
+          } else {
+            console.warn('[AppUpdate] No "latest" release on', REPO, relRes.status);
+          }
+        } else {
+          console.warn('[AppUpdate] No github_token set — using local URL (not redeploy-safe)');
         }
       } catch (e) {
-        console.warn('[AppUpdate] Cloudinary APK upload failed, using local URL:', e.message);
+        console.warn('[AppUpdate] GitHub APK upload error:', e.message);
       }
 
       res.json({ success: true, url, localUrl });
