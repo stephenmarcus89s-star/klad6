@@ -2054,9 +2054,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     res.json({ ok: true, message: 'Digest triggered' });
   });
 
-  // App version check — used by NetMirror Updater wrapper to detect new versions
+  // App version check — serves BOTH the in-app updater (admin-set app_update_info
+  // in the DB, which drives the in-app update banner) AND the legacy wrapper
+  // updater (version.json / defaults). The admin-set update takes priority.
   app.get('/api/app/version', (req, res) => {
-    // Read from data/version.json if exists, else return defaults
+    // 1) Admin-configured in-app update wins (this drives the in-app banner)
+    try {
+      const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
+      if (row && row.value) {
+        const info = JSON.parse(row.value);
+        return res.json({
+          ...info,
+          has_update: true,
+          // camelCase aliases so the legacy wrapper updater keeps working
+          versionCode: info.version_code,
+          versionName: info.version_name || '',
+          changelog: info.changelog || ''
+        });
+      }
+    } catch (e) {
+      console.warn('[Version] app_update_info read failed:', e.message);
+    }
+
+    // 2) Fallback: version.json or defaults — no in-app update available
     const versionPath = path.join(__dirname, 'data', 'version.json');
     let versionInfo = {
       versionName: '2.1.0',
@@ -2074,7 +2094,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     } catch (e) {
       console.warn('[Version] Failed to read version.json:', e.message);
     }
-    res.json(versionInfo);
+    res.json({ ...versionInfo, has_update: false });
   });
 
   // Admin: update version info
@@ -2447,15 +2467,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
 
   // ═══ IN-APP UPDATE SYSTEM ══════════════════════════════════════════════
-  // GET /api/app/version — public, checked by the app on launch
-  app.get('/api/app/version', (req, res) => {
-    try {
-      const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
-      if (!row || !row.value) return res.json({ version_code: 0, has_update: false });
-      const info = JSON.parse(row.value);
-      res.json({ ...info, has_update: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-  });
+  // NOTE: GET /api/app/version is served by the merged handler above so the
+  // in-app updater and the legacy wrapper share a single source of truth.
 
   // POST /api/admin/app-update — admin sets version info
   app.post('/api/admin/app-update', express.json({ limit: '1mb' }), (req, res) => {
