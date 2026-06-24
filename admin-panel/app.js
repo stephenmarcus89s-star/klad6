@@ -7042,3 +7042,102 @@ async function adultTgShowSessionBackup() {
     else { area.value = ''; showToast(data.message || 'Not logged in yet', 'error'); panel.style.display = 'none'; }
   } catch (e) { panel.style.display = 'none'; showToast('Error: ' + e.message, 'error'); }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ANIME EPISODES — map full, original-quality episodes to a MyAnimeList id
+// ═══════════════════════════════════════════════════════════════════════════
+let animeSelectedMalId = null;
+let _animeTitleCache = {};
+function animeEsc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function animeAdminSearch() {
+  const q = (document.getElementById('animeSearchInput').value || '').trim();
+  const box = document.getElementById('animeSearchResults');
+  if (q.length < 2) { box.innerHTML = '<span style="color:var(--muted);font-size:12px">Type at least 2 characters.</span>'; return; }
+  box.innerHTML = '<span style="color:var(--muted);font-size:12px">Searching…</span>';
+  try {
+    const res = await fetch(`${API_BASE}/api/anime/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    const items = data.items || [];
+    if (!items.length) { box.innerHTML = '<span style="color:var(--muted);font-size:12px">No results.</span>'; return; }
+    _animeTitleCache = {};
+    items.forEach(a => { _animeTitleCache[a.id] = a.title; });
+    box.innerHTML = items.slice(0, 12).map(a =>
+      `<div onclick="animeSelectMal(${a.id})" style="width:96px;cursor:pointer">
+         <img src="${animeEsc(a.image)}" style="width:96px;height:136px;object-fit:cover;border-radius:8px;border:1px solid var(--border)">
+         <div style="font-size:10px;color:#ddd;margin-top:4px;line-height:1.2;max-height:26px;overflow:hidden">${animeEsc(a.title)}</div>
+         <div style="font-size:9px;color:var(--muted)">MAL ${a.id}</div>
+       </div>`).join('');
+  } catch (e) { box.innerHTML = `<span style="color:#f44336;font-size:12px">Error: ${animeEsc(e.message)}</span>`; }
+}
+
+function animeSelectMal(id, title) {
+  id = parseInt(id);
+  if (!id) return;
+  animeSelectedMalId = id;
+  document.getElementById('animeMalIdInput').value = id;
+  document.getElementById('animeSelectedTitle').textContent = title || _animeTitleCache[id] || ('MAL ' + id);
+  document.getElementById('animeSelectedCard').style.display = '';
+  document.getElementById('animeEpisodesCard').style.display = '';
+  animeLoadEpisodes();
+}
+
+async function animeAddEpisode() {
+  if (!animeSelectedMalId) { showToast('Select an anime first', 'error'); return; }
+  const source = (document.getElementById('animeEpSource').value || '').trim();
+  if (!source) { showToast('Source URL is required', 'error'); return; }
+  const body = {
+    mal_id: animeSelectedMalId,
+    episode_number: parseInt(document.getElementById('animeEpNum').value) || 0,
+    title: (document.getElementById('animeEpTitle').value || '').trim(),
+    source,
+    quality: (document.getElementById('animeEpQuality').value || '').trim()
+  };
+  const msg = document.getElementById('animeAddMsg');
+  msg.textContent = 'Saving…'; msg.style.color = 'var(--muted)';
+  try {
+    const res = await fetch(`${API_BASE}/api/anime/admin/episode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.success) {
+      msg.textContent = 'Saved ✓'; msg.style.color = '#4CAF50';
+      document.getElementById('animeEpSource').value = '';
+      document.getElementById('animeEpTitle').value = '';
+      const n = parseInt(document.getElementById('animeEpNum').value) || 0;
+      document.getElementById('animeEpNum').value = n + 1; // auto-advance to next episode
+      animeLoadEpisodes();
+    } else { msg.textContent = data.error || 'Failed'; msg.style.color = '#f44336'; }
+  } catch (e) { msg.textContent = 'Error: ' + e.message; msg.style.color = '#f44336'; }
+}
+
+async function animeLoadEpisodes() {
+  if (!animeSelectedMalId) return;
+  const list = document.getElementById('animeEpisodesList');
+  list.innerHTML = 'Loading…';
+  try {
+    const res = await fetch(`${API_BASE}/api/anime/admin/episodes/${animeSelectedMalId}`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    const eps = data.episodes || [];
+    if (!eps.length) { list.innerHTML = '<span style="color:var(--muted)">No episodes yet. Add one above.</span>'; return; }
+    list.innerHTML = eps.map(ep =>
+      `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+         <b style="color:var(--accent);min-width:54px">Ep ${ep.episode_number}</b>
+         <div style="flex:1;min-width:0">
+           <div style="font-size:13px;color:#eee">${animeEsc(ep.title) || '(no title)'} ${ep.quality ? '· ' + animeEsc(ep.quality) : ''}</div>
+           <div style="font-size:10px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${animeEsc(ep.source)}</div>
+         </div>
+         <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="animeDeleteEpisode('${ep.id}')"><i class="ri-delete-bin-line"></i></button>
+       </div>`).join('');
+  } catch (e) { list.innerHTML = `<span style="color:#f44336">Error: ${animeEsc(e.message)}</span>`; }
+}
+
+async function animeDeleteEpisode(epId) {
+  if (!confirm('Delete this episode?')) return;
+  try {
+    await fetch(`${API_BASE}/api/anime/admin/episode/${epId}`, { method: 'DELETE', headers: { 'x-admin-password': adminPassword } });
+    animeLoadEpisodes();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}

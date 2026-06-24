@@ -136,6 +136,9 @@
         <a href="#" class="nav-link" data-page="appupdate">
           <i class="ri-refresh-line" style="color:#4CAF50"></i><span>App Update</span>
         </a>
+        <a href="#" class="nav-link" data-page="anime">
+          <i class="ri-tv-2-line" style="color:#7C4DFF"></i><span>Anime Episodes</span>
+        </a>
       </nav>
 
       <div class="sidebar-bottom">
@@ -2216,6 +2219,49 @@
     </div>
 
       <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
+      </section>
+
+      <!-- ═══ ANIME EPISODES ═══ -->
+      <section id="page-anime" class="page">
+        <div class="page-head">
+          <h2><i class="ri-tv-2-line"></i> Anime Episodes</h2>
+          <span style="color:var(--muted);font-size:12px">Add full, original-quality episodes to any anime in the catalog</span>
+        </div>
+
+        <div class="card" style="margin:0 0 16px">
+          <div class="card-head"><h3><i class="ri-search-line"></i> 1. Find the anime</h3></div>
+          <div class="card-content">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <input type="text" id="animeSearchInput" placeholder="Search anime by name (e.g. Naruto)" style="flex:1;min-width:220px" onkeydown="if(event.key==='Enter')animeAdminSearch()">
+              <button class="btn btn-primary" onclick="animeAdminSearch()"><i class="ri-search-line"></i> Search</button>
+            </div>
+            <div id="animeSearchResults" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"></div>
+            <p style="color:var(--muted);font-size:11px;margin-top:8px">Or paste a MyAnimeList ID directly:
+              <input type="number" id="animeMalIdInput" placeholder="MAL id" style="width:120px" onchange="animeSelectMal(this.value)"></p>
+          </div>
+        </div>
+
+        <div class="card" id="animeSelectedCard" style="margin:0 0 16px;display:none">
+          <div class="card-head"><h3><i class="ri-add-circle-line"></i> 2. Add an episode to <span id="animeSelectedTitle" style="color:var(--accent)">—</span></h3></div>
+          <div class="card-content">
+            <div style="display:grid;grid-template-columns:100px 1fr;gap:10px">
+              <div class="field"><label>Episode #</label><input type="number" id="animeEpNum" min="0" placeholder="1" style="width:100%"></div>
+              <div class="field"><label>Title (optional)</label><input type="text" id="animeEpTitle" placeholder="Episode title" style="width:100%"></div>
+            </div>
+            <div class="field"><label>Source URL <span style="color:#f44336">*</span></label>
+              <input type="text" id="animeEpSource" placeholder="https://mirrornet.watch/api/telegram/stream/123  (or any direct / official video URL)" style="width:100%">
+              <p style="color:var(--muted);font-size:11px;margin-top:4px">For original quality, upload the episode on the <b>Telegram</b> page and paste its stream URL here. Direct .mp4 / .m3u8 or official YouTube links also work.</p>
+            </div>
+            <div class="field" style="max-width:160px"><label>Quality (optional)</label><input type="text" id="animeEpQuality" placeholder="1080p" style="width:100%"></div>
+            <button class="btn btn-primary" onclick="animeAddEpisode()"><i class="ri-add-line"></i> Add / Update Episode</button>
+            <span id="animeAddMsg" style="margin-left:10px;font-size:12px"></span>
+          </div>
+        </div>
+
+        <div class="card" id="animeEpisodesCard" style="margin:0;display:none">
+          <div class="card-head"><h3><i class="ri-list-check-2"></i> Episodes</h3><button class="btn btn-outline btn-sm" onclick="animeLoadEpisodes()"><i class="ri-refresh-line"></i> Refresh</button></div>
+          <div class="card-content"><div id="animeEpisodesList" style="color:var(--muted);font-size:13px">No anime selected.</div></div>
+        </div>
       </section>
   </div>
 
