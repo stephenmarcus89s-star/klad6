@@ -160,6 +160,35 @@ router.get('/netflix-posters', async (req, res) => {
   }
 });
 
+// GET /api/videos/adult — public listing of adult (18+) videos.
+// IMPORTANT: must be declared BEFORE '/:id' or Express matches "adult" as an id
+// and returns 404 "Video not found" (this was the bug hiding the premium section).
+router.get('/adult', (req, res) => {
+  try {
+    let videos = [];
+    try {
+      db.exec(`CREATE TABLE IF NOT EXISTS adult_videos (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        thumbnail_url TEXT DEFAULT '',
+        video_url TEXT DEFAULT '',
+        genre TEXT DEFAULT 'General',
+        type TEXT DEFAULT 'movie',
+        description TEXT DEFAULT '',
+        duration INTEGER DEFAULT 0,
+        tags TEXT DEFAULT '',
+        is_featured INTEGER DEFAULT 0,
+        views INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      )`);
+      videos = db.prepare('SELECT * FROM adult_videos ORDER BY is_featured DESC, created_at DESC').all();
+    } catch (_) {}
+    res.json({ videos });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/videos/:id - Get single video
 router.get('/:id', (req, res) => {
   try {
