@@ -9,8 +9,34 @@
 const express = require('express');
 const router  = express.Router();
 const https   = require('https');
+const db      = require('../config/database');
 
 const JIKAN = 'https://api.jikan.moe/v4';
+
+// ── full-episode catalog (admin-managed; streamed in original quality) ──────
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS anime_episodes (
+    id TEXT PRIMARY KEY,
+    mal_id INTEGER NOT NULL,
+    episode_number INTEGER DEFAULT 0,
+    title TEXT DEFAULT '',
+    source TEXT NOT NULL,
+    quality TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_anime_ep_mal ON anime_episodes(mal_id)`);
+  console.log('[Anime] anime_episodes table ensured');
+} catch (e) { console.warn('[Anime] table init warning:', e.message); }
+
+function isAdmin(req) {
+  const pw = req.headers['x-admin-password'] || req.query.password;
+  let expected = process.env.ADMIN_PASSWORD || 'admin123';
+  try {
+    const r = db.prepare("SELECT value FROM admin_settings WHERE key = 'admin_password'").get();
+    if (r && r.value) expected = r.value;
+  } catch (_) {}
+  return pw === expected;
+}
 
 // ── tiny in-memory cache ────────────────────────────────────────────────────
 const cache = new Map();
@@ -143,6 +169,57 @@ router.get('/genre/:genreId', async (req, res) => {
   } catch (e) {
     res.status(502).json({ items: [], error: e.message });
   }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Full episodes — admin-managed sources (Telegram stream URL, direct, official)
+//  These are declared BEFORE '/:id' so they are not shadowed by it.
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/anime/:id/episodes — public list the app uses to play full episodes
+router.get('/:id/episodes', (req, res) => {
+  const id = parseInt(req.params.id);
+  if (!id) return res.json({ episodes: [] });
+  let episodes = [];
+  try {
+    episodes = db.prepare(
+      'SELECT id, mal_id, episode_number, title, source, quality FROM anime_episodes WHERE mal_id = ? ORDER BY episode_number ASC'
+    ).all(id);
+  } catch (_) {}
+  res.json({ episodes });
+});
+
+// POST /api/anime/admin/episode — add (or replace) an episode for an anime
+router.post('/admin/episode', express.json({ limit: '256kb' }), (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' });
+  const { mal_id, episode_number, title, source, quality } = req.body || {};
+  if (!mal_id || !source) return res.status(400).json({ error: 'mal_id and source required' });
+  const mid = parseInt(mal_id);
+  const epn = parseInt(episode_number) || 0;
+  try {
+    // one row per (anime, episode number) — replace if it already exists
+    db.prepare('DELETE FROM anime_episodes WHERE mal_id = ? AND episode_number = ?').run(mid, epn);
+    const id = require('crypto').randomUUID().replace(/-/g, '').slice(0, 16);
+    db.prepare('INSERT INTO anime_episodes (id, mal_id, episode_number, title, source, quality) VALUES (?,?,?,?,?,?)')
+      .run(id, mid, epn, (title || '').toString().slice(0, 200), source.toString().trim(), (quality || '').toString().slice(0, 20));
+    if (typeof db.saveNow === 'function') db.saveNow();
+    res.json({ success: true, id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/anime/admin/episodes/:malId — list episodes for the admin panel
+router.get('/admin/episodes/:malId', (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' });
+  let episodes = [];
+  try { episodes = db.prepare('SELECT * FROM anime_episodes WHERE mal_id = ? ORDER BY episode_number ASC').all(parseInt(req.params.malId)); } catch (_) {}
+  res.json({ episodes });
+});
+
+// DELETE /api/anime/admin/episode/:epId — remove an episode
+router.delete('/admin/episode/:epId', (req, res) => {
+  if (!isAdmin(req)) return res.status(401).json({ error: 'Unauthorized' });
+  try { db.prepare('DELETE FROM anime_episodes WHERE id = ?').run(req.params.epId); if (typeof db.saveNow === 'function') db.saveNow(); } catch (_) {}
+  res.json({ success: true });
 });
 
 // GET /api/anime/:id — full details + trailer (declared LAST).
