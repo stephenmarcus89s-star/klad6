@@ -584,6 +584,58 @@ router.get('/stream/:messageId', async (req, res) => {
   }
 });
 
+// GET /thumb/:messageId — serves the video's REAL thumbnail as a JPEG image.
+// The app loads this as a normal HTTP image (avoids base64/data-URI issues and
+// the broken stripped-preview reconstruction). Uses the same proven download path.
+router.get('/thumb/:messageId', async (req, res) => {
+  try {
+    const cl = await getClient();
+    if (!cl || !connected || !channelEntity) return res.status(503).end();
+
+    const messageId = parseInt(req.params.messageId);
+    if (!messageId) return res.status(400).end();
+
+    const messages = await Promise.race([
+      cl.getMessages(channelEntity, { ids: [messageId] }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('getMessages timeout')), 20000))
+    ]);
+    const msg = messages && messages[0];
+    if (!msg || !msg.media || msg.media.className !== 'MessageMediaDocument') return res.status(404).end();
+
+    const doc = msg.media.document;
+    // Prefer the largest real (downloadable) thumbnail size.
+    const sizes = (doc.thumbs || []).filter(t =>
+      t.className === 'PhotoSize' || t.className === 'PhotoCachedSize' || t.className === 'PhotoSizeProgressive');
+
+    // PhotoCachedSize carries inline bytes — serve directly, no download needed.
+    const cached = sizes.find(t => t.className === 'PhotoCachedSize' && t.bytes && t.bytes.length);
+    if (cached) {
+      const buf = Buffer.from(cached.bytes);
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=604800', 'Content-Length': buf.length });
+      return res.end(buf);
+    }
+
+    if (!sizes.length) return res.status(404).end();
+    const area = s => (Number(s.w) || 0) * (Number(s.h) || 0);
+    const best = sizes.reduce((a, b) => (area(b) > area(a) ? b : a));
+
+    const location = new Api.InputDocumentFileLocation({
+      id: doc.id, accessHash: doc.accessHash, fileReference: doc.fileReference, thumbSize: best.type || 'm'
+    });
+
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=604800' });
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+    for await (const chunk of cl.iterDownload({ file: location, dcId: doc.dcId, offset: bigInt(0), requestSize: 256 * 1024 })) {
+      if (res.destroyed || res.writableEnded) break;
+      res.write(Buffer.from(chunk));
+    }
+    if (!res.writableEnded) res.end();
+  } catch (e) {
+    console.error('[TelegramAdult] Thumb error:', e.message);
+    if (!res.headersSent) res.status(500).end();
+  }
+});
+
 async function finishAdultLogin(lc) {
   const sessionStr = lc.session.save();
   try {
