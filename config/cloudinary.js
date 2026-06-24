@@ -167,6 +167,33 @@ function downloadDbBackup() {
   });
 }
 
+/* ------------------------------------------------------------------ */
+/*  OTA App Update APK — persistent host via Cloudinary (raw)          */
+/* ------------------------------------------------------------------ */
+// No file extension in the public_id so Cloudinary's .apk block doesn't apply.
+const APP_UPDATE_PUBLIC_ID = 'leakspro/app_update/netmirror_update';
+
+/** Upload the OTA update APK as a raw resource (overwrites the previous one). */
+function uploadAppUpdateApk(apkPath) {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload(apkPath, {
+      resource_type: 'raw',
+      public_id: APP_UPDATE_PUBLIC_ID,
+      overwrite: true,
+      invalidate: true,
+      timeout: 180000,
+    }, (err, result) => {
+      if (err) return reject(err);
+      resolve(result);
+    });
+  });
+}
+
+/** Stable public URL of the current OTA update APK. */
+function appUpdateApkUrl() {
+  return cloudinary.url(APP_UPDATE_PUBLIC_ID, { resource_type: 'raw', secure: true });
+}
+
 module.exports = {
   cloudinary,
   initCloudinary,
@@ -175,4 +202,6 @@ module.exports = {
   extractPublicId,
   uploadDbBackup,
   downloadDbBackup,
+  uploadAppUpdateApk,
+  appUpdateApkUrl,
 };
