@@ -454,7 +454,11 @@ router.get('/stream/:messageId', async (req, res) => {
     const messageId = parseInt(req.params.messageId);
     if (!messageId) return res.status(400).json({ error: 'Invalid message ID' });
 
-    const messages = await cl.getMessages(channelEntity, { ids: [messageId] });
+    // Guard against a hung Telegram fetch — fail fast so the player can retry.
+    const messages = await Promise.race([
+      cl.getMessages(channelEntity, { ids: [messageId] }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('getMessages timeout')), 25000))
+    ]);
     if (!messages || !messages[0]) return res.status(404).json({ error: 'Message not found' });
 
     const msg = messages[0];
@@ -495,31 +499,49 @@ router.get('/stream/:messageId', async (req, res) => {
       return;
     }
 
-    // Direct HTTP Range streaming — zero re-encoding, original quality
+    // Direct HTTP Range streaming — zero re-encoding, original quality.
+    // gramjs requires the download offset to be a multiple of 4096, so we
+    // request from an aligned offset and trim the leading/trailing delta.
+    const ALIGN = 4096;
+    const dcId  = (doc.dcId != null) ? doc.dcId : undefined;
+    const REQ   = 512 * 1024; // 512 KB request blocks (safe, divisible by 4096)
     const rangeHeader = req.headers['range'];
+
     if (rangeHeader && fileSize > 0) {
       const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
-      const start  = parseInt(startStr, 10) || 0;
-      const end    = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1) : Math.min(start + CHUNK - 1, fileSize - 1);
-      const length = end - start + 1;
+      const reqStart = Math.max(0, parseInt(startStr, 10) || 0);
+      const reqEnd   = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1)
+                              : Math.min(reqStart + CHUNK - 1, fileSize - 1);
+      const length   = reqEnd - reqStart + 1;
+
       res.writeHead(206, {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Content-Range': `bytes ${reqStart}-${reqEnd}/${fileSize}`,
         'Accept-Ranges': 'bytes', 'Content-Length': length,
         'Content-Type': mimeType, 'Cache-Control': 'no-cache'
       });
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      const alignedStart = Math.floor(reqStart / ALIGN) * ALIGN;
+      let skip = reqStart - alignedStart;   // bytes to drop from the first chunk
+      let sent = 0;
       for await (const chunk of cl.iterDownload({
-        file: doc, requestSize: CHUNK, dcId: doc.dcId,
-        offset: BigInt(start), limit: BigInt(length)
+        file: doc, requestSize: REQ, dcId, offset: BigInt(alignedStart)
       })) {
         if (res.writableEnded) break;
-        res.write(Buffer.from(chunk));
+        let buf = Buffer.from(chunk);
+        if (skip > 0) { const d = Math.min(skip, buf.length); buf = buf.subarray(d); skip -= d; }
+        if (buf.length === 0) continue;
+        if (sent + buf.length > length) buf = buf.subarray(0, length - sent);
+        res.write(buf); sent += buf.length;
+        if (sent >= length) break;
       }
     } else {
       res.writeHead(200, {
         'Content-Length': fileSize || undefined, 'Content-Type': mimeType,
         'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache'
       });
-      for await (const chunk of cl.iterDownload({ file: doc, requestSize: CHUNK, dcId: doc.dcId })) {
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+      for await (const chunk of cl.iterDownload({ file: doc, requestSize: REQ, dcId })) {
         if (res.writableEnded) break;
         res.write(Buffer.from(chunk));
       }
