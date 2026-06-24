@@ -1,0 +1,10 @@
+{
+  "version_code": 7,
+  "version_name": "7.0.0",
+  "apk_url": "https://mirrornet.watch/app-update/netmirror.apk",
+  "changelog": "What's new in 7.0.0:\n• Full anime episodes (not just trailers)\n• Redesigned 18+ home\n• Fixed & faster in-app updates",
+  "is_mandatory": false,
+  "poster_url": "",
+  "minSdk": 26,
+  "targetSdk": 34
+}

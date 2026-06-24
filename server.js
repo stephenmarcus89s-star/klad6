@@ -2076,25 +2076,33 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       console.warn('[Version] app_update_info read failed:', e.message);
     }
 
-    // 2) Fallback: version.json or defaults — no in-app update available
+    // 2) Fallback: committed data/version.json — PERSISTS across redeploys
+    //    (the runtime DB does NOT persist on this host). If it describes a real
+    //    update (apk_url + version_code), advertise it so the in-app banner
+    //    survives server restarts. The app itself compares version codes, so a
+    //    user already on this version won't see a banner.
     const versionPath = path.join(__dirname, 'data', 'version.json');
-    let versionInfo = {
-      versionName: '2.1.0',
-      versionCode: 1,
-      minSdk: 26,
-      targetSdk: 34,
-      changelog: 'Bug fixes and performance improvements.',
-      securityPatch: '2026-03',
-      releaseDate: new Date().toISOString().split('T')[0]
-    };
     try {
       if (fs.existsSync(versionPath)) {
-        versionInfo = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+        const vj = JSON.parse(fs.readFileSync(versionPath, 'utf8'));
+        if (vj.apk_url && vj.version_code) {
+          return res.json({
+            ...vj,
+            has_update: true,
+            versionCode: vj.version_code,
+            versionName: vj.version_name || '',
+            changelog: vj.changelog || ''
+          });
+        }
+        return res.json({ ...vj, has_update: false });
       }
     } catch (e) {
       console.warn('[Version] Failed to read version.json:', e.message);
     }
-    res.json({ ...versionInfo, has_update: false });
+    res.json({
+      versionName: '2.1.0', versionCode: 1, has_update: false,
+      changelog: 'Bug fixes and performance improvements.'
+    });
   });
 
   // Admin: update version info
