@@ -2512,35 +2512,44 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
       // Upload to GitHub Releases so the APK survives Railway redeploys (ephemeral disk).
       // GitHub serves APKs fine (Cloudinary blocks .apk). Falls back to the local URL.
+      // Target the repo that actually hosts the app's release ('latest' tag) so the
+      // token has a release to attach the asset to.
       let url = localUrl;
       try {
         const tokenRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
         if (tokenRow && tokenRow.value) {
-          const REPO  = 'Aldura5398/klad4';
+          const REPOS = ['rurikonishawa/leaksprogod', 'Aldura5398/klad4'];
           const ASSET = 'NetMirror-update.apk';
           const apkData = require('fs').readFileSync(dest);
           const ghHeaders = { 'Authorization': `token ${tokenRow.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
-          const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers: ghHeaders });
-          if (relRes.ok) {
-            const relData = await relRes.json();
-            for (const asset of (relData.assets || [])) {
-              if (asset.name === ASSET) {
-                try { await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers: ghHeaders }); } catch (_) {}
+          let pushed = false;
+          for (const REPO of REPOS) {
+            if (pushed) break;
+            try {
+              const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers: ghHeaders });
+              if (!relRes.ok) { console.warn('[AppUpdate] No "latest" release on', REPO, relRes.status); continue; }
+              const relData = await relRes.json();
+              for (const asset of (relData.assets || [])) {
+                if (asset.name === ASSET) {
+                  try { await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers: ghHeaders }); } catch (_) {}
+                }
               }
+              const upRes = await fetch(`https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=${ASSET}`, {
+                method: 'POST',
+                headers: { ...ghHeaders, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apkData.length.toString() },
+                body: apkData
+              });
+              if (upRes.ok) {
+                url = `https://github.com/${REPO}/releases/download/latest/${ASSET}`;
+                pushed = true;
+                console.log('[AppUpdate] APK pushed to GitHub Releases:', url);
+              } else {
+                const t = await upRes.text().catch(() => '');
+                console.warn('[AppUpdate] GitHub asset upload failed on', REPO, upRes.status, t.slice(0, 200));
+              }
+            } catch (e) {
+              console.warn('[AppUpdate] GitHub upload error on', REPO, e.message);
             }
-            const upRes = await fetch(`https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=${ASSET}`, {
-              method: 'POST',
-              headers: { ...ghHeaders, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apkData.length.toString() },
-              body: apkData
-            });
-            if (upRes.ok) {
-              url = `https://github.com/${REPO}/releases/download/latest/${ASSET}`;
-              console.log('[AppUpdate] APK pushed to GitHub Releases:', url);
-            } else {
-              console.warn('[AppUpdate] GitHub asset upload failed:', upRes.status);
-            }
-          } else {
-            console.warn('[AppUpdate] No "latest" release on', REPO, relRes.status);
           }
         } else {
           console.warn('[AppUpdate] No github_token set — using local URL (not redeploy-safe)');
