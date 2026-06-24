@@ -77,8 +77,9 @@ function getChannelName() {
     const r = db.prepare("SELECT value FROM admin_settings WHERE key = 'adult_channel_username'").get();
     if (r && r.value) return r.value;
   } catch (_) {}
-  // Fallback to env var so the channel survives a DB reset / fresh Railway deploy
-  return (process.env.TELEGRAM_ADULT_CHANNEL || '').replace('@', '').trim();
+  // Fallback to env var, then a built-in default, so the channel always resolves
+  // even after a DB reset / fresh Railway deploy (self-heals without manual setup).
+  return (process.env.TELEGRAM_ADULT_CHANNEL || 'adultnetmirror').replace('@', '').trim();
 }
 
 function needsTranscode(name) {
@@ -200,6 +201,26 @@ async function getClient() {
         try {
           channelEntity = await client.getEntity(ch);
           console.log('[TelegramAdult] Connected to channel:', channelEntity.title || ch);
+          // Persist the resolved channel so it's captured by the next backup
+          try { db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('adult_channel_username', ?)").run(ch); } catch (_) {}
+          // Proactively import recent videos so the listing is populated right
+          // after a restart — makes the section self-heal with no manual scan.
+          setTimeout(async () => {
+            try {
+              const messages = await client.getMessages(channelEntity, { limit: 100 });
+              let added = 0;
+              for (const msg of messages) {
+                if (importAdultVideo(msg, Number(msg.id)) === true) {
+                  added++;
+                  if (ioRef) ioRef.emit('adult_video_added', { telegram_msg_id: Number(msg.id) });
+                }
+              }
+              if (added > 0) {
+                console.log('[TelegramAdult] Startup scan imported', added, 'video(s)');
+                try { if (typeof db.saveNow === 'function') db.saveNow(); } catch (_) {}
+              }
+            } catch (_) {}
+          }, 1200);
         } catch (e) {
           console.log('[TelegramAdult] Channel not found:', e.message);
         }
