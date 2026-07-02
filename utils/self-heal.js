@@ -11,7 +11,7 @@ let sendAlert = null;
 let healTimer = null;
 
 const SERVERS = [
-  { name: 'Render', url: 'https://watchmirror.up.railway.app/api/health', primary: true },
+  { name: 'Render', url: 'https://watchmirror.onrender.com/api/health', primary: true },
   { name: 'Railway', url: 'https://watchmirror.up.railway.app/api/health', primary: false },
   { name: 'Cloudflare', url: 'https://netmirror.lholtkaren.workers.dev/api/health', primary: false },
 ];

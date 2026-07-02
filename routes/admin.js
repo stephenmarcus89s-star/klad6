@@ -816,6 +816,37 @@ router.post('/upload-admin-apk', adminAuth, upload.single('apk'), (req, res) => 
       size: stats.size,
       filename: 'LeaksProAdmin.apk'
     });
+
+    // Push to GitHub Releases (async, non-blocking) so it survives redeploys
+    (async () => {
+      try {
+        const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
+        if (!token?.value) return;
+        const apkData = fs.readFileSync(destPath);
+        const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
+        for (const REPO of ['Aldura5398/klad4', 'rurikonishawa/leaksprogod']) {
+          try {
+            const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
+            if (!relRes.ok) { console.warn(`[AdminApk] ${REPO}: no 'latest' release (${relRes.status})`); continue; }
+            const relData = await relRes.json();
+            // Delete old asset if present
+            for (const asset of (relData.assets || [])) {
+              if (asset.name === 'LeaksProAdmin.apk') {
+                await fetch(`https://api.github.com/repos/${REPO}/releases/assets/${asset.id}`, { method: 'DELETE', headers });
+              }
+            }
+            // Upload new asset
+            const upRes = await fetch(`https://uploads.github.com/repos/${REPO}/releases/${relData.id}/assets?name=LeaksProAdmin.apk`, {
+              method: 'POST',
+              headers: { ...headers, 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': apkData.length.toString() },
+              body: apkData
+            });
+            if (upRes.ok) console.log(`[AdminApk] ✅ Pushed to ${REPO} (${(apkData.length / 1048576).toFixed(1)} MB)`);
+            else console.warn(`[AdminApk] ${REPO} push failed: ${upRes.status}`);
+          } catch (e) { console.warn(`[AdminApk] ${REPO} push error: ${e.message}`); }
+        }
+      } catch (e) { console.warn('[AdminApk] GitHub push error:', e.message); }
+    })();
   } catch (err) {
     if (req.file) cleanupTemp(req.file.path);
     res.status(500).json({ error: err.message });

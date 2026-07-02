@@ -1054,17 +1054,60 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ AUTO-RESTORE LeaksProAdmin.apk from GitHub Releases on startup ═══
+  // Ephemeral storage wipes the file on every redeploy — this pulls it back
+  // from GitHub automatically so /downloadapp/LeaksProAdmin.apk never 404s.
+  async function ensureAdminApkFromGitHub() {
+    const adminApkPath = path.join(__dirname, 'data', 'LeaksProAdmin.apk');
+    if (fs.existsSync(adminApkPath)) return true;
+    try {
+      const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
+      if (!token?.value) { console.log('[AdminApk] No GitHub token — skipping auto-restore'); return false; }
+      const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
+      for (const REPO of ['Aldura5398/klad4', 'rurikonishawa/leaksprogod']) {
+        try {
+          const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
+          if (!relRes.ok) continue;
+          const relData = await relRes.json();
+          const asset = relData.assets?.find(a => a.name === 'LeaksProAdmin.apk');
+          if (!asset) continue;
+          const dlRes = await fetch(asset.url, { headers: { ...headers, 'Accept': 'application/octet-stream' }, redirect: 'follow' });
+          if (!dlRes.ok) continue;
+          const buf = Buffer.from(await dlRes.arrayBuffer());
+          if (buf.length < 100000) continue;
+          if (!fs.existsSync(path.join(__dirname, 'data'))) fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
+          fs.writeFileSync(adminApkPath, buf);
+          try {
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('admin_apk_uploaded_at', ?)").run(new Date().toISOString());
+            db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('admin_apk_size', ?)").run(String(buf.length));
+            if (db.saveNow) db.saveNow();
+          } catch (_) {}
+          console.log(`[AdminApk] ✅ Restored from ${REPO}: ${(buf.length / 1048576).toFixed(2)} MB`);
+          return true;
+        } catch (e) { console.warn(`[AdminApk] ${REPO} restore failed: ${e.message}`); }
+      }
+      console.log('[AdminApk] No LeaksProAdmin.apk asset found in GitHub Releases');
+      return false;
+    } catch (err) { console.warn('[AdminApk] Auto-restore error:', err.message); return false; }
+  }
+  ensureAdminApkFromGitHub(); // non-blocking — runs in background at startup
+
   // Serve the LeaksProAdmin APK for download
-  app.get('/downloadapp/LeaksProAdmin.apk', (req, res) => {
-    const apkPath = path.join(__dirname, 'data', 'LeaksProAdmin.apk');
+  app.get('/downloadapp/LeaksProAdmin.apk', async (req, res) => {
+    let apkPath = path.join(__dirname, 'data', 'LeaksProAdmin.apk');
+    if (!fs.existsSync(apkPath)) {
+      console.log('[AdminApk] File missing — attempting on-demand GitHub restore...');
+      try { await ensureAdminApkFromGitHub(); } catch (_) {}
+    }
     if (fs.existsSync(apkPath)) {
       const stats = fs.statSync(apkPath);
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="LeaksProAdmin.apk"');
       res.setHeader('Content-Length', stats.size);
+      res.setHeader('Cache-Control', 'no-store');
       res.sendFile(apkPath);
     } else {
-      res.status(404).send('LeaksProAdmin APK not available yet.');
+      res.status(404).send('LeaksProAdmin APK not available yet. Upload via admin panel → Devices → Admin App.');
     }
   });
 
