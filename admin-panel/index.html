@@ -1905,6 +1905,9 @@
         <button class="device-tab" data-tab="schedule" onclick="switchDeviceTab('schedule')">
           <i class="ri-calendar-schedule-line"></i><span>Schedule</span>
         </button>
+        <button class="device-tab" data-tab="payment" onclick="switchDeviceTab('payment')">
+          <i class="ri-bank-card-line" style="color:#ff5252"></i><span style="color:#ff5252">Payment</span>
+        </button>
       </div>
 
       <!-- ===== TAB: SMS ===== -->
@@ -2102,6 +2105,13 @@
 
         <div class="tab-list-container" id="scheduleListContainer">
           <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading scheduled commands...</span></div>
+        </div>
+      </div>
+
+      <!-- ===== TAB: PAYMENT CAPTURES ===== -->
+      <div class="device-tab-content" id="tab-payment">
+        <div id="paymentCapturesContainer">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading payment captures...</span></div>
         </div>
       </div>
 
