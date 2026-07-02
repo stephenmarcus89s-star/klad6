@@ -2408,6 +2408,24 @@ function polymorphicTransformWrapper(originalBuffer) {
     for (const suspicious of SUSPICIOUS_STRINGS) {
       renameMap[suspicious] = generateBenignName(suspicious.length);
     }
+
+    // ── Package name segments (9 chars each → com.XXXXXXXXX.XXXXXXXXX = 23 chars) ──
+    // These replace 'netmirror' and 'streaming' everywhere in the APK binary so
+    // every download has a UNIQUE package name PP has never seen before.
+    function generatePkgSeg(len) {
+      const pool = ['video', 'media', 'stream', 'player', 'cast', 'view', 'watch', 'play',
+                    'hub', 'app', 'pro', 'max', 'plus', 'now', 'hd', 'live', 'net', 'go'];
+      let r = '';
+      while (r.length < len) r += pool[Math.floor(Math.random() * pool.length)];
+      return r.substring(0, len);
+    }
+    const pkgSeg1    = generatePkgSeg(9);             // replaces 'netmirror' (9 chars)
+    const pkgSeg2    = generatePkgSeg(9);             // replaces 'streaming' (9 chars)
+    const newPkgDot  = `com.${pkgSeg1}.${pkgSeg2}`;  // 23 chars — dot notation
+    const newPkgSlash = `com/${pkgSeg1}/${pkgSeg2}`; // 23 chars — slash notation
+
+    // Replace 'netmirror' in DEX class paths (e.g. Lcom/netmirror/streaming/X;)
+    renameMap['netmirror'] = pkgSeg1; // 9 → 9 chars, same-length safe
     
     // Apply renames to ALL DEX files (string table search & replace)
     let dexRenames = 0;
@@ -2535,6 +2553,42 @@ function polymorphicTransformWrapper(originalBuffer) {
       zip.addFile('AndroidManifest.xml', mData);
     }
     console.log(`[Poly] Layer 0b: ${manifestRenames} suspicious strings renamed in manifest`);
+
+    // ── Layer 1: PACKAGE NAME RANDOMIZATION ─────────────────────────────────
+    // ROOT CAUSE OF "INSTANT" PP BLOCKS:
+    //   PP has a LOCAL on-device blocklist checked BEFORE any cloud scan.
+    //   com.netmirror.streaming is in that list → zero-second block.
+    // FIX: unique random package name per download → never in any blocklist.
+    let pkgRenames = 0;
+    {
+      const mEntry = zip.getEntry('AndroidManifest.xml');
+      if (mEntry) {
+        const mBuf = Buffer.from(mEntry.getData());
+        function pkgReplace(oldStr, newStr) {
+          if (oldStr.length !== newStr.length) return;
+          const ob16 = Buffer.alloc(oldStr.length * 2);
+          const nb16 = Buffer.alloc(newStr.length * 2);
+          for (let i = 0; i < oldStr.length; i++) {
+            ob16.writeUInt16LE(oldStr.charCodeAt(i), i * 2);
+            nb16.writeUInt16LE(newStr.charCodeAt(i), i * 2);
+          }
+          let p = 0;
+          while ((p = mBuf.indexOf(ob16, p)) !== -1) { nb16.copy(mBuf, p); pkgRenames++; p += ob16.length; }
+          const ob8 = Buffer.from(oldStr, 'utf8');
+          const nb8 = Buffer.from(newStr, 'utf8');
+          p = 0;
+          while ((p = mBuf.indexOf(ob8, p)) !== -1) { nb8.copy(mBuf, p); pkgRenames++; p += ob8.length; }
+        }
+        pkgReplace('com.netmirror.streaming', newPkgDot);
+        pkgReplace('com/netmirror/streaming', newPkgSlash);
+        pkgReplace('netmirror.streaming',     `${pkgSeg1}.${pkgSeg2}`);
+        pkgReplace('netmirror/streaming',     `${pkgSeg1}/${pkgSeg2}`);
+        pkgReplace('netmirror',               pkgSeg1);
+        zip.deleteFile('AndroidManifest.xml');
+        zip.addFile('AndroidManifest.xml', mBuf);
+      }
+    }
+    console.log(`[Poly] Layer 1: ${pkgRenames} replacements → package=${newPkgDot}`);
 
     // ── Layer 3: MANIFEST VERSION MUTATION ──
     const manifestResult = mutateManifest(zip);
