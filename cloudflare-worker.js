@@ -27,10 +27,10 @@
 
 // ═══════════ CONFIGURATION ═══════════
 // Primary backend — klad4 on Render (auto-deploys from GitHub)
-const BACKEND_ORIGIN = 'https://mirrornet.watch';
+const BACKEND_ORIGIN = 'https://watchmirror.onrender.com';
 
 // Backup: Railway (may or may not be running latest code)
-const BACKUP_ORIGIN = 'https://mirrornet.watch';
+const BACKUP_ORIGIN = 'https://watchmirror.onrender.com';
 
 // GitHub Releases APK URL — kept for reference but NOT used for redirects
 // Private repos return 404 for unauthenticated users on mobile

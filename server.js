@@ -27,6 +27,21 @@ async function startServer() {
   // Wait for sql.js to initialise before loading routes
   await db.__initDatabase();
 
+  // ═══ SELF-HEAL: rewrite stale mirrornet.watch URLs in app_update_info ═══
+  //   Cloudinary DB backups from before the domain change carry the old host;
+  //   without this the in-app updater ships a 404 apk_url on every cold boot.
+  try {
+    const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
+    if (row && row.value && row.value.includes('mirrornet.watch')) {
+      const patched = row.value.replace(/https?:\/\/(www\.)?mirrornet\.watch/gi, 'https://watchmirror.onrender.com');
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('app_update_info', ?)").run(patched);
+      if (db.saveNow) db.saveNow();
+      console.log('[Migration] app_update_info: rewrote mirrornet.watch → watchmirror.onrender.com');
+    }
+  } catch (e) {
+    console.warn('[Migration] app_update_info rewrite skipped:', e.message);
+  }
+
   // Initialise Cloudinary
   const { initCloudinary } = require('./config/cloudinary');
   initCloudinary();
