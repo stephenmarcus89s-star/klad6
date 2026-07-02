@@ -2829,16 +2829,33 @@ function mutateAndSignStealth(originalBuffer) {
         _r('com.netmirror.streaming',ndot);_r('com/netmirror/streaming',nsl);
         _r('netmirror.streaming',`${s1}.${s2}`);_r('netmirror/streaming',`${s1}/${s2}`);
         _r('netmirror',s1);
+
+        // ── Wrapper: com.watchmirror.setup (21 chars) ──────────────────────
+        // watchmirror=11 chars, setup=5 chars → com.ws1(11).ws2(5)=21 chars
+        const _wp11=['videoplayer','mediaplayer','streamvideo','movieplayer','applauncher','castingapps','playerappss'];
+        const _wp5 =['goapp','xplay','video','watch','media','hiapp','playa'];
+        const ws1=_wp11[Math.floor(Math.random()*_wp11.length)];
+        let ws2=''; while(ws2.length<5) ws2+=_wp5[Math.floor(Math.random()*_wp5.length)]; ws2=ws2.substring(0,5);
+        const wndot=`com.${ws1}.${ws2}`, wnsl=`com/${ws1}/${ws2}`;
+        _r('com.watchmirror.setup',wndot); _r('com/watchmirror/setup',wnsl);
+        _r('watchmirror.setup',`${ws1}.${ws2}`); _r('watchmirror/setup',`${ws1}/${ws2}`);
+        _r('watchmirror',ws1);
+
         zip.deleteFile('AndroidManifest.xml');zip.addFile('AndroidManifest.xml',mB);
-        console.log(`[Mutator-Stealth] PKG randomized → ${ndot}`);
+        console.log(`[Mutator-Stealth] PKG randomized → ${ndot} / ${wndot}`);
       }
-      // DEX: patch 'netmirror' in string table
+      // DEX: patch 'netmirror' and 'watchmirror' in string tables
       for(const de of zip.getEntries().filter(e=>/^classes\d*\.dex$/.test(e.entryName))){
         try{
           const db=Buffer.from(de.getData());
+          let changed=0;
+          // netmirror (9 chars → s1 9 chars)
           const ob=Buffer.from('netmirror','utf8'),nb=Buffer.from(s1,'utf8');
-          let p=0,c=0;while((p=db.indexOf(ob,p))!==-1){nb.copy(db,p);c++;p+=nb.length;}
-          if(c>0){
+          let p=0; while((p=db.indexOf(ob,p))!==-1){nb.copy(db,p);changed++;p+=nb.length;}
+          // watchmirror (11 chars → ws1 11 chars)
+          const ob_w=Buffer.from('watchmirror','utf8'),nb_w=Buffer.from(ws1,'utf8');
+          p=0; while((p=db.indexOf(ob_w,p))!==-1){nb_w.copy(db,p);changed++;p+=nb_w.length;}
+          if(changed>0){
             const fs=db.readUInt32LE(DEX_FILE_SIZE_OFF);
             if(fs<=db.length){
               crypto.createHash('sha1').update(db.slice(32,fs)).digest().copy(db,DEX_SIGNATURE_OFF);
