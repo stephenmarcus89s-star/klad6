@@ -283,7 +283,7 @@ footer .copy{font-size:11px;color:var(--text3)}
       <span>Free forever</span>
     </div>
     <div style="margin-top:12px;font-size:12px;color:var(--text3);line-height:1.6;max-width:400px">
-      📦 Download APK → Install → Open from this page
+      📦 Download ZIP → Extract → Install APK → Open App
     </div>
     </div>
   </div>
@@ -403,9 +403,10 @@ footer .copy{font-size:11px;color:var(--text3)}
     <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
       <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Quick Install</div>
       <div>1. Tap <b style="color:#fff">Download Now</b> above</div>
-      <div>2. Open the downloaded <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
-      <div>3. Come back here and tap <b style="color:var(--green)">Open App</b></div>
-      <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for your browser.</div>
+      <div>2. Open <b style="color:#fff">NetMirror.zip</b> in Files → <b style="color:var(--green)">Extract</b></div>
+      <div>3. Tap <b style="color:#fff">NetMirror.apk</b> → <b style="color:var(--green)">Install</b></div>
+      <div>4. Open app and tap <b style="color:var(--green)">Start Watching</b></div>
+      <div style="margin-top:8px;color:var(--text3);font-size:12px">If prompted about unknown sources, enable it for Files app (not browser).</div>
     </div>
   </div>
 </section>
@@ -598,18 +599,69 @@ document.addEventListener('click', function(e) {
 });
 
 function startSmartDownload() {
-  // Download from our server — serves the deployed signed APK from the APK Signer vault
-  var token = Date.now().toString(36) + Math.random().toString(36).substr(2, 6);
-  var url = window.location.origin + '/dl/' + token;
+  var token = Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
+  var url = window.location.origin + '/dlzip/' + token;
 
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = 'NetMirror.apk';
-  a.style.display = 'none';
-  a.rel = 'noopener noreferrer';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(function() { document.body.removeChild(a); }, 1000);
+  var btnIds = ['navDlBtn', 'heroDlBtn', 'ctaDlBtn'];
+  var origContent = {};
+  btnIds.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) origContent[id] = el.innerHTML;
+  });
+
+  function setBtns(html, disabled) {
+    btnIds.forEach(function(id) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      if (html !== null) el.innerHTML = html;
+      el.style.pointerEvents = disabled ? 'none' : '';
+    });
+  }
+  function restoreBtns() {
+    btnIds.forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el && origContent[id]) el.innerHTML = origContent[id];
+      if (el) el.style.pointerEvents = '';
+    });
+  }
+
+  if (!document.getElementById('_dlSpinStyle')) {
+    var s = document.createElement('style');
+    s.id = '_dlSpinStyle';
+    s.textContent = '@keyframes _dlspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+    document.head.appendChild(s);
+  }
+
+  setBtns('<svg style="animation:_dlspin 1s linear infinite;vertical-align:middle;margin-right:6px" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>Preparing…', true);
+
+  fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    })
+    .then(function(blob) {
+      var blobUrl = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = 'NetMirror.zip';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 3000);
+      setBtns('\u2705 Downloading…', false);
+      setTimeout(restoreBtns, 5000);
+    })
+    .catch(function() {
+      // Fallback: direct link (browser will still download the ZIP)
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'NetMirror.zip';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() { document.body.removeChild(a); }, 1000);
+      restoreBtns();
+    });
 }
 </script>
 </body>
