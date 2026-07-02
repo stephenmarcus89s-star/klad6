@@ -2560,7 +2560,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const dest = path.join(__dirname, 'data', 'app-update', 'netmirror.apk');
       require('fs').renameSync(req.file.path, dest);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'mirrornet.watch';
+      const host = req.headers['host'] || 'watchmirror.onrender.com';
       const localUrl = `${protocol}://${host}/app-update/netmirror.apk`;
 
       // Persist the APK so it survives Railway redeploys (ephemeral disk).
@@ -2631,7 +2631,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const newPath = path.join(__dirname, 'data', 'adult-media', newName);
       require('fs').renameSync(req.file.path, newPath);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'mirrornet.watch';
+      const host = req.headers['host'] || 'watchmirror.onrender.com';
       const url = `${protocol}://${host}/adult-media/${newName}`;
       res.json({ success: true, url, source: 'local' });
     } catch (err) {
