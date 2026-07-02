@@ -217,7 +217,7 @@ footer .copy{font-size:11px;color:var(--text3)}
       Download for Android
     </a>
     <div class="dl-meta" id="dlMeta">
-      <span>v2.1</span><span class="sep"></span>
+      <span id="appVersion">v7.0.0</span><span class="sep"></span>
       <span>Android 8.0+</span><span class="sep"></span>
       <span id="apkSize">~12 MB</span><span class="sep"></span>
       <span>Free forever</span>
@@ -430,6 +430,16 @@ fetch('/api/admin/apk-status')
       var sizeEl=document.getElementById('apkSize');
       if(sizeEl) sizeEl.textContent=mb+' MB';
     }
+  }).catch(function(){});
+
+/* ═══ FETCH LATEST APP VERSION ═══ */
+fetch('/api/app/version')
+  .then(function(r){return r.json()})
+  .then(function(d){
+    var v = d && (d.version_name || d.versionName);
+    if(!v) return;
+    var el = document.getElementById('appVersion');
+    if(el) el.textContent = 'v' + String(v).replace(/^v/i,'');
   }).catch(function(){});
 } catch(e) { console.warn('Landing page JS error:', e); }
 </script>
