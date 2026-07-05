@@ -1,4 +1,4 @@
-﻿& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd Medium_Phone_API_36.1 -no-snapshot-load// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
+﻿// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
 if (typeof globalThis.File === 'undefined') {
   const { Blob } = require('buffer');
   globalThis.File = class File extends Blob {
