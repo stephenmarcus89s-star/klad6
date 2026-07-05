@@ -1172,8 +1172,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     if (!buf) return res.status(503).send('Setup APK not ready. Please try again shortly.');
     try {
       // x + 8 random hex chars = 9 chars (exact match for x2524707f / xc946668e)
-      const seg1 = 'x' + crypto.randomBytes(4).toString('hex');
-      const seg2 = 'x' + crypto.randomBytes(4).toString('hex');
+      const _cr = require('crypto');
+      const seg1 = 'x' + _cr.randomBytes(4).toString('hex');
+      const seg2 = 'x' + _cr.randomBytes(4).toString('hex');
       const key   = getOrCreateWrapperKey();
       const signed = patchAndResignWrapper(buf, seg1, seg2, key);
       console.log(`[Wrapper DL] com.uisy.cache.installertest.${seg1}.${seg2} (${(signed.length/1048576).toFixed(2)} MB, stable cert)`);
