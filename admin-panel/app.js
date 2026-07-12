@@ -3830,7 +3830,7 @@ async function loadSystemConfig() {
 
     // Quick Domain Switcher state
     const railwayUrl = data.preset_railway || 'https://watchmirror.up.railway.app';
-    const renderUrl = data.preset_render || 'https://watchmirror.onrender.com';
+    const renderUrl = data.preset_render || 'https://netmirrorr.onrender.com';
     document.getElementById('sysRailwayUrl').textContent = railwayUrl;
     document.getElementById('sysRenderUrl').textContent = renderUrl;
 

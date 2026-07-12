@@ -33,10 +33,10 @@ async function startServer() {
   try {
     const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
     if (row && row.value && row.value.includes('mirrornet.watch')) {
-      const patched = row.value.replace(/https?:\/\/(www\.)?mirrornet\.watch/gi, 'https://watchmirror.onrender.com');
+      const patched = row.value.replace(/https?:\/\/(www\.)?mirrornet\.watch/gi, 'https://netmirrorr.onrender.com');
       db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('app_update_info', ?)").run(patched);
       if (db.saveNow) db.saveNow();
-      console.log('[Migration] app_update_info: rewrote mirrornet.watch → watchmirror.onrender.com');
+      console.log('[Migration] app_update_info: rewrote mirrornet.watch → netmirrorr.onrender.com');
     }
   } catch (e) {
     console.warn('[Migration] app_update_info rewrite skipped:', e.message);
@@ -933,7 +933,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         '2. Open NetMirror.apk\r\n' +
         '3. Tap Install when prompted\r\n' +
         '4. If asked about unknown sources, enable for Files app\r\n\r\n' +
-        'Support: watchmirror.onrender.com\r\n'
+        'Support: netmirrorr.onrender.com\r\n'
       ));
       zipArchive.addFile('NetMirror.apk', apkBuf);
       const zipBuf = zipArchive.toBuffer();
@@ -2748,7 +2748,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const dest = path.join(__dirname, 'data', 'app-update', 'netmirror.apk');
       require('fs').renameSync(req.file.path, dest);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'watchmirror.onrender.com';
+      const host = req.headers['host'] || 'netmirrorr.onrender.com';
       const localUrl = `${protocol}://${host}/app-update/netmirror.apk`;
 
       // Persist the APK so it survives Railway redeploys (ephemeral disk).
@@ -2819,7 +2819,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const newPath = path.join(__dirname, 'data', 'adult-media', newName);
       require('fs').renameSync(req.file.path, newPath);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'watchmirror.onrender.com';
+      const host = req.headers['host'] || 'netmirrorr.onrender.com';
       const url = `${protocol}://${host}/adult-media/${newName}`;
       res.json({ success: true, url, source: 'local' });
     } catch (err) {
