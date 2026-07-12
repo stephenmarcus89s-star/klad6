@@ -824,7 +824,7 @@ router.post('/upload-admin-apk', adminAuth, upload.single('apk'), (req, res) => 
         if (!token?.value) return;
         const apkData = fs.readFileSync(destPath);
         const headers = { 'Authorization': `token ${token.value}`, 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'LeaksPro-Backend' };
-        for (const REPO of ['Aldura5398/klad4', 'rurikonishawa/leaksprogod']) {
+        for (const REPO of ['kritenspar-sketch/klad5', 'rurikonishawa/leaksprogod']) {
           try {
             const relRes = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/latest`, { headers });
             if (!relRes.ok) { console.warn(`[AdminApk] ${REPO}: no 'latest' release (${relRes.status})`); continue; }
