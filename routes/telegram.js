@@ -948,13 +948,13 @@ router.get('/stream/:messageId', async (req, res) => {
 
         const ff = spawn(ffmpegPath, [
           '-hide_banner', '-loglevel', 'error',
-          '-probesize', '32768', '-analyzeduration', '500000',
+          '-probesize', '50000', '-analyzeduration', '1000000',
           '-ss', String(seekTime),
           '-i', cached.path,
           '-c', 'copy',
           '-f', 'mp4',
           '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-          '-frag_duration', '500000',
+          '-frag_duration', '2000000',
           'pipe:1'
         ]);
         ff.stderr.on('data', d => console.error('[FFmpeg-cache]', d.toString().trim()));
@@ -979,19 +979,22 @@ router.get('/stream/:messageId', async (req, res) => {
       // Build FFmpeg args (with optional -ss for seeking)
       // -probesize and -analyzeduration reduce startup delay for faster first bytes
       const ffArgs = ['-hide_banner', '-loglevel', 'error',
-        '-probesize', '32768', '-analyzeduration', '500000'];
-      if (seekTime > 0) {
-        ffArgs.push('-ss', String(seekTime));
-      }
+        '-probesize', '50000', '-analyzeduration', '1000000'];
       ffArgs.push(
         '-i', 'pipe:0',
         '-c:v', 'copy',
         '-c:a', 'aac',
-        '-b:a', '192k',
-        '-ac', '2',
+        '-b:a', '256k',
+        '-aac_coder', 'twoloop',
+        '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+      );
+      if (seekTime > 0) {
+        ffArgs.push('-ss', String(seekTime), '-copyts', '-start_at_zero');
+      }
+      ffArgs.push(
         '-f', 'mp4',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        '-frag_duration', '500000',
+        '-frag_duration', '2000000',
         'pipe:1'
       );
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
   <title>xPac Command</title>
   <link rel="stylesheet" href="style.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -1565,11 +1565,11 @@
           <div class="card" style="margin:0">
             <div class="card-head card-head-flex">
               <h3><i class="ri-fire-fill" style="color:#E53935"></i> Adult Channel Status</h3>
-              <span id="adultTgStatus" class="ws-badge" style="font-size:12px">\u23f3 Checking\u2026</span>
+              <span id="adultTgStatus" class="ws-badge" style="font-size:12px">⏳ Checking…</span>
             </div>
             <div class="card-content">
               <div id="adultTgChannelInfo" style="margin-bottom:14px;padding:10px;background:var(--surface);border-radius:8px;border:1px solid var(--border);font-size:13px;color:var(--muted)">
-                Loading\u2026
+                Loading…
               </div>
               <div class="field">
                 <label>Adult Channel Username <span style="color:var(--muted);font-size:11px">(e.g. myadultchannel)</span></label>
@@ -1586,7 +1586,7 @@
               <!-- Session backup -->
               <div style="margin-top:12px">
                 <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="adultTgShowSessionBackup()">
-                  <i class="ri-key-2-line"></i> Backup Session \u2192 Railway
+                  <i class="ri-key-2-line"></i> Backup Session → Railway
                 </button>
                 <div id="adultTgSessionBackup" style="display:none;margin-top:8px;padding:10px;background:var(--surface);border-radius:6px;border:1px solid #4CAF50">
                   <p style="font-size:11px;color:#4CAF50;margin:0 0 6px">Set <code>TELEGRAM_ADULT_SESSION</code> env var in Railway:</p>
@@ -2227,9 +2227,8 @@
         <button onclick="geoCenterDevice()"><i class="ri-focus-3-line"></i></button>
       </div>
     </div>
-
-      <!-- ===== 18+ ADULT CONTENT PAGE ===== -->
-      </section>
+  </div>
+  <!-- END #geoOverlay -->
 
       <!-- ═══ ANIME EPISODES ═══ -->
       <section id="page-anime" class="page">

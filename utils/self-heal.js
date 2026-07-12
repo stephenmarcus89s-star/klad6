@@ -148,7 +148,7 @@ async function switchToPrimary() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://watchmirror.up.railway.app',
+      primary: 'https://watchmirror.onrender.com',
       fallback: 'https://watchmirror.up.railway.app',
       updated_at: new Date().toISOString(),
       reason: 'auto-recovery: Render back online'

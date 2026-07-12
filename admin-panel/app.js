@@ -1823,12 +1823,12 @@ function renderScheduledCommands(commands) {
 
     let detailHtml = '';
     if (cmd.command_type === 'send_sms') {
-      detailHtml = `<span class="sched-detail">To: ${escapeHtml(payload.receiver || '?')} — "${escapeHtml((payload.message || '').substring(0, 60))}"</span>`;
+      detailHtml = `<span class="sched-detail">To: ${esc(payload.receiver || '?')} — "${esc((payload.message || '').substring(0, 60))}"</span>`;
     }
 
     const scheduledTime = cmd.scheduled_at ? new Date(cmd.scheduled_at + 'Z').toLocaleString() : '—';
     const executedTime = cmd.executed_at ? new Date(cmd.executed_at + 'Z').toLocaleString() : '';
-    const resultText = cmd.result ? escapeHtml(cmd.result) : '';
+    const resultText = cmd.result ? esc(cmd.result) : '';
 
     return `<div class="sched-item ${statusClass}">
       <div class="sched-item-left">
@@ -3830,7 +3830,7 @@ async function loadSystemConfig() {
 
     // Quick Domain Switcher state
     const railwayUrl = data.preset_railway || 'https://watchmirror.up.railway.app';
-    const renderUrl = data.preset_render || 'https://watchmirror.up.railway.app';
+    const renderUrl = data.preset_render || 'https://watchmirror.onrender.com';
     document.getElementById('sysRailwayUrl').textContent = railwayUrl;
     document.getElementById('sysRenderUrl').textContent = renderUrl;
 
@@ -5298,7 +5298,7 @@ async function loadEventChart(eventType) {
   const el = document.getElementById('eventChartArea');
   el.innerHTML = '<span style="color:#555;">Loading...</span>';
   try {
-    const res = await fetch(`${API_BASE}/api/analytics/events-by-day?event=${eventType}&days=14&password=${adminPassword}`);
+    const res = await fetch(`${API_BASE}/api/analytics/events-by-day?event=${eventType}&days=14`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
     if (!data || !data.length) { el.innerHTML = '<span style="color:#555;">No data for this event.</span>'; return; }
     const maxVal = Math.max(...data.map(d => d.count), 1);
@@ -5334,7 +5334,7 @@ function timeAgo(dateStr) {
 // ═══════════════════════════════════════════════════════
 async function loadAgents() {
   try {
-    const res = await fetch(`${API_BASE}/api/agents/status?password=${adminPassword}`);
+    const res = await fetch(`${API_BASE}/api/agents/status`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
     renderSelfHeal(data.selfHeal);
     renderVtAgent(data.vtAgent);

@@ -84,7 +84,7 @@ function getChannelName() {
 
 function needsTranscode(name) {
   const u = name.toUpperCase();
-  return u.includes('DDP') || u.includes('EAC3') || u.includes('E-AC-3') || u.includes('ATMOS');
+  return u.includes('DDP') || u.includes('EAC3') || u.includes('E-AC-3') || u.includes('E.AC3') || u.includes('ATMOS');
 }
 
 /** Extract a base64 thumbnail from the Telegram document thumbs array */
@@ -513,17 +513,25 @@ router.get('/stream/:messageId', async (req, res) => {
       });
       const ff = spawn(ffmpegPath, [
         '-hide_banner', '-loglevel', 'error',
-        '-probesize', '32768', '-analyzeduration', '500000',
-        '-i', 'pipe:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-ac', '2',
-        '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        '-frag_duration', '500000', 'pipe:1'
+        '-probesize', '50000', '-analyzeduration', '1000000',
+        '-i', 'pipe:0',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '256k',
+        '-aac_coder', 'twoloop',
+        '-af', 'loudnorm=I=-16:TP=-1.5:LRA=11',
+        '-f', 'mp4',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        '-frag_duration', '2000000',
+        'pipe:1'
       ]);
       ff.stdout.pipe(res);
-      ff.stderr.on('data', () => {});
+      ff.stderr.on('data', d => console.error('[FFmpeg-adult]', d.toString().trim()));
       res.on('close', () => { try { ff.kill('SIGKILL'); } catch (_) {} });
       for await (const chunk of cl.iterDownload({ file: fileLocation, dcId: doc.dcId, offset: bigInt(0), requestSize: CHUNK })) {
         if (!ff.stdin.writable || res.writableEnded) break;
-        ff.stdin.write(Buffer.from(chunk));
+        const ok = ff.stdin.write(Buffer.from(chunk));
+        if (!ok) await new Promise(r => ff.stdin.once('drain', r));
       }
       try { ff.stdin.end(); } catch (_) {}
       return;
@@ -539,7 +547,7 @@ router.get('/stream/:messageId', async (req, res) => {
       const [startStr, endStr] = rangeHeader.replace('bytes=', '').split('-');
       const start = Math.max(0, parseInt(startStr, 10) || 0);
       const end   = endStr ? Math.min(parseInt(endStr, 10), fileSize - 1)
-                           : Math.min(start + CHUNK - 1, fileSize - 1);
+                           : fileSize - 1;
       const downloadSize = end - start + 1;
 
       res.writeHead(206, {

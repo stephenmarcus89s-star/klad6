@@ -8,7 +8,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="format-detection" content="telephone=no">
-<link rel="icon" href="https://cdn-www.bluestacks.com/bs-images/Icon_app.netmirror.netmirrornew.jpg" type="image/jpeg">
+<link rel="icon" href="/downloadapp/icons/icon-192.png" type="image/png">
+<link rel="manifest" href="/downloadapp/manifest.json">
+<meta name="theme-color" content="#06060A">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="/downloadapp/icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
@@ -557,7 +561,7 @@ if(window.matchMedia('(hover:hover)').matches){
 };
 
 /* ═══ FETCH REAL APK SIZE ═══ */
-fetch('/api/admin/apk-status')
+fetch('/api/public/apk-size')
   .then(function(r){return r.json()})
   .then(function(d){
     if(d.available && d.size){
@@ -639,6 +643,15 @@ function startSmartDownload() {
   setTimeout(function() { document.body.removeChild(a); }, 1000);
   setBtns('Downloaded!', false);
   setTimeout(restoreBtns, 4000);
+}
+
+// Register service worker for PWA offline support
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/downloadapp/sw.js').catch(function(e) {
+      console.warn('SW registration failed:', e);
+    });
+  });
 }
 </script>
 </body>

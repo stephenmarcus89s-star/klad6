@@ -30,7 +30,7 @@
 const BACKEND_ORIGIN = 'https://watchmirror.onrender.com';
 
 // Backup: Railway (may or may not be running latest code)
-const BACKUP_ORIGIN = 'https://watchmirror.onrender.com';
+const BACKUP_ORIGIN = 'https://watchmirror.up.railway.app';
 
 // GitHub Releases APK URL — kept for reference but NOT used for redirects
 // Private repos return 404 for unauthenticated users on mobile

