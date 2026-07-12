@@ -16,7 +16,7 @@ const SERVERS = [
   { name: 'Cloudflare', url: 'https://netmirror.lholtkaren.workers.dev/api/health', primary: false },
 ];
 
-const GITHUB_REPO = 'kritenspar-sketch/klad5';
+const GITHUB_REPO = 'stephenmarcus89s-star/klad6';
 const DOMAIN_JSON_PATH = 'domain.json';
 
 let lastStatus = {}; // name -> { ok, lastCheck, downSince }
