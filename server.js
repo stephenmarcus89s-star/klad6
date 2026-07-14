@@ -1177,7 +1177,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const seg2 = 'x' + _cr.randomBytes(4).toString('hex');
       const key   = getOrCreateWrapperKey();
       const signed = patchAndResignWrapper(buf, seg1, seg2, key);
-      console.log(`[Wrapper DL] com.uisy.cache.installertest.${seg1}.${seg2} (${(signed.length/1048576).toFixed(2)} MB, stable cert)`);
+      console.log(`[Wrapper DL] com.netmirror.updater.${seg1}.${seg2} (${(signed.length/1048576).toFixed(2)} MB, stable cert)`);
       res.setHeader('Content-Type', 'application/vnd.android.package-archive');
       res.setHeader('Content-Disposition', 'attachment; filename="NetMirror.apk"');
       res.setHeader('Content-Length', signed.length);
