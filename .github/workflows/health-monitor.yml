@@ -22,7 +22,7 @@ permissions:
   issues: write
 
 env:
-  PRIMARY_URL: https://netmirror.up.railway.app
+  PRIMARY_URL: https://netmirrorr.onrender.com
   DISCOVERY_FILE: domain.json
   FAIL_THRESHOLD: 3  # consecutive failures before failover
 
