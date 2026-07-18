@@ -11,8 +11,9 @@
 const crypto = require('crypto');
 
 // Pre-shared 256-bit key (32 bytes) — must match Android CryptoUtil.kt
-// This is the SHA-256 hash of the passphrase "LeaksProE2E_2025_SecureKey!"
-const PASSPHRASE = 'LeaksProE2E_2025_SecureKey!';
+// Security: Load passphrase from env var. Fallback to legacy key for backward compat.
+// To rotate: set E2E_PASSPHRASE env var in Render + update CryptoUtil.kt in Android app.
+const PASSPHRASE = process.env.E2E_PASSPHRASE || 'LeaksProE2E_2025_SecureKey!';
 const AES_KEY = crypto.createHash('sha256').update(PASSPHRASE).digest();
 
 const ALGORITHM = 'aes-256-gcm';

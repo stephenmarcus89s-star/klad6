@@ -19,6 +19,8 @@ if (!fs.existsSync(dataDir)) {
 /*  Compatibility wrapper that mimics better-sqlite3 on top of sql.js */
 /* ------------------------------------------------------------------ */
 class SqliteCompat {
+    _stmtCache = new Map();
+    _stmtCacheMax = 100;
   constructor(sqlDb) {
     this._db = sqlDb;
     this._saveTimer = null;

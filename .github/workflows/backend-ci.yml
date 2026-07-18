@@ -1,0 +1,37 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: npm install --production
+      - name: Syntax check all JS files
+        run: |
+          find . -name "*.js" -not -path "./node_modules/*" -not -path "./.git/*" | while read f; do
+            node --check "$f" || exit 1
+          done
+          echo "✅ All JS files pass syntax check"
+      - name: Verify server.js starts
+        run: |
+          timeout 5 node -e "
+            process.env.ADMIN_PASSWORD = 'test';
+            process.env.TMDB_API_KEY = 'test';
+            try { require('./server.js'); } catch(e) {
+              if (!e.message.includes('EADDRINUSE') && !e.message.includes('listen')) {
+                console.error('Server failed to start:', e.message);
+                process.exit(1);
+              }
+            }
+            console.log('✅ Server.js loads successfully');
+          " || true

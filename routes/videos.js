@@ -190,6 +190,19 @@ router.get('/adult', (req, res) => {
 });
 
 // GET /api/videos/:id - Get single video
+
+// GET /api/videos/recommended/:deviceId — Smart recommendations based on watch history
+router.get('/recommended/:deviceId', (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const limit = parseInt(req.query.limit) || 20;
+    const videos = Video.getRecommended(deviceId, Math.min(limit, 50));
+    res.json({ videos, count: videos.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', (req, res) => {
   try {
     const video = Video.getById(req.params.id);

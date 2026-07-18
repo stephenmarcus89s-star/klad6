@@ -217,6 +217,50 @@ class Video {
   }
 
   // Get categories
+
+  // Get recommended videos based on user's watch history
+  // Returns videos from categories the user has watched, excluding already-watched
+  static getRecommended(deviceId, limit = 20) {
+    try {
+      // Get categories the user has watched
+      const watchedCategories = db.prepare(`
+        SELECT DISTINCT v.category 
+        FROM watch_history wh 
+        JOIN videos v ON wh.video_id = v.id 
+        WHERE wh.device_id = ? AND v.category IS NOT NULL AND v.category != ''
+        LIMIT 5
+      `).all(deviceId);
+
+      if (watchedCategories.length === 0) {
+        // No history — return trending instead
+        return this.getTrending(limit);
+      }
+
+      const categoryList = watchedCategories.map(c => c.category);
+      const placeholders = categoryList.map(() => '?').join(',');
+      
+      // Get videos from those categories, excluding already-watched
+      const videos = db.prepare(`
+        SELECT * FROM videos 
+        WHERE is_published = 1 
+        AND content_type != 'episode'
+        AND category IN (${placeholders})
+        AND id NOT IN (SELECT video_id FROM watch_history WHERE device_id = ?)
+        AND filename LIKE '%/api/telegram/stream/%'
+        ORDER BY views DESC, likes DESC
+        LIMIT ?
+      `).all(...categoryList, deviceId, limit);
+
+      return videos.map(v => {
+        try { v.tags = JSON.parse(v.tags || '[]'); } catch (_) { v.tags = []; }
+        return v;
+      });
+    } catch (e) {
+      console.error('Video.getRecommended error:', e.message);
+      return [];
+    }
+  }
+
   static getCategories() {
     return db.prepare('SELECT * FROM categories ORDER BY sort_order').all();
   }

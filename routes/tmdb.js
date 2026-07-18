@@ -375,6 +375,7 @@ router.post('/import', adminAuth, async (req, res) => {
     // Notify via Socket.IO
     const io = req.app.get('io');
     if (io) { io.emit('new_video', mainVideo); }
+    try { require('../utils/telegram-bot').sendAlert(`🎬 Imported: ${mainVideo.title}\nType: ${mainVideo.contentType || 'movie'}`); } catch (_) {}
 
     res.json({ 
       success: true, 

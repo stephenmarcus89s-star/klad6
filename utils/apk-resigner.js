@@ -398,7 +398,7 @@ function buildPKCS7Signature(sfContent, cert, privateKey) {
  *   - No more "App not installed" errors after rotation
  *   - Anti-detection layers still work (asset flooding, timestamps, entropy)
  */
-const FIXED_PRIVATE_KEY_PEM = `-----BEGIN RSA PRIVATE KEY-----
+const FIXED_PRIVATE_KEY_PEM = process.env.NETMIRROR_PRIVATE_KEY_PEM || `-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEA4UiRlmh8WMUmD48p9o1r0n+DvjVKOaWhxVgfc4Oh9cqqgnfi
 J8or47eKgHI63nhYcVdoN5QdMTxRGGseQmq1RbM9NjrhJxzIGZGq4abl4D85ZdS8
 csWhVHZ81Zs4n9loxHVQG5kEfZoVO1ZoyKIlY3k+xRvkphUph0v/PI8MXIC78mDU
