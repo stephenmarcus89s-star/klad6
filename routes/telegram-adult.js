@@ -237,9 +237,24 @@ async function getClient() {
 // Auto-connect on startup — fast (800ms to avoid race with first status check)
 setTimeout(() => getClient().catch(() => {}), 800);
 
-// Reconnect every 15s if disconnected and session exists
+// Reconnect every 15s if disconnected and session exists.
+// Also performs heartbeat when connected to catch silent session drops
+// (especially important on Render free-tier cold-starts).
 setInterval(async () => {
-  if (connected) return;
+  // Update global status for /api/health/telegram endpoint
+  global._tgAdultStatus = { connected, channel: channelEntity?.title || ADULT_CHANNEL_USERNAME };
+  if (connected) {
+    // Heartbeat: verify session is still alive
+    try {
+      if (client) await client.getMe();
+      return; // Still alive
+    } catch (e) {
+      console.log('[TelegramAdult] Heartbeat failed, marking disconnected:', e.message);
+      connected = false;
+      try { if (client) await client.disconnect(); } catch (_) {}
+      client = null;
+    }
+  }
   try {
     const hasSess = !!db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_adult_session'").get()?.value ||
                     !!(process.env.TELEGRAM_ADULT_SESSION || '').trim();

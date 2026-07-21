@@ -527,13 +527,36 @@ setTimeout(() => {
 }, 3000);
 
 // Periodic auto-reconnect — if session exists but client is disconnected,
-// keep trying every 2 minutes. Handles Railway cold-starts, transient
-// network issues, and Telegram server-side disconnections.
+// keep trying every 60 seconds. Handles Render free-tier cold-starts (spins
+// down after 15 min inactivity), Railway redeploys, transient network issues,
+// and Telegram server-side disconnections. 60s is fast enough that users
+// won't notice more than 1 minute of downtime after a cold-start.
 setInterval(async () => {
-  if (connected) return; // Already connected — nothing to do
+  // Update global status for /api/health/telegram endpoint
+  global._tgStatus = { connected, channel: channelEntity?.title || CHANNEL_USERNAME };
+  if (connected) {
+    // Heartbeat: verify the session is still alive (catches silent drops)
+    try {
+      if (client) await client.getMe();
+      return; // Still alive — nothing to do
+    } catch (e) {
+      console.log('[Telegram] Heartbeat failed, marking disconnected:', e.message);
+      connected = false;
+      try { await client.disconnect(); } catch (_) {}
+      client = null;
+    }
+  }
   try {
     const saved = db.prepare("SELECT value FROM admin_settings WHERE key = 'telegram_session'").get();
-    if (!saved || !saved.value) return; // No session to restore
+    if (!saved || !saved.value) {
+      // Try env var (set via Render/Railway dashboard)
+      const envSession = (process.env.TELEGRAM_SESSION || '').trim();
+      if (!envSession) return; // No session anywhere — admin must login
+      console.log('[Telegram] Auto-reconnect: seeding DB from TELEGRAM_SESSION env var...');
+      try {
+        db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('telegram_session', ?)").run(envSession);
+      } catch (_) {}
+    }
     console.log('[Telegram] Auto-reconnect: attempting...');
     await getClient();
     if (connected) {
@@ -542,7 +565,7 @@ setInterval(async () => {
   } catch (e) {
     console.log('[Telegram] Auto-reconnect failed:', e.message);
   }
-}, 2 * 60 * 1000); // Every 2 minutes
+}, 60 * 1000); // Every 60 seconds — aggressive but lightweight
 
 
 // ═══════════════  AUTH ENDPOINTS (Phone Login Flow)  ═══════════════

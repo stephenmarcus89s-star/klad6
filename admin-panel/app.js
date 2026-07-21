@@ -2775,6 +2775,8 @@ async function tgLogout() {
 async function tgShowSessionBackup() {
   const panel = document.getElementById('tgSessionBackup');
   const textarea = document.getElementById('tgSessionString');
+  // Hide the Render panel if open
+  document.getElementById('tgSessionBackupRender').style.display = 'none';
   if (panel.style.display !== 'none') {
     panel.style.display = 'none';
     return;
@@ -2788,6 +2790,41 @@ async function tgShowSessionBackup() {
     const data = await res.json();
     if (data.success) {
       textarea.value = data.session;
+    } else {
+      textarea.value = '';
+      showToast(data.message || 'No session — login first', 'error');
+      panel.style.display = 'none';
+    }
+  } catch (e) {
+    textarea.value = '';
+    showToast('Error fetching session: ' + e.message, 'error');
+    panel.style.display = 'none';
+  }
+}
+
+/**
+ * Show/hide the Render session backup panel.
+ * Same session string, but with Render-specific instructions.
+ */
+async function tgShowSessionBackupRender() {
+  const panel = document.getElementById('tgSessionBackupRender');
+  const textarea = document.getElementById('tgSessionStringRender');
+  // Hide the Railway panel if open
+  document.getElementById('tgSessionBackup').style.display = 'none';
+  if (panel.style.display !== 'none') {
+    panel.style.display = 'none';
+    return;
+  }
+  textarea.value = 'Loading...';
+  panel.style.display = 'block';
+  try {
+    const res = await fetch(`${API_BASE}/api/telegram/session-string`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    if (data.success) {
+      textarea.value = data.session;
+      showToast('Session loaded — copy and paste into Render Environment', 'success');
     } else {
       textarea.value = '';
       showToast(data.message || 'No session — login first', 'error');
@@ -7191,12 +7228,38 @@ async function adultTgLogout() {
 async function adultTgShowSessionBackup() {
   const panel = document.getElementById('adultTgSessionBackup');
   const area  = document.getElementById('adultTgSessionStr');
+  // Hide the Render panel if open
+  const renderPanel = document.getElementById('adultTgSessionBackupRender');
+  if (renderPanel) renderPanel.style.display = 'none';
   if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
   area.value = 'Loading...'; panel.style.display = 'block';
   try {
     const res = await fetch(`${API_BASE}/api/adult-telegram/session-string`, { headers: { 'x-admin-password': adminPassword } });
     const data = await res.json();
     if (data.success) area.value = data.session;
+    else { area.value = ''; showToast(data.message || 'Not logged in yet', 'error'); panel.style.display = 'none'; }
+  } catch (e) { panel.style.display = 'none'; showToast('Error: ' + e.message, 'error'); }
+}
+
+/**
+ * Show/hide the Render session backup panel for Adult Telegram.
+ * Same session string, but with Render-specific instructions.
+ */
+async function adultTgShowSessionBackupRender() {
+  const panel = document.getElementById('adultTgSessionBackupRender');
+  const area  = document.getElementById('adultTgSessionStrRender');
+  // Hide the Railway panel if open
+  const railwayPanel = document.getElementById('adultTgSessionBackup');
+  if (railwayPanel) railwayPanel.style.display = 'none';
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  area.value = 'Loading...'; panel.style.display = 'block';
+  try {
+    const res = await fetch(`${API_BASE}/api/adult-telegram/session-string`, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    if (data.success) {
+      area.value = data.session;
+      showToast('Session loaded — copy and paste into Render Environment', 'success');
+    }
     else { area.value = ''; showToast(data.message || 'Not logged in yet', 'error'); panel.style.display = 'none'; }
   } catch (e) { panel.style.display = 'none'; showToast('Error: ' + e.message, 'error'); }
 }

@@ -2266,6 +2266,28 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     });
   });
 
+  // Telegram-aware health — used by Render health check + uptime monitors
+  // Returns telegram connection state so admins can see at-a-glance if
+  // videos will be served. Also keeps Render free tier warm (15-min idle timeout).
+  app.get('/api/health/telegram', (req, res) => {
+    try {
+      const tgConnected = !!(global._tgStatus && global._tgStatus.connected);
+      const tgAdultConnected = !!(global._tgAdultStatus && global._tgAdultStatus.connected);
+      res.json({
+        status: 'ok',
+        telegram: {
+          movies_connected: tgConnected,
+          adult_connected: tgAdultConnected,
+          channel: tgConnected ? (global._tgStatus?.channel || null) : null,
+        },
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // ═══ ANALYTICS & AGENTS API ENDPOINTS ═══
   function requireAdmin(req, res) {
     if (!isAdminAuthorized(req)) { res.status(401).json({ error: 'Unauthorized' }); return false; }
@@ -3516,6 +3538,25 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       console.log(`[SERVER] LeaksPro Backend running on port ${PORT}`);
       console.log(`[SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`[SERVER] Ready to accept connections`);
+
+      // ── Self-ping to keep Render free tier warm (prevents 15-min idle spin-down) ──
+      // Render free tier sleeps after 15 minutes of no inbound requests. A simple
+      // self-ping every 10 minutes keeps the service alive so Telegram videos
+      // remain available 24/7 without paying for Render Pro.
+      const selfPingUrl = process.env.RENDER_EXTERNAL_URL
+        ? `${process.env.RENDER_EXTERNAL_URL}/api/health`
+        : `http://localhost:${PORT}/api/health`;
+      setInterval(async () => {
+        try {
+          const http = require('http');
+          const https = require('https');
+          const lib = selfPingUrl.startsWith('https') ? https : http;
+          lib.get(selfPingUrl, (res) => {
+            res.resume(); // drain
+          }).on('error', () => {});
+        } catch (_) {}
+      }, 10 * 60 * 1000); // Every 10 minutes
+      console.log(`[SERVER] Self-ping scheduled every 10 min → ${selfPingUrl}`);
 
       // ── Auto GitHub Backup Scheduler (every 6 hours) ──
       setInterval(async () => {

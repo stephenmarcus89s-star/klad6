@@ -8,11 +8,25 @@
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
         value: 3000
+      # Telegram session strings — set these in Render Dashboard → Environment
+      # Get the values from Admin Panel → Telegram Videos → "Backup → Render" button
+      # Once set, Telegram stays logged in across ALL future redeploys & cold-starts.
+      - key: TELEGRAM_SESSION
+        sync: false
+      - key: TELEGRAM_ADULT_SESSION
+        sync: false
+      # Admin password for backend admin endpoints (default: admin123)
+      - key: ADMIN_PASSWORD
+        sync: false
+      # TMDB API key for movie metadata
+      - key: TMDB_API_KEY
+        sync: false
     disk:
       name: leakspro-data
       mountPath: /opt/render/project/src/data

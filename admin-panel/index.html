@@ -624,18 +624,21 @@
                 <button class="btn btn-outline btn-sm" onclick="tgLoadVideos()">
                   <i class="ri-list-check"></i> Refresh List
                 </button>
-                <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="tgShowSessionBackup()" title="Copy session to Railway env var — prevents logout on redeploy">
+                <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="tgShowSessionBackup()" title="Copy session to Railway/Render env var — prevents logout on redeploy">
                   <i class="ri-key-2-line"></i> Backup Session
+                </button>
+                <button class="btn btn-outline btn-sm" style="color:#9d4edd;border-color:#9d4edd" onclick="tgShowSessionBackupRender()" title="Copy session to Render env var — prevents logout on redeploy">
+                  <i class="ri-cloud-line"></i> Backup → Render
                 </button>
                 <button class="btn btn-outline btn-sm" style="color:#f44336;border-color:#f44336" onclick="tgLogout()">
                   <i class="ri-logout-box-r-line"></i> Logout
                 </button>
               </div>
 
-              <!-- Session backup panel (collapsed by default) -->
-              <div id="tgSessionBackup" style="display:none;margin-bottom:16px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid #4CAF50">
+              <!-- Session backup panel - Railway (collapsed by default) -->
+              <div id="tgSessionBackup" style="display:none;margin-bottom:12px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid #4CAF50">
                 <p style="font-size:12px;color:#4CAF50;font-weight:600;margin:0 0 6px">
-                  🔑 Paste this value as <code>TELEGRAM_SESSION</code> in Railway → Variables to survive all future redeploys:
+                  🚂 Paste this value as <code>TELEGRAM_SESSION</code> in Railway → Variables to survive all future redeploys:
                 </p>
                 <div style="display:flex;gap:8px;align-items:flex-start">
                   <textarea id="tgSessionString" readonly
@@ -647,6 +650,30 @@
                   </button>
                 </div>
                 <p style="font-size:11px;color:var(--muted);margin:6px 0 0">After pasting in Railway, click <b>Deploy</b> — you will never need to log in again.</p>
+              </div>
+
+              <!-- Session backup panel - Render (collapsed by default) -->
+              <div id="tgSessionBackupRender" style="display:none;margin-bottom:16px;padding:14px;background:var(--surface);border-radius:8px;border:1px solid #9d4edd">
+                <p style="font-size:12px;color:#9d4edd;font-weight:600;margin:0 0 6px">
+                  ☁️ Paste this value as <code>TELEGRAM_SESSION</code> in Render Dashboard → Environment to survive all future redeploys:
+                </p>
+                <div style="display:flex;gap:8px;align-items:flex-start">
+                  <textarea id="tgSessionStringRender" readonly
+                    style="flex:1;font-family:monospace;font-size:11px;padding:8px;height:70px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;resize:none;word-break:break-all"
+                    placeholder="Loading..."></textarea>
+                  <button class="btn btn-primary btn-sm" style="white-space:nowrap;background:#9d4edd;border-color:#9d4edd"
+                    onclick="navigator.clipboard.writeText(document.getElementById('tgSessionStringRender').value).then(()=>showToast('Session copied to clipboard!','success'))">
+                    <i class="ri-file-copy-line"></i> Copy
+                  </button>
+                </div>
+                <ol style="font-size:11px;color:var(--muted);margin:8px 0 0 0;padding-left:18px;line-height:1.6">
+                  <li>Open <b>https://dashboard.render.com</b> → select your <code>netmirrorr</code> web service</li>
+                  <li>Click <b>Environment</b> in the left sidebar</li>
+                  <li>Add (or update) key <code>TELEGRAM_SESSION</code> with the value above</li>
+                  <li>Click <b>Save Changes</b> → Render auto-redeploys</li>
+                  <li>After deploy completes, Telegram stays logged in across all future cold-starts &amp; redeploys</li>
+                </ol>
+                <p style="font-size:11px;color:#9d4edd;margin:6px 0 0 0;font-weight:600">💡 Also set the same value on Railway for full redundancy.</p>
               </div>
 
               <p style="color:var(--muted);margin-bottom:12px;font-size:13px">
@@ -1588,12 +1615,23 @@
                 <button class="btn btn-outline btn-sm" style="color:#4CAF50;border-color:#4CAF50" onclick="adultTgShowSessionBackup()">
                   <i class="ri-key-2-line"></i> Backup Session → Railway
                 </button>
+                <button class="btn btn-outline btn-sm" style="color:#9d4edd;border-color:#9d4edd" onclick="adultTgShowSessionBackupRender()">
+                  <i class="ri-cloud-line"></i> Backup → Render
+                </button>
                 <div id="adultTgSessionBackup" style="display:none;margin-top:8px;padding:10px;background:var(--surface);border-radius:6px;border:1px solid #4CAF50">
-                  <p style="font-size:11px;color:#4CAF50;margin:0 0 6px">Set <code>TELEGRAM_ADULT_SESSION</code> env var in Railway:</p>
+                  <p style="font-size:11px;color:#4CAF50;margin:0 0 6px">🚂 Set <code>TELEGRAM_ADULT_SESSION</code> env var in Railway:</p>
                   <div style="display:flex;gap:8px">
                     <textarea id="adultTgSessionStr" readonly style="flex:1;font-family:monospace;font-size:10px;padding:6px;height:50px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;resize:none"></textarea>
                     <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('adultTgSessionStr').value).then(()=>showToast('Copied!','success'))">Copy</button>
                   </div>
+                </div>
+                <div id="adultTgSessionBackupRender" style="display:none;margin-top:8px;padding:10px;background:var(--surface);border-radius:6px;border:1px solid #9d4edd">
+                  <p style="font-size:11px;color:#9d4edd;margin:0 0 6px">☁️ Set <code>TELEGRAM_ADULT_SESSION</code> env var in Render Dashboard → Environment:</p>
+                  <div style="display:flex;gap:8px">
+                    <textarea id="adultTgSessionStrRender" readonly style="flex:1;font-family:monospace;font-size:10px;padding:6px;height:50px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;resize:none"></textarea>
+                    <button class="btn btn-primary btn-sm" style="background:#9d4edd;border-color:#9d4edd" onclick="navigator.clipboard.writeText(document.getElementById('adultTgSessionStrRender').value).then(()=>showToast('Copied!','success'))">Copy</button>
+                  </div>
+                  <p style="font-size:10px;color:var(--muted);margin:6px 0 0 0">Render Dashboard → Environment → add key <code>TELEGRAM_ADULT_SESSION</code> → Save Changes → auto-redeploys.</p>
                 </div>
               </div>
             </div>
