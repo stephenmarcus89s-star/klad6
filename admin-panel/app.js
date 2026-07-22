@@ -7084,6 +7084,13 @@ async function clearAppUpdate() {
 
 // ========== ADULT TELEGRAM MANAGEMENT ==========
 
+// ═══ ADULT TELEGRAM LOGIN STATE ═══
+// Tracks whether the user is actively in the middle of the 3-step login flow.
+// When true, status checks will NOT hide the login card even if reconnecting=true.
+let adultTgLoginInProgress = false;
+// Tracks explicit user logout — prevents reconnecting state from hiding login form
+let adultTgLoggedOut = false;
+
 async function adultTgCheckStatus() {
   const statusEl  = document.getElementById('adultTgStatus');
   const infoEl    = document.getElementById('adultTgChannelInfo');
@@ -7097,9 +7104,12 @@ async function adultTgCheckStatus() {
       if (data.connected) {
         statusEl.textContent = `● Connected${data.channelTitle ? ' — ' + data.channelTitle : ''}`;
         statusEl.style.color = '#4CAF50';
-      } else if (data.reconnecting) {
+      } else if (data.reconnecting && !adultTgLoginInProgress && !adultTgLoggedOut) {
         statusEl.textContent = '⟳ Session found — reconnecting…';
         statusEl.style.color = '#FF9800';
+      } else if (data.reconnecting && adultTgLoggedOut) {
+        statusEl.textContent = '○ Logged out — login required';
+        statusEl.style.color = '#9E9E9E';
       } else {
         statusEl.textContent = '○ Not connected';
         statusEl.style.color = '#9E9E9E';
@@ -7108,10 +7118,10 @@ async function adultTgCheckStatus() {
     if (infoEl) {
       if (data.connected) {
         infoEl.innerHTML = `<b style="color:var(--text)">Channel:</b> <span style="color:var(--accent)">@${data.channelName || '?'}</span>${data.channelTitle ? ' — ' + data.channelTitle : ''}<br><span style="color:var(--muted);font-size:11px">${data.videoCount || 0} Telegram videos indexed</span>`;
-      } else if (data.reconnecting) {
+      } else if (data.reconnecting && !adultTgLoginInProgress && !adultTgLoggedOut) {
         infoEl.innerHTML = `<span style="color:#FF9800"><i class="ri-refresh-line ri-spin"></i> Restoring session from database… usually takes &lt;15 seconds.</span>${data.videoCount > 0 ? '<br><span style="color:var(--muted);font-size:11px">' + data.videoCount + ' videos in database (videos always persist).</span>' : ''}`;
       } else {
-        infoEl.innerHTML = '<span style="color:var(--muted)">No saved session. Use Phone Login to connect.</span>';
+        infoEl.innerHTML = '<span style="color:var(--muted)">No active session. Use Phone Login below to connect.</span>';
       }
     }
     if (countEl) countEl.textContent = `${data.videoCount || 0} Telegram videos`;
@@ -7119,10 +7129,19 @@ async function adultTgCheckStatus() {
       const el = document.getElementById('adultTgChannelName');
       if (el && !el.value) el.value = '@' + data.channelName;
     }
-    // Show/hide login form: hide when connected or actively reconnecting
+    // Show/hide login form:
+    // - HIDE only when truly connected (data.connected === true)
+    // - SHOW when reconnecting IF user is actively logging in OR has explicitly logged out
+    // - SHOW when not connected and not reconnecting
+    // This fixes the bug where OTP input disappears mid-login because status check
+    // sees a stale session in DB/env and returns reconnecting=true.
     const loginCard = document.getElementById('adultTgLoginCard');
     if (loginCard) {
-      loginCard.style.display = (data.connected || data.reconnecting) ? 'none' : 'block';
+      if (data.connected && !adultTgLoginInProgress) {
+        loginCard.style.display = 'none';
+      } else {
+        loginCard.style.display = 'block';
+      }
     }
   } catch (e) {
     if (statusEl) { statusEl.textContent = '✖ Error checking status'; statusEl.style.color = '#f44336'; }
@@ -7206,6 +7225,9 @@ async function adultTgSendCode() {
   const btn = document.getElementById('adultTgSendBtn');
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending...'; }
   if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = 'Sending code... (waking up server, may take 10-20s)'; }
+  // Mark login as in-progress so status checks don't hide the login card
+  adultTgLoginInProgress = true;
+  adultTgLoggedOut = false;
   try {
     const data = await fetchJson(`${API_BASE}/api/adult-telegram/send-code`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
@@ -7213,15 +7235,18 @@ async function adultTgSendCode() {
     });
     if (data.success) {
       document.getElementById('adultTgStep1').style.display = 'none';
-      document.getElementById('adultTgStep2').style.display = 'block';
-      if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Code sent to your Telegram app.'; }
+      document.getElementById('adultTgStep2').style.display = 'block'; // Show OTP input
+      if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Code sent to your Telegram app. Enter the OTP below.'; }
       showToast('Code sent to Telegram', 'success');
+      // adultTgLoginInProgress stays TRUE — user still needs to enter OTP
     } else {
+      adultTgLoginInProgress = false; // Login failed, allow status checks to hide card if needed
       showToast(data.error || 'Failed', 'error');
       if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + (data.error || 'Failed'); }
       if (btn) btn.disabled = false;
     }
   } catch (e) {
+    adultTgLoginInProgress = false; // Error, allow status checks
     showToast('Error: ' + e.message, 'error');
     if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message; }
     if (btn) btn.disabled = false;
@@ -7235,29 +7260,34 @@ async function adultTgVerifyCode() {
   const msg  = document.getElementById('adultTgLoginMsg');
   if (!code) return showToast('Enter OTP code', 'error');
   if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = 'Verifying… (waking up server, may take 10-20s)'; }
+  // adultTgLoginInProgress is already true from send-code
   try {
     const data = await fetchJson(`${API_BASE}/api/adult-telegram/verify-code`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
       body: JSON.stringify({ code })
     });
     if (data.success) {
+      adultTgLoginInProgress = false; // Login complete
+      adultTgLoggedOut = false;
       if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Logged in!'; }
       showToast('Adult Telegram connected!', 'success');
       adultTgCheckStatus(); adultTgLoadVideos();
       // Auto-show session backup so user remembers to set Railway/Render env var
       setTimeout(() => adultTgShowSessionBackup(), 800);
     } else if (data.needs2FA) {
+      // Login still in progress — needs 2FA password
       document.getElementById('adultTgStep2').style.display = 'none';
       document.getElementById('adultTgStep3').style.display = 'block';
-      if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = '2FA required.'; }
+      if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = '2FA required. Enter your password below.'; }
     } else {
-      // Show exact server error
+      // Verification failed — keep OTP input visible so user can retry
       const errText = data.error || 'Verification failed';
-      if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + errText; }
+      if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + errText + ' — try again'; }
       showToast(errText, 'error');
     }
   } catch (e) {
-    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message; }
+    // Error — keep OTP input visible, allow retry
+    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message + ' — try again'; }
     showToast('Error: ' + e.message, 'error');
   }
 }
@@ -7270,24 +7300,45 @@ async function adultTgVerify2FA() {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
       body: JSON.stringify({ password })
     });
-    if (data.success) { showToast('Adult Telegram connected with 2FA!', 'success'); adultTgCheckStatus(); }
-    else showToast(data.error || 'Failed', 'error');
+    if (data.success) {
+      adultTgLoginInProgress = false;
+      adultTgLoggedOut = false;
+      showToast('Adult Telegram connected with 2FA!', 'success');
+      adultTgCheckStatus();
+    } else {
+      showToast(data.error || 'Failed', 'error');
+    }
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 async function adultTgLogout() {
-  if (!confirm('Disconnect Adult Telegram?')) return;
+  if (!confirm('Disconnect Adult Telegram? This will clear the saved session. You will need to login again.')) return;
+  // Set logout flag BEFORE the API call so status checks don't hide the login card
+  adultTgLoggedOut = true;
+  adultTgLoginInProgress = false;
   try {
     await fetch(`${API_BASE}/api/adult-telegram/logout`, { method: 'POST', headers: { 'x-admin-password': adminPassword } });
     showToast('Adult Telegram disconnected', 'success');
-    adultTgCheckStatus();
-    // Re-show login form after logout
-    const loginCard = document.getElementById('adultTgLoginCard');
-    if (loginCard) loginCard.style.display = 'block';
+    // Reset login form to Step 1 (phone input)
     document.getElementById('adultTgStep1').style.display = 'block';
     document.getElementById('adultTgStep2').style.display = 'none';
     document.getElementById('adultTgStep3').style.display = 'none';
-  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+    // Clear input fields
+    const phoneEl = document.getElementById('adultTgPhone');
+    const codeEl  = document.getElementById('adultTgCode');
+    const faEl    = document.getElementById('adultTg2FA');
+    if (phoneEl) phoneEl.value = '';
+    if (codeEl)  codeEl.value  = '';
+    if (faEl)    faEl.value    = '';
+    // Reset send button
+    const btn = document.getElementById('adultTgSendBtn');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-line"></i> Send Code'; }
+    // Update status display
+    adultTgCheckStatus();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    // Even on error, keep the loggedOut flag so user can retry login
+  }
 }
 
 async function adultTgShowSessionBackup() {
