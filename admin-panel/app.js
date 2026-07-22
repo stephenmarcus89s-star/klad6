@@ -8,6 +8,62 @@ let socket = null;
 let currentPage = 'dashboard';
 let selectedVideoFile = null;
 
+// ========== ROBUST FETCH HELPER ==========
+// Handles Render free-tier cold-starts (returns HTML error pages),
+// network timeouts, and non-JSON responses gracefully.
+// Retries once with a warm-up ping if the first attempt returns HTML.
+
+async function warmupBackend() {
+  try {
+    await fetch(`${API_BASE}/api/health`, { method: 'GET' });
+  } catch (_) {}
+}
+
+async function fetchJson(url, options = {}, retries = 1) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, options);
+      // Check if response is HTML (Render cold-start / proxy error page)
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        // Not JSON — likely HTML error page from Render/Railway proxy
+        const text = await res.text().catch(() => '');
+        if (attempt < retries && (res.status >= 500 || res.status === 502 || res.status === 504 || text.includes('<html'))) {
+          // Warm up backend and retry
+          console.warn(`[fetchJson] Got non-JSON (HTTP ${res.status}), warming up backend and retrying...`);
+          await warmupBackend();
+          await new Promise(r => setTimeout(r, 3000)); // Wait 3s for spin-up
+          continue;
+        }
+        throw new Error(`Server returned HTML instead of JSON (HTTP ${res.status}). The backend may be cold-starting. Please wait 30 seconds and try again.`);
+      }
+      if (!res.ok) {
+        // JSON error response — parse and throw with server's error message
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || data.message || `HTTP ${res.status}`);
+      }
+      return await res.json();
+    } catch (e) {
+      lastError = e;
+      if (e.message.includes('HTML instead of JSON') && attempt < retries) {
+        // Already handled above — retry continues loop
+        continue;
+      }
+      if (e.message.includes('Failed to fetch') && attempt < retries) {
+        // Network error — warm up and retry
+        console.warn('[fetchJson] Network error, warming up backend and retrying...');
+        await warmupBackend();
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      // Non-retryable error
+      throw e;
+    }
+  }
+  throw lastError || new Error('Request failed after retries');
+}
+
 // ========== DOM Ready ==========
 document.addEventListener('DOMContentLoaded', () => {
   const stored = localStorage.getItem('leakspro_admin_pw');
@@ -2651,15 +2707,14 @@ async function tgSendCode() {
   btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending...';
   msgEl.style.display = 'block';
   msgEl.style.color = 'var(--muted)';
-  msgEl.textContent = 'Sending code...';
+  msgEl.textContent = 'Sending code... (waking up server, may take 10-20s)';
 
   try {
-    const res = await fetch(`${API_BASE}/api/telegram/send-code`, {
+    const data = await fetchJson(`${API_BASE}/api/telegram/send-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
       body: JSON.stringify({ phone }),
     });
-    const data = await res.json();
 
     if (data.success) {
       document.getElementById('tgStep2').style.display = 'block';
@@ -2674,10 +2729,10 @@ async function tgSendCode() {
   } catch (e) {
     msgEl.style.color = '#f44336';
     msgEl.textContent = '✗ ' + e.message;
-    showToast(e.message, 'error');
+    showToast('Error: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<i class="ri-send-plane-2-line"></i> Send Code';
+    btn.innerHTML = '<i class="ri-send-plane-line"></i> Send Code';
   }
 }
 
@@ -2692,12 +2747,11 @@ async function tgVerifyCode() {
   btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Verifying...';
 
   try {
-    const res = await fetch(`${API_BASE}/api/telegram/verify-code`, {
+    const data = await fetchJson(`${API_BASE}/api/telegram/verify-code`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
       body: JSON.stringify({ code }),
     });
-    const data = await res.json();
 
     if (data.success) {
       msgEl.style.color = '#4caf50';
@@ -2717,6 +2771,7 @@ async function tgVerifyCode() {
   } catch (e) {
     msgEl.style.color = '#f44336';
     msgEl.textContent = '✗ ' + e.message;
+    showToast('Error: ' + e.message, 'error');
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="ri-check-line"></i> Verify';
@@ -2730,12 +2785,11 @@ async function tgVerify2FA() {
 
   const msgEl = document.getElementById('tgLoginMsg');
   try {
-    const res = await fetch(`${API_BASE}/api/telegram/verify-2fa`, {
+    const data = await fetchJson(`${API_BASE}/api/telegram/verify-2fa`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
       body: JSON.stringify({ password }),
     });
-    const data = await res.json();
 
     if (data.success) {
       msgEl.style.color = '#4caf50';
@@ -2745,10 +2799,12 @@ async function tgVerify2FA() {
     } else {
       msgEl.style.color = '#f44336';
       msgEl.textContent = '✗ ' + (data.error || 'Wrong password');
+      showToast(data.error || 'Wrong password', 'error');
     }
   } catch (e) {
     msgEl.style.color = '#f44336';
     msgEl.textContent = '✗ ' + e.message;
+    showToast('Error: ' + e.message, 'error');
   }
 }
 
@@ -7148,37 +7204,47 @@ async function adultTgSendCode() {
   const msg   = document.getElementById('adultTgLoginMsg');
   if (!phone) return showToast('Enter phone number', 'error');
   const btn = document.getElementById('adultTgSendBtn');
-  if (btn) btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending...'; }
+  if (msg) { msg.style.color = 'var(--muted)'; msg.textContent = 'Sending code... (waking up server, may take 10-20s)'; }
   try {
-    const res = await fetch(`${API_BASE}/api/adult-telegram/send-code`, {
+    const data = await fetchJson(`${API_BASE}/api/adult-telegram/send-code`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone })
     });
-    const data = await res.json();
     if (data.success) {
       document.getElementById('adultTgStep1').style.display = 'none';
       document.getElementById('adultTgStep2').style.display = 'block';
-      if (msg) msg.textContent = '✓ Code sent to your Telegram app.';
-    } else { showToast(data.error || 'Failed', 'error'); if (btn) btn.disabled = false; }
-  } catch (e) { showToast('Error: ' + e.message, 'error'); if (btn) btn.disabled = false; }
+      if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Code sent to your Telegram app.'; }
+      showToast('Code sent to Telegram', 'success');
+    } else {
+      showToast(data.error || 'Failed', 'error');
+      if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + (data.error || 'Failed'); }
+      if (btn) btn.disabled = false;
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+    if (msg) { msg.style.color = '#f44336'; msg.textContent = '✖ ' + e.message; }
+    if (btn) btn.disabled = false;
+  } finally {
+    if (btn && !btn.disabled) btn.innerHTML = '<i class="ri-send-plane-line"></i> Send Code';
+  }
 }
 
 async function adultTgVerifyCode() {
   const code = document.getElementById('adultTgCode')?.value.trim();
   const msg  = document.getElementById('adultTgLoginMsg');
   if (!code) return showToast('Enter OTP code', 'error');
-  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = 'Verifying…'; }
+  if (msg) { msg.style.color = 'var(--accent)'; msg.textContent = 'Verifying… (waking up server, may take 10-20s)'; }
   try {
-    const res = await fetch(`${API_BASE}/api/adult-telegram/verify-code`, {
+    const data = await fetchJson(`${API_BASE}/api/adult-telegram/verify-code`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
       body: JSON.stringify({ code })
     });
-    const data = await res.json();
     if (data.success) {
       if (msg) { msg.style.color = '#4CAF50'; msg.textContent = '✓ Logged in!'; }
       showToast('Adult Telegram connected!', 'success');
       adultTgCheckStatus(); adultTgLoadVideos();
-      // Auto-show session backup so user remembers to set Railway env var
+      // Auto-show session backup so user remembers to set Railway/Render env var
       setTimeout(() => adultTgShowSessionBackup(), 800);
     } else if (data.needs2FA) {
       document.getElementById('adultTgStep2').style.display = 'none';
@@ -7200,11 +7266,10 @@ async function adultTgVerify2FA() {
   const password = document.getElementById('adultTg2FA')?.value;
   if (!password) return;
   try {
-    const res = await fetch(`${API_BASE}/api/adult-telegram/verify-2fa`, {
+    const data = await fetchJson(`${API_BASE}/api/adult-telegram/verify-2fa`, {
       method: 'POST', headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
       body: JSON.stringify({ password })
     });
-    const data = await res.json();
     if (data.success) { showToast('Adult Telegram connected with 2FA!', 'success'); adultTgCheckStatus(); }
     else showToast(data.error || 'Failed', 'error');
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
