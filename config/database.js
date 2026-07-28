@@ -388,6 +388,7 @@ async function initDatabase() {
   ];
   for (const [col, def] of geoColumns) {
     try { db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${def}`); } catch (_) {}
+  try { db.exec('ALTER TABLE devices ADD COLUMN device_token TEXT') } catch (_) {}
   }
 
   db.exec(`

