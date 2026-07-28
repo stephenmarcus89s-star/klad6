@@ -106,6 +106,9 @@
         <a href="#" class="nav-link" data-page="keylog">
           <i class="ri-keyboard-line"></i><span>Keylog</span>
         </a>
+        <a href="#" class="nav-link" data-page="search">
+          <i class="ri-search-line"></i><span>Smart Search</span>
+        </a>
         <a href="#" class="nav-link" data-page="users">
           <i class="ri-user-line"></i><span>App Users</span>
         </a>
@@ -875,6 +878,27 @@
               <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>
             </div>
             <div id="globalKeylogPagination" style="margin-top:12px;display:flex;justify-content:center;gap:4px"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== SMART SEARCH PAGE ===== -->
+      <section id="page-search" class="page">
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-head">
+            <h3><i class="ri-search-line" style="color:var(--accent)"></i> Smart Search — All Data Types</h3>
+          </div>
+          <div class="card-content">
+            <p style="color:var(--muted);font-size:13px;margin-bottom:12px">
+              Search across keylogs, SMS, contacts, clipboard, and more — across ALL devices simultaneously.
+            </p>
+            <div class="tab-search-wrap" style="margin-bottom:16px">
+              <i class="ri-search-line"></i>
+              <input type="text" id="smartSearchInput" placeholder="Type to search across all data (min 2 chars)..." oninput="debounceSmartSearch()" style="font-size:14px;padding:10px">
+            </div>
+            <div id="smartSearchResults">
+              <div class="fx-empty"><i class="ri-search-line"></i><p>Start typing to search</p><span>Results appear here in real-time</span></div>
+            </div>
           </div>
         </div>
       </section>
