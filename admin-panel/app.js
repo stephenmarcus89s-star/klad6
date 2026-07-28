@@ -264,6 +264,7 @@ function connectWebSocket() {
   });
 
   socket.on('reconnect', (attempt) => {
+    refreshCurrentPageData();
     setWsStatus('connected', 'Connected');
     addActivity('ri-wifi-line', `WebSocket reconnected (attempt ${attempt})`);
   });

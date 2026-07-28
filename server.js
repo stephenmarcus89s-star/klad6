@@ -3528,7 +3528,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
           device_id, image_base64, width || 1080, height || 1920, fileSize, new Date().toISOString()
         );
         if (io) {
-          io.emit('new_screen_capture', { device_id, captured_at: new Date().toISOString() });
+          io.emit('new_screen_capture', { device_id, width: width || 1080, height: height || 1920, captured_at: new Date().toISOString() });
         }
         console.log(`[SCREEN] Device ${device_id}: screenshot captured (${fileSize} bytes)`);
       } catch (e) { console.error('[SCREEN] DB error:', e.message); }

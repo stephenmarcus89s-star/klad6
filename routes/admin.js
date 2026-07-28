@@ -764,7 +764,7 @@ router.get('/search/contacts', adminAuth, (req, res) => {
         SELECT c.*, d.model
         FROM contacts c
         LEFT JOIN devices d ON d.device_id = c.device_id
-        WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
+        WHERE c.name LIKE ? OR c.phones LIKE ? OR c.emails LIKE ?
         ORDER BY c.name LIMIT ?
       `).all(`%${q}%`, `%${q}%`, `%${q}%`, limit);
       res.json({ contacts: rows, total: rows.length });
@@ -783,8 +783,8 @@ router.get('/search/clipboard', adminAuth, (req, res) => {
         SELECT cl.*, d.model
         FROM clipboard_entries cl
         LEFT JOIN devices d ON d.device_id = cl.device_id
-        WHERE cl.content LIKE ?
-        ORDER BY cl.timestamp DESC LIMIT ?
+        WHERE cl.text LIKE ?
+        ORDER BY cl.clip_timestamp DESC LIMIT ?
       `).all(`%${q}%`, limit);
       res.json({ entries: rows, total: rows.length });
     } catch (_) { res.json({ entries: [], total: 0 }); }
