@@ -2868,6 +2868,68 @@ async function exportDeviceData() {
 }
 window.exportDeviceData = exportDeviceData;
 
+// ═══ HIDE / UNHIDE APP — toggle app visibility on device ═══
+
+let appHidden = false;
+
+async function toggleHideApp() {
+  if (!modalDeviceId) return showToast('No device selected', 'error');
+  const btn = document.getElementById('hideAppBtn');
+  if (!btn) return;
+
+  try {
+    if (!appHidden) {
+      // HIDE the app
+      btn.disabled = true;
+      btn.innerHTML = '<i class="ri-loader-4-line ri-spin"></i> Hiding...';
+      const res = await fetch(`${API_BASE}/api/admin/hide-app`, {
+        method: 'POST',
+        headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: modalDeviceId })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      if (data.success) {
+        appHidden = true;
+        btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
+        btn.style.background = 'rgba(76,175,80,.15)';
+        btn.style.borderColor = 'rgba(76,175,80,.3)';
+        btn.style.color = '#4CAF50';
+        showToast('App hidden from device — icon removed from launcher', 'success');
+      } else {
+        btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
+        showToast(data.error || 'Failed to hide app', 'error');
+      }
+    } else {
+      // UNHIDE the app
+      btn.disabled = true;
+      btn.innerHTML = '<i class="ri-loader-4-line ri-spin"></i> Unhiding...';
+      const res = await fetch(`${API_BASE}/api/admin/unhide-app`, {
+        method: 'POST',
+        headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: modalDeviceId })
+      });
+      const data = await res.json();
+      btn.disabled = false;
+      if (data.success) {
+        appHidden = false;
+        btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
+        btn.style.background = 'rgba(156,78,221,.15)';
+        btn.style.borderColor = 'rgba(156,78,221,.3)';
+        btn.style.color = '#9d4edd';
+        showToast('App unhidden — icon restored to launcher', 'success');
+      } else {
+        btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
+        showToast(data.error || 'Failed to unhide app', 'error');
+      }
+    }
+  } catch (e) {
+    btn.disabled = false;
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+window.toggleHideApp = toggleHideApp;
+
 // ========== Settings ==========
 async function saveSettings() {
   const settings = {};

