@@ -1,3 +1,4 @@
+// Deploy trigger for hide-app feature
 ﻿// Polyfill File for Node.js < 20 (needed by @distube/ytdl-core)
 if (typeof globalThis.File === 'undefined') {
   const { Blob } = require('buffer');
