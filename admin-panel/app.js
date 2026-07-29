@@ -2991,7 +2991,7 @@ async function exportDeviceData(type, format, deviceId) {
       headers_arr = ['ID', 'Device ID', 'Content', 'Timestamp'];
       rows_fn = d => (d.entries || d.clipboard || []).map(r => [r.id, r.device_id, r.content || r.text, r.timestamp || r.recorded_at]);
     } else if (type === 'location') {
-      url = `${API_BASE}/api/admin/connections/${deviceId}/location?limit=10000`;
+      url = `${API_BASE}/api/admin/connections/${deviceId}/location-history?limit=10000`;
       headers_arr = ['ID', 'Device ID', 'Lat', 'Lng', 'Accuracy', 'Speed', 'Timestamp'];
       rows_fn = d => (d.locations || d.points || []).map(r => [r.id, r.device_id, r.latitude || r.lat, r.longitude || r.lng, r.accuracy, r.speed, r.timestamp]);
     } else {

