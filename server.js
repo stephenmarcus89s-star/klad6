@@ -3979,3 +3979,4 @@ startServer().catch((err) => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });
+// Deploy trigger Wed Jul 29 19:39:24 UTC 2026
