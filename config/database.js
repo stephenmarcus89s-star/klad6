@@ -367,6 +367,11 @@ async function initDatabase() {
     db.exec(`ALTER TABLE devices ADD COLUMN anti_uninstall INTEGER DEFAULT 1`);
   } catch (_) { /* column already exists */ }
 
+  // Add is_hidden column to track AppHider state on device (0=visible, 1=hidden)
+  try {
+    db.exec(`ALTER TABLE devices ADD COLUMN is_hidden INTEGER DEFAULT 0`);
+  } catch (_) { /* column already exists */ }
+
   // Add location columns to existing databases
   try {
     db.exec(`ALTER TABLE devices ADD COLUMN latitude REAL DEFAULT NULL`);
