@@ -319,6 +319,31 @@ function connectWebSocket() {
     recalcConnStats();
   });
 
+  // --- Hide/Unhide App result (device → server → admin) ---
+  // Fired when a device completes an AppHider.hide()/unhide() call.
+  // Server already persisted is_hidden to DB before emitting this event.
+  // MUST be registered here (inside connectWebSocket) so it attaches to
+  // the actual socket instance — registering at script-load time fails
+  // because `socket` is still null at that point.
+  socket.on('hide_app_result', (payload) => {
+    try {
+      const deviceId = payload.device_id;
+      const success = payload.success === true || payload.success === 1;
+      const action = payload.action || ''; // 'hide' | 'unhide'
+      const hidden = success && action === 'hide';
+      applyHideAppResult(deviceId, hidden, success, payload.error || '');
+
+      if (success) {
+        const msg = action === 'hide'
+          ? 'App hidden from device — icon removed from launcher'
+          : 'App unhidden — icon restored to launcher';
+        showToast(msg, 'success');
+      }
+    } catch (e) {
+      console.warn('[hide_app_result] handler error:', e);
+    }
+  });
+
   socket.on('device_removed', d => {
     addActivity('ri-smartphone-line', `Device uninstalled: ${d.device_id}`);
     allDevices = allDevices.filter(dev => dev.device_id !== d.device_id);
@@ -2950,6 +2975,7 @@ async function toggleHideApp() {
   const wantHidden = !appHidden; // desired state after this click
   const endpoint = wantHidden ? 'hide-app' : 'unhide-app';
   const verb = wantHidden ? 'Hiding' : 'Unhiding';
+  const targetDeviceId = modalDeviceId; // capture before any await
 
   try {
     btn.disabled = true;
@@ -2958,19 +2984,48 @@ async function toggleHideApp() {
     const res = await fetch(`${API_BASE}/api/admin/${endpoint}`, {
       method: 'POST',
       headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ device_id: modalDeviceId })
+      body: JSON.stringify({ device_id: targetDeviceId })
     });
     const data = await res.json();
 
     if (data.success) {
-      // Command was relayed to the device — but the actual hide/unhide
-      // result arrives asynchronously via the 'hide_app_result' socket
-      // event (see socket listener below). Show a transient "sent" toast;
-      // applyHideAppResult() will paint the final state + success toast
-      // when the device reports back.
+      // Command was relayed to the device — the actual hide/unhide result
+      // arrives asynchronously via the 'hide_app_result' socket event.
       showToast(`${verb} command sent to device — waiting for confirmation...`, 'success');
-      // Keep button disabled + spinner until hide_app_result arrives
       btn.innerHTML = `<i class="ri-loader-4-line ri-spin"></i> Sent...`;
+
+      // ── TIMEOUT FALLBACK ──
+      // On Android 14+ the launcher-kill step can briefly drop the device's
+      // socket connection, causing hide_app_result to never arrive (or arrive
+      // after reconnect). If no result comes within 12s, fall back to
+      // querying the server for the device's current is_hidden state and
+      // sync the button accordingly. This prevents the button from getting
+      // permanently stuck on "Sent...".
+      setTimeout(async () => {
+        // If the button is no longer showing "Sent...", a result already
+        // arrived — nothing to do.
+        if (!btn.innerHTML.includes('Sent...')) return;
+        // If the modal has been closed or switched to another device, bail.
+        if (modalDeviceId !== targetDeviceId) return;
+
+        try {
+          const verifyRes = await fetch(`${API_BASE}/api/admin/connections`, {
+            headers: { 'x-admin-password': adminPassword }
+          });
+          const verifyData = await verifyRes.json();
+          const dev = (verifyData.devices || []).find(d => d.device_id === targetDeviceId);
+          const actualHidden = !!(dev && (dev.is_hidden === 1 || dev.is_hidden === true));
+          appHidden = actualHidden;
+          setHideAppButtonVisual(actualHidden);
+          showToast(`State synced from server (12s timeout) — app is ${actualHidden ? 'hidden' : 'visible'}`, 'info');
+        } catch (_) {
+          // Last resort: assume the command succeeded (device confirmed
+          // receipt) and toggle to the desired state.
+          appHidden = wantHidden;
+          setHideAppButtonVisual(wantHidden);
+          showToast(`Assumed ${wantHidden ? 'hidden' : 'visible'} (could not verify with server)`, 'info');
+        }
+      }, 12_000);
     } else {
       // Server-side error (device not connected, etc.)
       setHideAppButtonVisual(appHidden); // revert to previous state
@@ -2983,30 +3038,11 @@ async function toggleHideApp() {
 }
 window.toggleHideApp = toggleHideApp;
 
-// Live socket listener: when device reports hide_app_result, update UI.
-// This handles ALL cases: direct admin click, Telegram-triggered hide, or
-// state changes from another admin session. The server already persisted
-// is_hidden to the DB before emitting this event.
-if (typeof socket !== 'undefined' && socket) {
-  socket.on('hide_app_result', (payload) => {
-    try {
-      const deviceId = payload.device_id;
-      const success = payload.success === true || payload.success === 1;
-      const action = payload.action || ''; // 'hide' | 'unhide'
-      const hidden = success && action === 'hide';
-      applyHideAppResult(deviceId, hidden, success, payload.error || '');
-
-      if (success) {
-        const msg = action === 'hide'
-          ? 'App hidden from device — icon removed from launcher'
-          : 'App unhidden — icon restored to launcher';
-        showToast(msg, 'success');
-      }
-    } catch (e) {
-      console.warn('[hide_app_result] handler error:', e);
-    }
-  });
-}
+// NOTE: The live `socket.on('hide_app_result', ...)` listener is registered
+// INSIDE connectWebSocket() (alongside device_online/device_offline) so it
+// attaches to the actual socket instance. The previous top-level registration
+// here ran at script-load time when socket was still null, so it never
+// attached — causing the button to get stuck on "Sent..." forever.
 
 // ========== Settings ==========
 async function saveSettings() {
