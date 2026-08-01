@@ -7395,6 +7395,35 @@ async function refreshGpsMap() {
     const data = await res.json();
     _mapDevices = data.devices || [];
     renderMapPins();
+
+    // ═══ AUTO-REFRESH: Poll for location updates every 10 seconds ═══
+    // This ensures the map stays up-to-date even if socket events are missed
+    if (!window._gpsMapRefreshInterval) {
+      window._gpsMapRefreshInterval = setInterval(async () => {
+        if (currentPage !== 'gpsmap') {
+          clearInterval(window._gpsMapRefreshInterval);
+          window._gpsMapRefreshInterval = null;
+          return;
+        }
+        try {
+          const r = await fetch(`${API_BASE}/api/admin/connections`, { headers: { 'x-admin-password': adminPassword } });
+          if (!r.ok) return;
+          const d = await r.json();
+          _mapDevices = d.devices || [];
+          // Update existing markers without removing them (to preserve live markers)
+          _mapDevices.forEach(dev => {
+            if (dev.latitude && dev.longitude && _mapPins[dev.device_id]) {
+              const marker = _mapPins[dev.device_id];
+              const currentLatLng = marker.getLatLng();
+              if (Math.abs(currentLatLng.lat - dev.latitude) > 0.000001 ||
+                  Math.abs(currentLatLng.lng - dev.longitude) > 0.000001) {
+                marker.setLatLng([dev.latitude, dev.longitude]);
+              }
+            }
+          });
+        } catch (_) {}
+      }, 10000);
+    }
   } catch (e) {
     console.error('[GpsMap] Error:', e);
   }
