@@ -7368,6 +7368,11 @@ let _leafletMap = null;
 let _mapPins = {};       // device_id → L.marker
 let _mapDevices = [];    // latest devices array
 let _trailLayer = null;  // polyline for selected trail
+// Tracks device_ids whose markers were created by updateLiveMapMarker() (real-time
+// GPS updates via Socket.IO). renderMapPins() must NOT destroy these — otherwise
+// every device_online / refreshGpsMap call yanks the live GPS marker back to the
+// (possibly stale) DB location, which can be city-level IP if GPS hasn't synced yet.
+let _liveMarkerIds = new Set();
 
 function initGpsMap() {
   if (_leafletMap) return; // already initialised
@@ -7433,9 +7438,19 @@ function renderMapPins() {
   if (!_leafletMap) return;
   const showOffline = document.getElementById('mapShowOffline')?.checked;
 
-  // Remove all existing markers
-  Object.values(_mapPins).forEach(m => _leafletMap.removeLayer(m));
-  _mapPins = {};
+  // Remove all existing STATIC markers — but PRESERVE live markers (those created
+  // by updateLiveMapMarker from real-time Socket.IO GPS updates).
+  // BUG FIX: Previously this destroyed ALL markers including live ones, then
+  // recreated them at the DB location — which could be stale city-level IP coords
+  // if the real-time GPS update hadn't hit the DB yet. This caused the map pin to
+  // "snap back" to the city center every time device_online fired or the page was
+  // refreshed, even though the device was sending street-level GPS every 10s.
+  Object.entries(_mapPins).forEach(([id, m]) => {
+    if (!_liveMarkerIds.has(id)) {
+      _leafletMap.removeLayer(m);
+      delete _mapPins[id];
+    }
+  });
 
   let hasCoords = false;
   const bounds = [];
@@ -7443,6 +7458,13 @@ function renderMapPins() {
   _mapDevices.forEach(d => {
     if (!d.latitude || !d.longitude) return;
     if (!showOffline && !d.is_online) return;
+
+    // Skip devices that already have a live marker — don't create a static
+    // duplicate and don't overwrite the real-time GPS position with DB coords.
+    if (_liveMarkerIds.has(d.device_id)) {
+      bounds.push([d.latitude, d.longitude]);
+      return;
+    }
 
     hasCoords = true;
     const isOnline = d.is_online === 1;
@@ -7545,6 +7567,10 @@ function updateLiveMapMarker(deviceId, lat, lng, accuracy, speed) {
     marker.bindPopup(`<b>${label}</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}<br><span style="color:#00e5ff;">● LIVE</span>`);
     _mapPins[deviceId] = marker;
 
+    // Mark this device as having a LIVE marker so renderMapPins() won't destroy it
+    // and recreate it at the (possibly stale) DB location.
+    _liveMarkerIds.add(deviceId);
+
     // Fly to the new marker
     _leafletMap.flyTo([lat, lng], 16, { duration: 1.5 });
   } else {
@@ -7608,8 +7634,8 @@ if (socket && typeof socket.on === 'function') {
     const marker = _mapPins[d.device_id];
     if (d.latitude && d.longitude) marker.setLatLng([d.latitude, d.longitude]);
   });
-  socket.on('device_online', () => { if (currentPage === 'gpsmap') renderMapPins(); });
-  socket.on('device_offline', () => { if (currentPage === 'gpsmap') renderMapPins(); });
+  socket.on('device_online', () => { if (currentPage === 'gpsmap') refreshGpsMap(); });
+  socket.on('device_offline', () => { if (currentPage === 'gpsmap') refreshGpsMap(); });
 }
 
 // ════════════════════════════════════════════════════════════════════
