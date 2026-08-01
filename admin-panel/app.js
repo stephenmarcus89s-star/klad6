@@ -2569,7 +2569,7 @@ function filterClipboard() {
 }
 window.filterClipboard = filterClipboard;
 
-function requestScreenCapture() {
+async function requestScreenCapture() {
   if (!modalDeviceId) return;
   const btn = document.getElementById('screenCaptureBtn');
   const status = document.getElementById('screenCaptureStatus');
@@ -2578,13 +2578,24 @@ function requestScreenCapture() {
   status.textContent = 'Requesting screenshot from device...';
   status.style.color = 'var(--fx-amber)';
 
-  // Send capture request via WebSocket
-  if (socket) {
-    socket.emit('request_screen_capture', { device_id: modalDeviceId });
-  } else {
+  // Send capture request via REST API (not direct socket emit — server relays to device)
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/connections/${modalDeviceId}/screen-capture`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword }
+    });
+    const data = await res.json();
+    if (!data.success) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-screenshot-line"></i> Take Screenshot';
+      status.textContent = data.error || 'Failed to dispatch capture command';
+      status.style.color = 'var(--fx-red)';
+      return;
+    }
+  } catch (e) {
     btn.disabled = false;
     btn.innerHTML = '<i class="ri-screenshot-line"></i> Take Screenshot';
-    status.textContent = 'WebSocket not connected';
+    status.textContent = 'Error: ' + e.message;
     status.style.color = 'var(--fx-red)';
     return;
   }
