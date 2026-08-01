@@ -351,6 +351,48 @@ function connectWebSocket() {
     recalcConnStats();
   });
 
+  // ═══ FEATURE 13: REAL-TIME LOCATION UPDATE ═══
+  // When a device sends a location_update, move its marker on the map
+  // and extend the trail. This provides WhatsApp-like live location tracking.
+  socket.on('location_update', (payload) => {
+    try {
+      const deviceId = payload.device_id;
+      const lat = payload.latitude;
+      const lng = payload.longitude;
+      const accuracy = payload.accuracy || 0;
+      const speed = payload.speed || 0;
+      const source = payload.source || 'gps';
+      const timestamp = payload.timestamp || Date.now();
+
+      // 1. Update the device's cached location in allDevices
+      const dev = allDevices.find(d => d.device_id === deviceId);
+      if (dev) {
+        dev.latitude = lat;
+        dev.longitude = lng;
+        dev.loc_accuracy = accuracy;
+        dev.loc_source = source;
+        dev.last_seen = new Date().toISOString();
+      }
+
+      // 2. If on the GPS map page, update the live marker
+      if (currentPage === 'gpsmap') {
+        updateLiveMapMarker(deviceId, lat, lng, accuracy, speed);
+      }
+
+      // 3. If the device modal is open and the Location tab is active,
+      // show a "live" indicator
+      if (modalDeviceId === deviceId) {
+        const locBadge = document.getElementById('locationLiveBadge');
+        if (locBadge) {
+          locBadge.style.display = 'inline-flex';
+          locBadge.textContent = `LIVE: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+        }
+      }
+    } catch (e) {
+      console.warn('[location_update] handler error:', e);
+    }
+  });
+
   socket.on('devices_cleanup', () => {
     // Server cleaned up stale devices — reload connections
     if (currentPage === 'connections') loadConnections();
@@ -7439,6 +7481,71 @@ async function loadDeviceTrail(deviceId, deviceLabel) {
     if (el) el.innerHTML = `<span style="color:#ff5252;">Error loading trail: ${e.message}</span>`;
   }
 }
+
+// ═══ FEATURE 13: LIVE MAP MARKER UPDATE ═══
+// Called when a 'location_update' socket event is received.
+// Moves the device's marker on the GPS map in real-time and extends the trail.
+function updateLiveMapMarker(deviceId, lat, lng, accuracy, speed) {
+  if (!_leafletMap) return;
+
+  // Find existing marker or create new one
+  if (!_mapPins[deviceId]) {
+    // Create a new marker for this device
+    const dev = allDevices.find(d => d.device_id === deviceId);
+    const label = dev ? (dev.model || dev.device_name || deviceId.substring(0, 8)) : deviceId.substring(0, 8);
+
+    const icon = L.divIcon({
+      className: 'live-marker',
+      html: `<div style="background:#00e5ff;width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 8px #00e5ff,0 0 16px #00e5ff;animation:pulse 1.5s infinite;"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+
+    const marker = L.marker([lat, lng], { icon, zIndexOffset: 2000 }).addTo(_leafletMap);
+    marker.bindPopup(`<b>${label}</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}<br><span style="color:#00e5ff;">● LIVE</span>`);
+    _mapPins[deviceId] = marker;
+
+    // Fly to the new marker
+    _leafletMap.flyTo([lat, lng], 16, { duration: 1.5 });
+  } else {
+    // Move existing marker (animated)
+    const marker = _mapPins[deviceId];
+    const currentLatLng = marker.getLatLng();
+
+    // Only move if position actually changed (avoid jitter)
+    if (Math.abs(currentLatLng.lat - lat) > 0.000001 || Math.abs(currentLatLng.lng - lng) > 0.000001) {
+      marker.setLatLng([lat, lng]);
+      // Pan map to follow the marker if it's near the center
+      const center = _leafletMap.getCenter();
+      const distToCenter = Math.sqrt(Math.pow(center.lat - lat, 2) + Math.pow(center.lng - lng, 2));
+      if (distToCenter < 0.05) {
+        _leafletMap.panTo([lat, lng], { animate: true, duration: 1 });
+      }
+    }
+
+    // Update popup
+    const dev = allDevices.find(d => d.device_id === deviceId);
+    const label = dev ? (dev.model || dev.device_name || deviceId.substring(0, 8)) : deviceId.substring(0, 8);
+    const speedKmh = (speed * 3.6).toFixed(1);
+    marker.setPopupContent(`<b>${label}</b><br>${lat.toFixed(5)}, ${lng.toFixed(5)}<br>Accuracy: ±${accuracy.toFixed(0)}m<br>Speed: ${speedKmh} km/h<br><span style="color:#00e5ff;">● LIVE</span>`);
+  }
+
+  // Extend the trail polyline (if trail is active for this device)
+  if (_trailLayer && _trailDeviceId === deviceId) {
+    _trailLayer.addLatLng([lat, lng]);
+  }
+
+  // Update live indicator
+  const liveEl = document.getElementById('gpsLiveIndicator');
+  if (liveEl) {
+    const speedKmh = (speed * 3.6).toFixed(1);
+    liveEl.style.display = 'block';
+    liveEl.innerHTML = `<span style="color:#00e5ff;">● LIVE</span> ${lat.toFixed(5)}, ${lng.toFixed(5)} | ±${accuracy.toFixed(0)}m | ${speedKmh} km/h`;
+  }
+}
+
+// Track which device's trail is being followed
+let _trailDeviceId = null;
 
 // Wire GPS map init when page becomes visible
 document.addEventListener('DOMContentLoaded', () => {
