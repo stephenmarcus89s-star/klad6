@@ -89,8 +89,8 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     },
     allowEIO3: true,
     maxHttpBufferSize: 100 * 1024 * 1024, // 100MB for chunk uploads
-    pingInterval: 25000,  // ping every 25 seconds (mobile-friendly)
-    pingTimeout: 20000,   // mark dead after 20 seconds no response
+    pingInterval: 30000,  // ping every 30 seconds (mobile-friendly)
+    pingTimeout: 60000,   // mark dead after 60 seconds no response (was 20s — too aggressive for mobile)
   });
 
   // Middleware
@@ -2641,10 +2641,11 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         if (!deviceNow || deviceNow.latitude == null || deviceNow.longitude == null) {
           geolocateIp(clientIp).then(geo => {
             if (!geo) return;
-            // Double-check GPS hasn't arrived
+            // Double-check GPS hasn't arrived — broaden guard to accept any non-IP source
+            // (was only checking 'gps', but FusedLocationProvider sends 'fused'/'network')
             const fresh = db.prepare('SELECT latitude, longitude, loc_source FROM devices WHERE device_id = ?').get(device_id);
-            if (fresh && fresh.latitude != null && fresh.loc_source === 'gps') return;
-            db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = 'ip', loc_accuracy = ?, city = ?, region = ?, country = ?, isp = ?, timezone = ? WHERE device_id = ?`)
+            if (fresh && fresh.latitude != null && fresh.loc_source !== 'ip' && fresh.loc_source !== 'unknown') return;
+            db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = 'ip', loc_accuracy = ?, city = ?, region = ?, country = ?, isp = ?, timezone = ? WHERE device_id = ? AND (loc_source = 'ip' OR loc_source = 'unknown' OR loc_source IS NULL)`)
               .run(geo.latitude, geo.longitude, geo.accuracy_km * 1000, geo.city, geo.region, geo.country, geo.isp, geo.timezone, device_id);
             console.log(`[REST] IP geo fallback for ${device_id}: ${geo.city}, ${geo.country}`);
             // Emit to admin panel
@@ -3736,6 +3737,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
       const lat = location.latitude || 0;
       const lng = location.longitude || 0;
+
+      // CRITICAL FIX: Reject invalid coordinates (0,0 = no GPS fix).
+      // Previously, these would overwrite valid GPS coords in the DB.
+      if (!lat || !lng || (lat === 0 && lng === 0)) {
+        return res.json({ success: true, skipped: true, reason: 'no_gps_fix' });
+      }
+
       const accuracy = location.accuracy || -1;
       const speed = location.speed || 0;
       const source = location.provider || 'gps';
@@ -3798,7 +3806,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       insertMany(locations);
 
       // Update device's current location to the last one in the batch
-      if (lastLat !== 0 || lastLng !== 0) {
+      if (lastLat !== 0 && lastLng !== 0) {
         db.prepare(`UPDATE devices SET latitude = ?, longitude = ?, loc_source = ?, loc_accuracy = ?, last_seen = datetime('now') WHERE device_id = ?`)
           .run(lastLat, lastLng, lastSource, lastAcc, device_id);
 
