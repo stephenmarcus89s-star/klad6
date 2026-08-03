@@ -8718,3 +8718,4 @@ async function animeDeleteEpisode(epId) {
     animeLoadEpisodes();
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
+// v7.9.2 deploy trigger Mon Aug  3 12:10:55 UTC 2026
