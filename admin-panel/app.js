@@ -247,6 +247,8 @@ function connectWebSocket() {
     setWsStatus('connecting', 'Authenticating...');
     // Send admin auth immediately after connecting
     socket.emit('auth', adminPassword, (response) => {
+      // v7.9.4: Clear the auth timeout — callback fired successfully
+      if (window._v79AuthTimeout) { clearTimeout(window._v79AuthTimeout); window._v79AuthTimeout = null; }
       if (response && response.success) {
         setWsStatus('connected', 'Connected');
         addActivity('ri-link', 'WebSocket connected (authenticated)');

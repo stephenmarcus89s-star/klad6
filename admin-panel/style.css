@@ -2039,6 +2039,10 @@ input[type="file"]{
 .app-pkg {
   font-size: 10px; color: var(--text3);
   word-break: break-all;
+  flex: 1 0 100%;
+  margin-bottom: 2px;
+  user-select: all;
+  cursor: text;
 }
 .app-system-badge {
   font-family: var(--fx-font); font-size: 9px;

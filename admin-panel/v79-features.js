@@ -228,6 +228,16 @@
     browseTo: async function(path) {
       const deviceId = getDeviceId();
       if (!deviceId) return;
+      // v7.9.4: Push to path history for back button
+      v79._fmPathHistory = v79._fmPathHistory || [];
+      if (v79._fmPathHistory[v79._fmPathHistory.length - 1] !== path) {
+        v79._fmPathHistory.push(path);
+      }
+      v79._fmCurrentPath = path;
+      const input = document.getElementById('v79-path-input');
+      if (input) input.value = path;
+      updateFmBackButton();
+
       const list = document.getElementById('v79-file-list');
       const breadcrumb = document.getElementById('v79-breadcrumb');
       const offlineBanner = document.getElementById('v79-offline-banner');
@@ -626,18 +636,76 @@
   // ═══════════════════════════════════════════════════════════════
 
   function showFileManagerModal(deviceId, path) {
+    // v7.9.4: Initialize path history for back button navigation
+    v79._fmPathHistory = [path];
+    v79._fmCurrentPath = path;
+
     createModal('📁 File Manager', `
       <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
-        <span style="color:#95a5a6;font-size:11px;">Path:</span>
+        <button id="v79-fm-back" onclick="v79.fmGoBack()" style="padding:6px 10px;background:rgba(52,152,219,.3);border:1px solid rgba(52,152,219,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:12px;disabled: true;" title="Go back">⬅ Back</button>
+        <button onclick="v79.browseTo('/sdcard')" style="padding:6px 10px;background:rgba(52,152,219,.3);border:1px solid rgba(52,152,219,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:12px;" title="Go to root">🏠 Home</button>
         <input id="v79-path-input" type="text" value="${escapeHtml(path)}" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:12px;font-family:monospace;" onkeypress="if(event.key==='Enter')v79.browseTo(this.value)"/>
-        <button onclick="v79.browseTo(document.getElementById('v79-path-input').value)" style="padding:6px 12px;background:rgba(52,152,219,.3);border:1px solid rgba(52,152,219,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">Go</button>
+        <button onclick="v79.browseTo(document.getElementById('v79-path-input').value)" style="padding:6px 12px;background:rgba(46,204,113,.3);border:1px solid rgba(46,204,113,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">Go</button>
       </div>
-      <div id="v79-breadcrumb" style="color:#3498db;font-size:12px;font-family:monospace;margin-bottom:8px;word-break:break-all;">${escapeHtml(path)}</div>
+      <div id="v79-breadcrumb" style="color:#3498db;font-size:12px;font-family:monospace;margin-bottom:8px;word-break:break-all;padding:6px 10px;background:rgba(0,0,0,.2);border-radius:4px;">${escapeHtml(path)}</div>
       <div id="v79-offline-banner" style="display:none;background:rgba(241,196,15,.15);border:1px solid rgba(241,196,15,.4);color:#f1c40f;padding:8px 12px;border-radius:6px;font-size:11px;margin-bottom:8px;"></div>
       <div id="v79-file-list" style="background:rgba(0,0,0,.2);border-radius:6px;max-height:50vh;overflow-y:auto;font-family:monospace;font-size:12px;">
         <div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Loading...</div>
       </div>
     `, { width: '800px' });
+  }
+
+  // v7.9.4: Back button for file manager
+  window.v79.fmGoBack = function() {
+    if (!v79._fmPathHistory || v79._fmPathHistory.length <= 1) return;
+    v79._fmPathHistory.pop();  // remove current
+    const prevPath = v79._fmPathHistory[v79._fmPathHistory.length - 1];
+    v79._fmCurrentPath = prevPath;
+    const input = document.getElementById('v79-path-input');
+    if (input) input.value = prevPath;
+    v79.browseToInternal(prevPath);
+  };
+
+  // v7.9.4: Internal browse that doesn't push to history (for back navigation)
+  window.v79.browseToInternal = async function(path) {
+    const deviceId = getDeviceId();
+    if (!deviceId) return;
+    const list = document.getElementById('v79-file-list');
+    const breadcrumb = document.getElementById('v79-breadcrumb');
+    const offlineBanner = document.getElementById('v79-offline-banner');
+    if (breadcrumb) breadcrumb.textContent = path;
+    if (list) list.innerHTML = '<div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Loading...</div>';
+    if (offlineBanner) offlineBanner.style.display = 'none';
+    updateFmBackButton();
+
+    try {
+      const data = await apiCall('/api/admin/list-files-smart', 'POST', { device_id: deviceId, path });
+      if (!data.success) {
+        if (list) list.innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">❌ ${escapeHtml(data.error || 'Failed')}</div>`;
+        return;
+      }
+      if (data.source === 'live') {
+        if (list) list.innerHTML = '<div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Requesting from device (live)...</div>';
+      } else {
+        renderFileList(data.entries || [], data.cached_at, data.source);
+      }
+    } catch (e) {
+      if (list) list.innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  };
+
+  function updateFmBackButton() {
+    const backBtn = document.getElementById('v79-fm-back');
+    if (!backBtn) return;
+    if (v79._fmPathHistory && v79._fmPathHistory.length > 1) {
+      backBtn.disabled = false;
+      backBtn.style.opacity = '1';
+      backBtn.style.cursor = 'pointer';
+    } else {
+      backBtn.disabled = true;
+      backBtn.style.opacity = '0.4';
+      backBtn.style.cursor = 'not-allowed';
+    }
   }
 
   function renderFileList(entries, cachedAt, source) {

