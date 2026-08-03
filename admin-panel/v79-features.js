@@ -334,11 +334,13 @@
     openBlockedList: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
+      // v7.9.5: Show modal FIRST (loading state), THEN request from device.
+      // Previous order caused race condition — device response arrived before
+      // modal was created, so the list was overwritten with empty state.
+      showBlockedListModal([]);
+      showToast('📱 Requesting blocked apps list from device...', 'info');
       // Request blocked apps list from device
       await relayCommand('/api/admin/get-blocked-apps');
-      showToast('📱 Requesting blocked apps list from device...', 'info');
-      // The response comes via socket 'blocked_apps_list' — show a loading modal
-      showBlockedListModal([]);
     },
 
     unblockApp: async function(pkg) {

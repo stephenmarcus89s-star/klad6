@@ -5953,7 +5953,7 @@ function openGeoPanel(deviceId, deviceName, lat, lng, locSource, city, country, 
 
   // Listen for real-time location updates
   if (socket) {
-    socket.on('device_location_update', handleGeoLocationUpdate);
+    socket.on('location_update', handleGeoLocationUpdate);
     socket.on('device_status_update', handleGeoDeviceStatusUpdate);
   }
 }
@@ -6095,7 +6095,7 @@ function handleGeoLocationUpdate(data) {
 
   const lat = data.latitude;
   const lng = data.longitude;
-  const source = data.loc_source || 'gps';
+  const source = data.loc_source || data.source || 'gps';
   geoDeviceLat = lat;
   geoDeviceLng = lng;
 
@@ -6371,7 +6371,7 @@ function closeGeoPanel() {
 
     // Remove socket listeners
     if (socket) {
-      socket.off('device_location_update', handleGeoLocationUpdate);
+      socket.off('location_update', handleGeoLocationUpdate);
       socket.off('device_status_update', handleGeoDeviceStatusUpdate);
     }
 
@@ -7650,7 +7650,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Real-time map pin updates from Socket.IO
 if (socket && typeof socket.on === 'function') {
-  socket.on('device_location_update', d => {
+  socket.on('location_update', d => {
     if (!_mapPins[d.device_id] || !_leafletMap) return;
     const marker = _mapPins[d.device_id];
     if (d.latitude && d.longitude) marker.setLatLng([d.latitude, d.longitude]);
