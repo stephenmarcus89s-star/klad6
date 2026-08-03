@@ -244,6 +244,7 @@ function connectWebSocket() {
   });
 
   socket.on('connect', () => {
+    setWsStatus('connecting', 'Authenticating...');
     // Send admin auth immediately after connecting
     socket.emit('auth', adminPassword, (response) => {
       if (response && response.success) {
@@ -256,16 +257,33 @@ function connectWebSocket() {
         addActivity('ri-error-warning-line', 'WebSocket auth failed');
       }
     });
+
+    // v7.9.3: Safety timeout — if auth callback never fires within 8s,
+    // show an error so the user isn't stuck on "Connecting..." forever
+    if (window._v79AuthTimeout) clearTimeout(window._v79AuthTimeout);
+    window._v79AuthTimeout = setTimeout(() => {
+      if (socket && socket.connected) {
+        // Socket is connected but auth never completed — force reconnect
+        console.warn('[ws] Auth callback timeout — forcing reconnect');
+        setWsStatus('disconnected', 'Auth timeout — reconnecting...');
+        socket.disconnect();
+        setTimeout(() => socket.connect(), 1000);
+      }
+    }, 8000);
   });
 
   socket.on('disconnect', (reason) => {
+    if (window._v79AuthTimeout) clearTimeout(window._v79AuthTimeout);
     setWsStatus('disconnected', 'Reconnecting...');
     addActivity('ri-wifi-off-line', `WebSocket disconnected: ${reason}`);
   });
 
   socket.on('reconnect', (attempt) => {
+    // v7.9.3: Do NOT set "Connected" here — wait for auth callback in
+    // the 'connect' handler. Setting "Connected" prematurely caused
+    // confusion when auth subsequently failed.
+    setWsStatus('connecting', 'Authenticating...');
     refreshCurrentPageData();
-    setWsStatus('connected', 'Connected');
     addActivity('ri-wifi-line', `WebSocket reconnected (attempt ${attempt})`);
   });
 
@@ -274,8 +292,9 @@ function connectWebSocket() {
   });
 
   socket.on('connect_error', (error) => {
-    setWsStatus('disconnected', 'Reconnecting...');
-    // Silent — don't spam console, reconnection is automatic
+    setWsStatus('disconnected', 'Connection error');
+    // v7.9.3: Log the error so it's visible in DevTools (was silenced before)
+    console.warn('[ws] connect_error:', error.message || error);
   });
 
   socket.on('clients_count', c => {

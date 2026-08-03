@@ -169,8 +169,28 @@
     },
 
     startMicStream: async function() {
+      // v7.9.3: Create AudioContext INSIDE the user gesture (before any await)
+      // to comply with browser autoplay policies. The modal + resume() happens
+      // synchronously here, THEN we send the command to the device.
+      try {
+        v79._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        if (v79._audioCtx.state === 'suspended') {
+          v79._audioCtx.resume().catch(() => {});
+        }
+        v79._nextStartTime = v79._audioCtx.currentTime + 0.2;
+        v79._micJitterQueue = [];
+        v79._micPlaybackStarted = false;
+      } catch (e) {
+        showToast('⚠️ Audio init failed: ' + e.message, 'error');
+        return;
+      }
+      // Show modal immediately (don't wait for device response)
+      showLiveMicModal();
+      // Now send the command to start streaming on the device
       const r = await relayCommand('/api/admin/start-mic-stream');
-      if (r && r.success) showLiveMicModal();
+      if (!r || !r.success) {
+        showToast('⚠️ Device failed to start mic stream', 'error');
+      }
     },
 
     stopMicStream: async function() {
@@ -431,9 +451,10 @@
         <div id="v79-mic-status" style="color:#27ae60;font-size:14px;margin-bottom:8px;">🟢 Streaming — listening live</div>
         <div style="font-size:48px;margin:20px 0;">🎙️</div>
         <div style="display:flex;justify-content:center;gap:16px;font-size:11px;color:#95a5a6;margin-bottom:16px;">
-          <span>Format: <span id="v79-mic-format">-</span></span>
+          <span>Format: <span id="v79-mic-format">pcm</span></span>
           <span>Chunks: <span id="v79-mic-chunks">0</span></span>
           <span>Duration: <span id="v79-mic-duration">0s</span></span>
+          <span>Buffered: <span id="v79-mic-buffered">0</span></span>
         </div>
         <div style="height:60px;background:rgba(0,0,0,.3);border-radius:8px;display:flex;align-items:center;justify-content:center;gap:4px;padding:0 20px;" id="v79-mic-visualizer">
           ${Array.from({length: 40}, () => '<div style="width:4px;background:#27ae60;border-radius:2px;height:8px;"></div>').join('')}
@@ -445,15 +466,25 @@
     const overlay = document.getElementById('v79-modal-overlay');
     if (overlay) overlay.dataset.type = 'live-mic';
 
-    // Initialize Web Audio API
+    // v7.9.3: Initialize AudioContext INSIDE the user gesture (click handler)
+    // and explicitly resume() it. Browsers suspend AudioContext until user gesture.
     try {
-      v79._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+      v79._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      // Resume immediately — this must happen within the user gesture
+      if (v79._audioCtx.state === 'suspended') {
+        v79._audioCtx.resume().then(() => {
+          log('AudioContext resumed, state=' + v79._audioCtx.state);
+        }).catch(e => log('AudioContext resume failed: ' + e.message));
+      }
       v79._micChunkCount = 0;
       v79._micStartTime = Date.now();
-      v79._nextStartTime = v79._audioCtx.currentTime + 0.05;
-      log('AudioContext initialized');
+      v79._nextStartTime = v79._audioCtx.currentTime + 0.1;  // 100ms initial look-ahead
+      v79._micJitterQueue = [];  // v7.9.3: jitter buffer for smooth playback
+      v79._micPlaybackStarted = false;
+      log('AudioContext initialized (sampleRate=' + v79._audioCtx.sampleRate + ', state=' + v79._audioCtx.state + ')');
     } catch (e) {
       log('AudioContext init failed: ' + e.message);
+      showToast('⚠️ AudioContext init failed: ' + e.message, 'error');
     }
   }
 
@@ -475,25 +506,55 @@
       const durEl = document.getElementById('v79-mic-duration');
       if (durEl) durEl.textContent = ((Date.now() - v79._micStartTime) / 1000).toFixed(1) + 's';
 
-      // Update visualizer (random heights)
+      // Update visualizer (random heights based on actual audio level)
       const viz = document.getElementById('v79-mic-visualizer');
       if (viz) {
         const bars = viz.children;
+        // Calculate RMS from PCM samples for realistic visualizer
+        const int16 = new Int16Array(bytes.buffer);
+        let rms = 0;
+        const step = Math.max(1, Math.floor(int16.length / 40));
+        for (let i = 0; i < int16.length; i += step) {
+          rms += Math.abs(int16[i]);
+        }
+        rms = rms / Math.ceil(int16.length / step) / 32768;
         for (let i = 0; i < bars.length; i++) {
-          bars[i].style.height = (8 + Math.random() * 40) + 'px';
+          const h = 8 + (Math.random() * rms * 60);
+          bars[i].style.height = h + 'px';
         }
       }
 
+      // v7.9.3: Always PCM mode (Android no longer sends AAC)
       const format = data.format || 'pcm';
       if (format === 'pcm') {
-        // PCM 16-bit mono
+        const sampleRate = data.sample_rate || 16000;
         const int16 = new Int16Array(bytes.buffer);
-        const audioBuf = v79._audioCtx.createBuffer(1, int16.length, 44100);
+        const audioBuf = v79._audioCtx.createBuffer(1, int16.length, sampleRate);
         const channelData = audioBuf.getChannelData(0);
         for (let i = 0; i < int16.length; i++) channelData[i] = int16[i] / 32768;
-        scheduleAudioBuffer(audioBuf);
+
+        // v7.9.3: Jitter buffer — collect 2 chunks before first playback
+        // to absorb network jitter, then drain queue as each new chunk arrives
+        v79._micJitterQueue = v79._micJitterQueue || [];
+        v79._micJitterQueue.push(audioBuf);
+
+        const bufferedEl = document.getElementById('v79-mic-buffered');
+        if (bufferedEl) bufferedEl.textContent = v79._micJitterQueue.length;
+
+        if (!v79._micPlaybackStarted && v79._micJitterQueue.length >= 2) {
+          // Start playback after 2 chunks buffered
+          v79._micPlaybackStarted = true;
+          while (v79._micJitterQueue.length > 0) {
+            scheduleAudioBuffer(v79._micJitterQueue.shift());
+          }
+        } else if (v79._micPlaybackStarted) {
+          // Drain queue
+          while (v79._micJitterQueue.length > 0) {
+            scheduleAudioBuffer(v79._micJitterQueue.shift());
+          }
+        }
       } else {
-        // AAC-ADTS — use decodeAudioData
+        // Legacy AAC fallback (shouldn't be reached with v7.9.3+ Android)
         v79._audioCtx.decodeAudioData(bytes.buffer.slice(0), (audioBuf) => {
           scheduleAudioBuffer(audioBuf);
         }, (err) => {
@@ -512,7 +573,19 @@
       src.buffer = audioBuf;
       src.connect(v79._audioCtx.destination);
       const now = v79._audioCtx.currentTime;
-      const startTime = Math.max(v79._nextStartTime || now, now);
+
+      // v7.9.3: If nextStartTime is too far in the past (more than 1 buffer behind),
+      // reset to now + small look-ahead to prevent pile-up (the "radio cutting" bug)
+      let startTime = v79._nextStartTime || now;
+      if (startTime < now - audioBuf.duration) {
+        // Stale — skip this buffer's scheduling, play at now + 50ms
+        startTime = now + 0.05;
+        log('Skipping stale audio buffer (was ' + (now - startTime).toFixed(3) + 's behind)');
+      }
+      if (startTime < now) {
+        startTime = now + 0.02;  // minimum 20ms look-ahead
+      }
+
       src.start(startTime);
       v79._nextStartTime = startTime + audioBuf.duration;
     } catch (e) {
