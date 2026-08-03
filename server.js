@@ -3436,6 +3436,10 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // v7.9.4: Screen grant result relay
       socket.on('screen_grant_result', (data) => { io.emit('screen_grant_result', data); });
       socket.on('screen_grant_prompt_shown', (data) => { io.emit('screen_grant_prompt_shown', data); });
+
+      // v7.9.4: Two-way chat relay
+      socket.on('admin_chat_received', (data) => { io.emit('admin_chat_received', data); });
+      socket.on('chat_response', (data) => { io.emit('chat_response', data); });
     });
   }
 
