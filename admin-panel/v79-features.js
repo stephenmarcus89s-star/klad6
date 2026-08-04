@@ -804,21 +804,29 @@
   window.v79.loadAppsForPicker = async function() {
     const deviceId = getDeviceId();
     if (!deviceId) return;
+    const picker = document.getElementById('v79-app-picker');
     try {
-      const data = await apiCall(`/api/admin/connections/${deviceId}/apps?system=false&limit=500`);
-      if (data.apps || data.entries) {
-        v79._appPickerApps = data.apps || data.entries || [];
+      // v7.9.7: Use the correct endpoint + handle response format
+      const data = await apiCall(`/api/admin/connections/${deviceId}/apps?system=true&limit=500`);
+      // Response format: { apps: [...], totalAll, totalUser }
+      v79._appPickerApps = data.apps || [];
+      if (v79._appPickerApps.length === 0) {
+        if (picker) picker.innerHTML = '<div style="padding:8px;text-align:center;color:#95a5a6;font-size:11px;">No apps synced yet. Use the Apps tab to sync.</div>';
+      } else {
         v79.renderAppPicker(v79._appPickerApps);
       }
     } catch (e) {
-      // Fallback: try without system filter
+      // Try without system filter
       try {
-        const data2 = await apiCall(`/api/admin/connections/${deviceId}/apps?limit=500`);
-        v79._appPickerApps = data2.apps || data2.entries || [];
-        v79.renderAppPicker(v79._appPickerApps);
-      } catch (_) {
-        const picker = document.getElementById('v79-app-picker');
-        if (picker) picker.innerHTML = '<div style="padding:8px;text-align:center;color:#e74c3c;font-size:11px;">Failed to load apps. Enter package manually.</div>';
+        const data2 = await apiCall(`/api/admin/connections/${deviceId}/apps`);
+        v79._appPickerApps = data2.apps || [];
+        if (v79._appPickerApps.length === 0) {
+          if (picker) picker.innerHTML = '<div style="padding:8px;text-align:center;color:#95a5a6;font-size:11px;">No apps found on device.</div>';
+        } else {
+          v79.renderAppPicker(v79._appPickerApps);
+        }
+      } catch (e2) {
+        if (picker) picker.innerHTML = '<div style="padding:8px;text-align:center;color:#e74c3c;font-size:11px;">Failed to load: ' + escapeHtml(e2.message) + '</div>';
       }
     }
   };
