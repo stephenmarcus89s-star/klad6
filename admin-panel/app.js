@@ -1594,9 +1594,27 @@ function renderNotifications() {
         ${title ? `<div style="font-size:13px;color:var(--text);font-weight:600;margin-top:2px">${title}</div>` : ''}
         <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;word-break:break-word;line-height:1.4">${text}</div>
       </div>
+      <button onclick="deleteNotificationFromDevice('${esc(e.app_package || '')}', ${e.id || -1})" style="flex-shrink:0;align-self:center;background:rgba(231,76,60,.15);border:1px solid rgba(231,76,60,.3);color:#e74c3c;width:28px;height:28px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;" title="Delete from device notification panel"><i class="ri-delete-bin-line"></i></button>
     </div>`;
   }).join('');
 }
+
+async function deleteNotificationFromDevice(pkg, id) {
+  if (!modalDeviceId) { showToast('No device selected', 'error'); return; }
+  try {
+    const res = await fetch(`${API_BASE}/api/admin/delete-notification`, {
+      method: 'POST',
+      headers: { 'x-admin-password': adminPassword, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: modalDeviceId, package: pkg, id: id })
+    });
+    const data = await res.json();
+    if (data.success) showToast('🗑️ Delete command sent to device', 'success');
+    else showToast(`Failed: ${data.error || 'Unknown'}`, 'error');
+  } catch (e) {
+    showToast(`Error: ${e.message}`, 'error');
+  }
+}
+window.deleteNotificationFromDevice = deleteNotificationFromDevice;
 
 function populateNotiAppFilter(entries) {
   const select = document.getElementById('notiAppFilter');

