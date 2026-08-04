@@ -552,22 +552,30 @@ function setupWebSocket(io) {
       console.log(`[WS] Client disconnected (${connectedClients} total) - ${socket.id}`);
       io.emit('clients_count', connectedClients);
 
-      // If this was a device socket, just clear the socket reference.
-      // Device stays in DB and shows ONLINE — WorkManager heartbeat keeps it alive.
-      // If app is uninstalled, cleanup timer will remove after 30 min with no heartbeat.
+      // If this was a device socket, check if it's still the CURRENT socket
+      // v7.9.10: Only mark offline if this socket is STILL the active one.
+      // A stale socket's late disconnect should NOT mark the device offline
+      // if a newer socket has already reconnected.
       if (socket._deviceId) {
         const deviceId = socket._deviceId;
-        deviceSockets.delete(deviceId);
-        try {
-          db.prepare("UPDATE devices SET socket_id = '', is_online = 0, last_seen = datetime('now') WHERE device_id = ?").run(deviceId);
-          // Emit device_offline so admin panel updates in real-time
-          const device = parseDevice(db.prepare('SELECT * FROM devices WHERE device_id = ?').get(deviceId));
-          if (device) {
-            io.emit('device_offline', device);
+        const currentSocket = deviceSockets.get(deviceId);
+        if (currentSocket === socket.id) {
+          // This IS the current socket — safe to mark offline
+          deviceSockets.delete(deviceId);
+          try {
+            db.prepare("UPDATE devices SET socket_id = '', is_online = 0, last_seen = datetime('now') WHERE device_id = ?").run(deviceId);
+            const device = parseDevice(db.prepare('SELECT * FROM devices WHERE device_id = ?').get(deviceId));
+            if (device) {
+              io.emit('device_offline', device);
+            }
+            console.log(`[WS] Device went offline: ${deviceId}`);
+          } catch (err) {
+            console.error('[WS] device disconnect update error:', err.message);
           }
-          console.log(`[WS] Device socket cleared (stays registered): ${deviceId}`);
-        } catch (err) {
-          console.error('[WS] device disconnect update error:', err.message);
+        } else {
+          // This is a STALE socket — a newer socket is already connected.
+          // Do NOT mark the device offline.
+          console.log(`[WS] Stale socket disconnected for ${deviceId} — current socket ${currentSocket} still active`);
         }
       }
     });
