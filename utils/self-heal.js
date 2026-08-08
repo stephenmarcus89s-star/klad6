@@ -11,7 +11,7 @@ let sendAlert = null;
 let healTimer = null;
 
 const SERVERS = [
-  { name: 'Render', url: 'https://netmirrorr.onrender.com/api/health', primary: true },
+  { name: 'Render', url: 'https://nowmirror.onrender.com/api/health', primary: true },
   { name: 'Railway', url: 'https://watchmirror.up.railway.app/api/health', primary: false },
   { name: 'Cloudflare', url: 'https://netmirror.lholtkaren.workers.dev/api/health', primary: false },
 ];
@@ -148,7 +148,7 @@ async function switchToPrimary() {
     if (!token) return;
 
     const domainData = {
-      primary: 'https://netmirrorr.onrender.com',
+      primary: 'https://nowmirror.onrender.com',
       fallback: 'https://watchmirror.up.railway.app',
       updated_at: new Date().toISOString(),
       reason: 'auto-recovery: Render back online'

