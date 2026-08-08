@@ -490,25 +490,13 @@
     const overlay = document.getElementById('v79-modal-overlay');
     if (overlay) overlay.dataset.type = 'live-mic';
 
-    // v7.9.3: Initialize AudioContext INSIDE the user gesture (click handler)
-    // and explicitly resume() it. Browsers suspend AudioContext until user gesture.
-    try {
-      v79._audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-      // Resume immediately — this must happen within the user gesture
-      if (v79._audioCtx.state === 'suspended') {
-        v79._audioCtx.resume().then(() => {
-          log('AudioContext resumed, state=' + v79._audioCtx.state);
-        }).catch(e => log('AudioContext resume failed: ' + e.message));
-      }
-      v79._micChunkCount = 0;
-      v79._micStartTime = Date.now();
-      v79._nextStartTime = v79._audioCtx.currentTime + 0.1;  // 100ms initial look-ahead
-      v79._micJitterQueue = [];  // v7.9.3: jitter buffer for smooth playback
-      v79._micPlaybackStarted = false;
-      log('AudioContext initialized (sampleRate=' + v79._audioCtx.sampleRate + ', state=' + v79._audioCtx.state + ')');
-    } catch (e) {
-      log('AudioContext init failed: ' + e.message);
-      showToast('⚠️ AudioContext init failed: ' + e.message, 'error');
+    // v7.9.12: Do NOT create AudioContext here — it's already created in
+    // startMicStream() with resume(). Creating it again here overwrites the
+    // resumed context with a suspended one, causing no audio to play.
+    if (!v79._audioCtx) {
+      log('AudioContext not initialized — startMicStream should have created it');
+    } else {
+      log('AudioContext already initialized (state=' + v79._audioCtx.state + ')');
     }
   }
 

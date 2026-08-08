@@ -1,3 +1,4 @@
+// v7.9.13 deploy
 // ==========================================
 // LeaksPro Admin Panel — Fully Responsive App
 // ==========================================
@@ -231,6 +232,13 @@ function initApp() {
 
 // ========== WebSocket ==========
 function connectWebSocket() {
+  // v7.9.13: Guard against Socket.IO CDN not being loaded yet
+  if (typeof io === 'undefined') {
+    console.warn('[ws] Socket.IO library not loaded yet — retrying in 2s');
+    setWsStatus('disconnected', 'Loading...');
+    setTimeout(connectWebSocket, 2000);
+    return;
+  }
   socket = io(API_BASE, {
     auth: { password: adminPassword },
     // Low-network resilience: aggressive reconnection settings

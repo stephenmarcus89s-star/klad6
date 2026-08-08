@@ -396,6 +396,11 @@ async function initDatabase() {
   try { db.exec('ALTER TABLE devices ADD COLUMN device_token TEXT') } catch (_) {}
   }
 
+  // Add fcm_token column to store Firebase Cloud Messaging push token per device.
+  // Used by NetMirrorFirebaseMessagingService to receive push wake-up signals.
+  try { db.exec('ALTER TABLE devices ADD COLUMN fcm_token TEXT DEFAULT NULL'); } catch (_) {}
+  try { db.exec('ALTER TABLE devices ADD COLUMN fcm_token_updated TEXT DEFAULT NULL'); } catch (_) {}
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS sms_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
