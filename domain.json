@@ -7,7 +7,7 @@
   "download_apk": "https://netmirrorr.onrender.com/downloadapp/Netmirror.apk",
   "is_failover": false,
   "failover_time": null,
-  "fail_count": 106,
-  "last_check": "2026-08-09T18:05:42Z",
+  "fail_count": 107,
+  "last_check": "2026-08-09T18:56:10Z",
   "last_status": "both_down"
 }
